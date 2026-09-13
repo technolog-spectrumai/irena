@@ -123,6 +123,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "bornite-eval"
+version = "0.1.0"
+dependencies = [
+ "bornite-core",
+ "bornite-rules",
+ "proptest",
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
+name = "bornite-rules"
+version = "0.1.0"
+dependencies = [
+ "bornite-core",
+ "serde",
+ "thiserror",
+]
+
+[[package]]
 name = "borsh"
 version = "1.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"

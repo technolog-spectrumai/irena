@@ -10,7 +10,11 @@ use core::cmp::Ordering;
 use core::num::NonZeroU64;
 
 /// An exact fraction `numerator / denominator`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize)]
+///
+/// Equality and ordering are **structural** — `1/2` and `2/4` are different values that
+/// sort by numerator then denominator — because a rule that says `2/4` should be echoed
+/// as `2/4`. Numeric comparison is [`FractionV1::compare_share`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize)]
 pub struct FractionV1 {
     /// The numerator.
     pub numerator: u64,

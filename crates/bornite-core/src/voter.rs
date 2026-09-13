@@ -137,6 +137,27 @@ impl WeightTotalV1 {
             .ok_or(CoreError::WeightOverflow)
     }
 
+    /// Adds another total.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CoreError::WeightOverflow`] if the sum would exceed `u64::MAX`.
+    pub fn checked_add_total(self, other: Self) -> Result<Self, CoreError> {
+        self.0
+            .checked_add(other.0)
+            .map(Self)
+            .ok_or(CoreError::WeightOverflow)
+    }
+
+    /// Subtracts a total that is known to be part of this one.
+    ///
+    /// Returns `None` if `other` is larger, which for a part of a whole can only mean
+    /// a bug upstream; there is no negative weight to return.
+    #[must_use]
+    pub fn checked_sub_total(self, other: Self) -> Option<Self> {
+        self.0.checked_sub(other.0).map(Self)
+    }
+
     /// Sums a sequence of weights.
     ///
     /// # Errors
