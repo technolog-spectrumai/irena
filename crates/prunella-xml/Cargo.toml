@@ -1,0 +1,24 @@
+[package]
+name = "prunella-xml"
+description = "Lossless versioned XML export and import for Prunella chains"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+
+[dependencies]
+prunella-core.workspace = true
+prunella-store.workspace = true
+prunella-verify.workspace = true
+base64.workspace = true
+quick-xml.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+prunella-canonical.workspace = true
+prunella-crypto.workspace = true
+redb.workspace = true
+tempfile.workspace = true
+
+[lints]
+workspace = true

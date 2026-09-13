@@ -343,6 +343,20 @@ impl ChainStore {
         }))
     }
 
+    /// Whether a transaction id is already committed anywhere in this chain.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error if the index could not be read.
+    pub fn contains_transaction(&self, id: &TxId) -> Result<bool, StoreError> {
+        let read = self.database.begin_read().map_err(StoreError::database)?;
+        let locations = read.open_table(TX_LOCATION).map_err(StoreError::database)?;
+        Ok(locations
+            .get(id.as_bytes())
+            .map_err(StoreError::database)?
+            .is_some())
+    }
+
     /// Iterates blocks over an inclusive height range from a single consistent snapshot.
     ///
     /// # Errors
@@ -621,6 +635,12 @@ impl ChainStore {
             });
         }
         Ok(())
+    }
+}
+
+impl TxIdLookup for ChainStore {
+    fn contains(&self, id: &TxId) -> Result<bool, SourceError> {
+        Self::contains_transaction(self, id).map_err(|error| SourceError::new(error.to_string()))
     }
 }
 

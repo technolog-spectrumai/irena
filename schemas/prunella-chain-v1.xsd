@@ -1,0 +1,132 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Prunella chain document, format version 1.
+
+  This schema is the published contract for the XML transport. It constrains shape and
+  lexical form only. It cannot, and is not meant to, establish that a document is a
+  valid chain: block hashes, transaction ids, signatures, parent linkage and ordering
+  are all verified by re-deriving them through Prunella's canonical serialization. A
+  document that validates against this schema may still be rejected by an importer, and
+  that is the intended division of labour.
+
+  The Rust importer implements the equivalent structural checks in code, because there
+  is no mature XSD validator for Rust. This file exists so that other tooling, in any
+  language, can validate documents without reimplementing the parser.
+-->
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           xmlns="urn:prunella:chain:1"
+           targetNamespace="urn:prunella:chain:1"
+           elementFormDefault="qualified"
+           attributeFormDefault="unqualified"
+           version="1">
+
+  <!-- A 32-byte digest, always exactly 64 lowercase hex characters. Uppercase is not
+       permitted, so every value has exactly one textual form. -->
+  <xs:simpleType name="Hash32">
+    <xs:restriction base="xs:string">
+      <xs:pattern value="[0-9a-f]{64}"/>
+    </xs:restriction>
+  </xs:simpleType>
+
+  <!-- A network id or namespace: 1 to 64 bytes, starting with a lowercase letter or
+       digit, continuing with lowercase letters, digits, '.', '_' or '-'. -->
+  <xs:simpleType name="Label">
+    <xs:restriction base="xs:string">
+      <xs:pattern value="[a-z0-9][a-z0-9._\-]{0,63}"/>
+    </xs:restriction>
+  </xs:simpleType>
+
+  <xs:simpleType name="DocumentKind">
+    <xs:restriction base="xs:string">
+      <!-- full:       genesis through head; a complete chain backup.
+           range:      a contiguous height range, for incremental transfer.
+           projection: a namespace-filtered view. NOT a backup: transactions are
+                       omitted, so blocks can no longer reproduce their own tx-root,
+                       and importers must refuse it. -->
+      <xs:enumeration value="full"/>
+      <xs:enumeration value="range"/>
+      <xs:enumeration value="projection"/>
+    </xs:restriction>
+  </xs:simpleType>
+
+  <xs:element name="prunella-chain">
+    <xs:complexType>
+      <xs:sequence>
+        <!-- Present if and only if kind="projection". -->
+        <xs:element name="projection" minOccurs="0" maxOccurs="1">
+          <xs:complexType>
+            <xs:attribute name="filter-namespace" type="Label" use="required"/>
+          </xs:complexType>
+        </xs:element>
+        <xs:element ref="block" minOccurs="0" maxOccurs="unbounded"/>
+      </xs:sequence>
+      <xs:attribute name="format-version" type="xs:unsignedInt" use="required"/>
+      <xs:attribute name="kind" type="DocumentKind" use="required"/>
+      <xs:attribute name="network-id" type="Label" use="required"/>
+      <xs:attribute name="genesis-hash" type="Hash32" use="required"/>
+      <xs:attribute name="range-start" type="xs:unsignedLong" use="required"/>
+      <xs:attribute name="range-end" type="xs:unsignedLong" use="required"/>
+      <xs:attribute name="block-count" type="xs:unsignedLong" use="required"/>
+      <!-- Producer's clock at export time. Informational: never hashed, never
+           verified, never interpreted. -->
+      <xs:attribute name="exported-at-millis" type="xs:unsignedLong" use="required"/>
+    </xs:complexType>
+  </xs:element>
+
+  <xs:element name="block">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element name="header" minOccurs="1" maxOccurs="1">
+          <xs:complexType>
+            <xs:attribute name="version" type="xs:unsignedShort" use="required"/>
+            <!-- All-zero for the genesis block. -->
+            <xs:attribute name="previous-hash" type="Hash32" use="required"/>
+            <xs:attribute name="tx-root" type="Hash32" use="required"/>
+            <!-- The block's true transaction count. In a projection this may exceed
+                 the number of transaction elements present. -->
+            <xs:attribute name="tx-count" type="xs:unsignedInt" use="required"/>
+            <xs:attribute name="timestamp-millis" type="xs:unsignedLong" use="required"/>
+          </xs:complexType>
+        </xs:element>
+        <xs:element ref="transactions" minOccurs="1" maxOccurs="1"/>
+      </xs:sequence>
+      <xs:attribute name="height" type="xs:unsignedLong" use="required"/>
+      <!-- The hash the producer derived for this block. An importer compares it
+           against the hash the block's own contents derive; it is never trusted. -->
+      <xs:attribute name="hash" type="Hash32" use="required"/>
+    </xs:complexType>
+  </xs:element>
+
+  <xs:element name="transactions">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element ref="transaction" minOccurs="0" maxOccurs="unbounded"/>
+      </xs:sequence>
+      <!-- Written only in a projection, where it records how many of the block's
+           transactions survived the namespace filter. -->
+      <xs:attribute name="included-count" type="xs:unsignedInt" use="optional"/>
+    </xs:complexType>
+  </xs:element>
+
+  <xs:element name="transaction">
+    <xs:complexType>
+      <xs:sequence>
+        <!-- 32 raw bytes, base64 encoded. -->
+        <xs:element name="signer" type="xs:base64Binary" minOccurs="1" maxOccurs="1"/>
+        <!-- Opaque application bytes, base64 encoded. Prunella never parses these. -->
+        <xs:element name="payload" type="xs:base64Binary" minOccurs="1" maxOccurs="1"/>
+        <!-- 64 raw bytes, base64 encoded. -->
+        <xs:element name="signature" type="xs:base64Binary" minOccurs="1" maxOccurs="1"/>
+      </xs:sequence>
+      <!-- Zero-based position within the block. Transaction order is part of what the
+           tx-root commits to, so it must be preserved exactly. -->
+      <xs:attribute name="index" type="xs:unsignedInt" use="required"/>
+      <xs:attribute name="id" type="Hash32" use="required"/>
+      <xs:attribute name="namespace" type="Label" use="required"/>
+      <!-- Opaque to Prunella: stored and hashed, never used to decide anything. -->
+      <xs:attribute name="schema-version" type="xs:unsignedInt" use="required"/>
+      <xs:attribute name="nonce" type="xs:unsignedLong" use="required"/>
+    </xs:complexType>
+  </xs:element>
+
+</xs:schema>
