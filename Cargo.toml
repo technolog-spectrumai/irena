@@ -21,6 +21,7 @@ bornite-eval = { path = "crates/bornite-eval" }
 bornite-xml = { path = "crates/bornite-xml" }
 irena-core = { path = "crates/irena-core" }
 irena-ledger = { path = "crates/irena-ledger" }
+irena-decision = { path = "crates/irena-decision" }
 irena-vote = { path = "crates/irena-vote" }
 irena-meeting = { path = "crates/irena-meeting" }
 irena-resolution = { path = "crates/irena-resolution" }

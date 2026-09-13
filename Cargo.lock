@@ -488,6 +488,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "irena-decision"
+version = "0.1.0"
+dependencies = [
+ "bornite-core",
+ "bornite-rules",
+ "bornite-xml",
+ "borsh",
+ "irena-core",
+ "irena-ledger",
+ "prunella-canonical",
+ "prunella-core",
+ "prunella-crypto",
+ "prunella-store",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+]
+
+[[package]]
 name = "irena-ledger"
 version = "0.1.0"
 dependencies = [
