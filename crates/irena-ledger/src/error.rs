@@ -10,29 +10,71 @@ pub enum LedgerError {
     /// The record document is not a valid Irena record.
     #[error("invalid irena record: {0}")]
     Record(#[from] irena_core::IrenaError),
-    /// The record would amend something other than what is in force.
+    /// No company has been founded on this chain by the height asked about.
+    #[error("no company is founded on this chain by height {at}")]
+    NoCompany {
+        /// The height asked about.
+        at: BlockHeight,
+    },
+    /// The first Irena record on the chain is not a genesis.
+    #[error(
+        "the first irena record, transaction {tx_id} at height {height}, is a {kind} record; a company must be founded before it is amended"
+    )]
+    NoGenesisFirst {
+        /// Where it is.
+        height: BlockHeight,
+        /// Which transaction.
+        tx_id: TxId,
+        /// What it is.
+        kind: RecordKindV1,
+    },
+    /// A second genesis appeared. One company per chain.
+    #[error(
+        "transaction {tx_id} at height {height} is a second company genesis; this chain was founded by {first} and holds one company"
+    )]
+    SecondGenesis {
+        /// The founding transaction.
+        first: TxId,
+        /// Where the second is.
+        height: BlockHeight,
+        /// The second.
+        tx_id: TxId,
+    },
+    /// A record names a company other than the one founded on this chain.
+    #[error(
+        "transaction {tx_id} at height {height} is a record for company {found}, but this chain holds {expected}"
+    )]
+    ForeignCompany {
+        /// The chain's company.
+        expected: String,
+        /// The record's.
+        found: String,
+        /// Where it is.
+        height: BlockHeight,
+        /// Which transaction.
+        tx_id: TxId,
+    },
+    /// The record would amend something other than what currently provides the part.
     ///
     /// Amending a version you have not seen is how two editors clobber each other, so
-    /// it is refused: `supersedes` must name exactly the record currently in force for
-    /// the (company, kind), or be absent when there is none.
+    /// it is refused: `supersedes` must name exactly the transaction currently
+    /// providing the part — the genesis, or the last amendment of that part.
     #[error(
-        "stale amendment for company {company}: {kind} in force is {expected}, but the record supersedes {found}"
+        "stale amendment: {kind} is currently provided by {expected}, but the record supersedes {found}"
     )]
     StaleAmendment {
-        /// The company.
-        company: String,
         /// The record kind.
         kind: RecordKindV1,
-        /// What is in force, rendered (`none` when nothing is).
+        /// What provides the part, rendered.
         expected: String,
         /// What the record claims to supersede, rendered.
         found: String,
     },
-    /// The ledger holds records whose amendment chain does not link.
+    /// The ledger holds a record whose amendment link does not hold.
     ///
     /// This can only happen if a record was written around this crate. It is reported,
-    /// never repaired, and until it is resolved nothing is in force for the (company,
-    /// kind).
+    /// never repaired, and until it is resolved the company cannot be reconstructed at
+    /// or past that height.
     #[error(
         "broken amendment chain for company {company} ({kind}) at height {height}, transaction {tx_id}: expected supersedes {expected}, found {found}"
     )]
@@ -50,14 +92,14 @@ pub enum LedgerError {
         /// What it claims, rendered.
         found: String,
     },
-    /// A transaction in an Irena namespace does not hold a readable record of that
-    /// kind.
+    /// A transaction in an Irena namespace does not hold a readable record that
+    /// belongs there.
     ///
     /// Prunella accepts any payload in any namespace, so this can only come from
     /// something writing around this crate. It is reported, not skipped: a reader that
     /// stepped over it could not know whether it was meant to be an amendment.
     #[error(
-        "transaction {tx_id} at height {height} is in the {namespace} namespace but does not hold a {kind} record: {detail}"
+        "transaction {tx_id} at height {height} is in the {namespace} namespace but does not hold a record that belongs there: {detail}"
     )]
     UnreadableRecord {
         /// Where it is.
@@ -66,22 +108,10 @@ pub enum LedgerError {
         tx_id: TxId,
         /// The namespace it was published under.
         namespace: String,
-        /// The kind that namespace carries.
-        kind: RecordKindV1,
         /// What was wrong.
         detail: String,
     },
-    /// Nothing is in force for the company.
-    #[error("no {kind} record is in force for company {company} at height {at}")]
-    NothingInForce {
-        /// The company.
-        company: String,
-        /// The record kind.
-        kind: RecordKindV1,
-        /// The height asked about.
-        at: BlockHeight,
-    },
-    /// A structural problem with the chain itself.
+    /// The chain is not in a state this layer can work with.
     #[error("malformed chain: {detail}")]
     Malformed {
         /// What was wrong.
