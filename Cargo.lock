@@ -114,6 +114,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "bornite-cli"
+version = "0.1.0"
+dependencies = [
+ "bornite-core",
+ "bornite-eval",
+ "bornite-rules",
+ "bornite-xml",
+ "clap",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "bornite-core"
 version = "0.1.0"
 dependencies = [
