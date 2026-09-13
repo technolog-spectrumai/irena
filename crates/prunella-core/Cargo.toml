@@ -1,0 +1,17 @@
+[package]
+name = "prunella-core"
+description = "Core ledger types and hash derivations for Prunella"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+
+[dependencies]
+prunella-canonical.workspace = true
+borsh.workspace = true
+hex.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true
