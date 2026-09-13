@@ -1,0 +1,30 @@
+[package]
+name = "irena-meeting"
+description = "Shareholder meetings for Irena: an agenda of informational and vote items, convened and finalised on the ledger, every vote frozen on its own"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+
+[dependencies]
+bornite-xml.workspace = true
+borsh.workspace = true
+irena-core.workspace = true
+irena-ledger.workspace = true
+irena-vote.workspace = true
+prunella-canonical.workspace = true
+prunella-core.workspace = true
+prunella-crypto.workspace = true
+prunella-store.workspace = true
+quick-xml.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+bornite-core.workspace = true
+prunella-xml.workspace = true
+serde_json.workspace = true
+tempfile.workspace = true
+
+[lints]
+workspace = true

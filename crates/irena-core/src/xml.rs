@@ -326,23 +326,9 @@ pub fn compose_record(
     if let Some(supersedes) = supersedes {
         xml.push_str(&format!(" supersedes=\"{supersedes}\""));
     }
-    xml.push_str(">\n  <notarisation");
-    xml.push_str(&format!(" id=\"{}\"", notarisation.id.as_str()));
-    xml.push_str(&format!(
-        " name=\"{}\"",
-        escape_attribute(&notarisation.name)
-    ));
-    if let Some(address) = &notarisation.address {
-        xml.push_str(&format!(" address=\"{}\"", escape_attribute(address)));
-    }
-    xml.push_str(&format!(" at=\"{}\"", notarisation.at.as_str()));
-    if let Some(statement) = &notarisation.statement {
-        xml.push_str(&format!(" statement=\"{}\"", escape_attribute(statement)));
-    }
-    if let Some(digest) = notarisation.source_digest {
-        xml.push_str(&format!(" source-digest=\"{digest}\""));
-    }
-    xml.push_str("/>\n  ");
+    xml.push_str(">\n  ");
+    xml.push_str(&write_notarisation(notarisation));
+    xml.push_str("\n  ");
     xml.push_str(element);
     xml.push_str("\n</irena-record>");
 
@@ -364,7 +350,39 @@ pub fn compose_record(
 // Element parsers.
 // ---------------------------------------------------------------------------------
 
-fn read_notarisation(
+/// Renders a notarisation as one empty `<notarisation …/>` element.
+///
+/// Public so another Irena document format can carry the same element, written and
+/// read by exactly this code.
+#[must_use]
+pub fn write_notarisation(notarisation: &NotarisationV1) -> String {
+    let mut xml = String::from("<notarisation");
+    xml.push_str(&format!(" id=\"{}\"", notarisation.id.as_str()));
+    xml.push_str(&format!(
+        " name=\"{}\"",
+        escape_attribute(&notarisation.name)
+    ));
+    if let Some(address) = &notarisation.address {
+        xml.push_str(&format!(" address=\"{}\"", escape_attribute(address)));
+    }
+    xml.push_str(&format!(" at=\"{}\"", notarisation.at.as_str()));
+    if let Some(statement) = &notarisation.statement {
+        xml.push_str(&format!(" statement=\"{}\"", escape_attribute(statement)));
+    }
+    if let Some(digest) = notarisation.source_digest {
+        xml.push_str(&format!(" source-digest=\"{digest}\""));
+    }
+    xml.push_str("/>");
+    xml
+}
+
+/// Parses a `<notarisation>` element's attributes; the caller consumes its end tag if
+/// it has one.
+///
+/// # Errors
+///
+/// Returns [`IrenaError`] with every attribute problem collected.
+pub fn read_notarisation(
     reader: &XmlReader<'_>,
     child: &BytesStart<'_>,
 ) -> Result<NotarisationV1, IrenaError> {
@@ -806,7 +824,9 @@ fn strip_declaration(text: &str) -> &str {
     trimmed
 }
 
-fn escape_attribute(text: &str) -> String {
+/// Escapes text for use inside a double-quoted attribute value.
+#[must_use]
+pub fn escape_attribute(text: &str) -> String {
     text.replace('&', "&amp;")
         .replace('"', "&quot;")
         .replace('<', "&lt;")
