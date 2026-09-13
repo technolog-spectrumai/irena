@@ -1,0 +1,15 @@
+[package]
+name = "prunella-canonical"
+description = "Deterministic canonical serialization and domain-separated hashing for Prunella"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+
+[dependencies]
+blake3.workspace = true
+borsh.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true
