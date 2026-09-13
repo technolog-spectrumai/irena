@@ -14,7 +14,7 @@ which know nothing about the third:
 |---|---|---|
 | **Prunella** | An immutable, organisation-agnostic ledger | What any payload means |
 | **Bornite** | A deterministic voting engine | Who is voting, or why |
-| **Irena** | The company: genesis, share register, voting rules, notarised on the ledger | Whether the register names the real owners |
+| **Irena** | The company — genesis, share register, voting rules — notarised on the ledger, and its votes: frozen, signed, counted, recorded, verifiable | Whether the register names the real owners |
 
 Irena imports both engines directly. Neither imports Irena; no Prunella crate mentions
 Bornite and no Bornite crate mentions Prunella; a test greps every engine source file
@@ -44,7 +44,7 @@ deployment democratically. So:
 
 | Document | Covers |
 |---|---|
-| [IRENA_V1.md](IRENA_V1.md) | The company model, the record envelope, notarisation, amendment and resolution, the TODO list |
+| [IRENA_V1.md](IRENA_V1.md) | The company model, the record envelope, notarisation, amendment and resolution, the vote lifecycle and its verification, the TODO list |
 | [BORNITE_V1.md](BORNITE_V1.md) | **Normative.** The frozen voting types, rules grammar and evaluation algorithm |
 | [PROTOCOL_V1.md](PROTOCOL_V1.md) | **Normative.** The frozen ledger wire protocol |
 | [docs/irena-cli.md](docs/irena-cli.md) | The `irena` binary |
@@ -65,6 +65,18 @@ $ irena --chain acme.chain publish-rules --company acme --file rules.xml \
 $ irena --chain acme.chain show --company acme          # the company at the head
 $ irena --chain acme.chain shares --company acme --at 1 # the register as it was then
 $ prunella --chain acme.chain export --out acme.xml      # every record readable in its block
+
+$ irena --chain acme.chain vote new --company acme --subject "Approve the accounts" \
+      --proposal-digest d0d0… --state v.state
+$ irena --chain acme.chain vote freeze --state v.state    # the company as it is now, fixed
+$ irena --chain acme.chain vote open --state v.state
+$ irena --chain acme.chain vote ballot --state v.state --voter alice --choice yes \
+      --signing-key alice.key --out alice.ballot            # alice signs, on her machine
+$ irena --chain acme.chain vote cast --state v.state --ballot alice.ballot
+$ irena --chain acme.chain vote close --state v.state
+$ irena --chain acme.chain vote evaluate --state v.state  # Bornite counts
+$ irena --chain acme.chain vote finalize --state v.state --signing-key k.key
+$ irena --chain acme.chain vote verify --tx f9e5…         # from the chain alone
 $ bornite evaluate --rules rules.xml --vote vote.xml     # the same rules, no ledger at all
 ```
 
@@ -72,9 +84,10 @@ $ bornite evaluate --rules rules.xml --vote vote.xml     # the same rules, no le
 |---|---|
 | [`irena-core`](crates/irena-core) | The company model — genesis, flat share register with signing keys, notarisation, record envelope — and its strict XML |
 | [`irena-ledger`](crates/irena-ledger) | Records on a Prunella chain: publish, amendment chains, what the company is at any height |
+| [`irena-vote`](crates/irena-vote) | Electorate derivation, the vote lifecycle, signed ballots, the final record and its verification from the chain alone |
 | [`irena-cli`](crates/irena-cli) | The `irena` binary |
 
-Not yet built, and listed as such in [IRENA_V1.md §7](IRENA_V1.md): share classes (the
+Not yet built, and listed as such in [IRENA_V1.md §8](IRENA_V1.md): share classes (the
 company has flat shares), shareholder meetings, board meetings and decisions.
 
 ---

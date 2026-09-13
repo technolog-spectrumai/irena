@@ -21,8 +21,7 @@ greps every engine source file for the words `irena`, `bornite` and `prunella` t
 it so. There is no bridge crate: a layer that only passes things through is a layer
 that should not exist.
 
-This document covers **stage A**: the company on the chain. Stage B, connecting it to
-voting, is documented in its own section once built.
+Sections 1–6 are the company on the chain; §7 onwards is a vote on it.
 
 ## 1. What a company is, to Irena
 
@@ -63,7 +62,7 @@ ledger by its `company` label (§2), and this is what the label stands for.
 ```
 
 **Every share is one vote.** A holder is a holding, and one element carries both.
-There are no share classes in V1 (§7).
+There are no share classes in V1 (§8).
 
 | Attribute | | |
 |---|---|---|
@@ -200,6 +199,7 @@ who both were and imposes no policy on either.
 |---|---|
 | `irena-core` | `CompanyIdV1`, `CompanyGenesisV1`, `IdentityV1`, `ShareStructureV1`, `HolderV1`, `NotarisationV1`, `NotaryIdV1`, `NotaryTimeV1`, `IrenaRecordV1`, `RecordKindV1`, `RecordBodyV1`; `read_record`, `compose_record`, `read_company_genesis_document`, `read_share_structure_document`, `read_voting_rules_document`; `IrenaError`, `IssueV1` |
 | `irena-ledger` | `genesis_with_company`, `publish`, `history`, `in_force`, `genesis_in_force`, `shares_in_force`, `rules_in_force`, `company_at`; `RecordRefV1`, `InForceV1<T>`, `CompanyStateV1`; `LedgerError` |
+| `irena-vote` | `derive_electorate`, `ElectorateDerivationV1`; `VoteV1` (`draft`, `freeze`, `open`, `cast`, `close`, `evaluate`, `finalize`, `final_record`), `VoteStatusV1`, `VoteSnapshotV1`, `VoteIdV1`; `SignedBallotV1`, `BallotBodyV1`, `BallotChoiceV1`, `ballot_commitment`, `COMMITMENT_TAGS`; `FinalVoteRecordV1`, `EvaluationSummaryV1`; `verify`, `VerificationV1`, `CheckV1`, `CheckNameV1`; `VoteError`, `BallotRejectionV1` |
 | `irena-cli` | The `irena` binary — [docs/irena-cli.md](docs/irena-cli.md) |
 
 Every reader is strict (unknown elements and attributes refused, never skipped) and
@@ -223,7 +223,137 @@ Two additive changes to Prunella, neither touching [PROTOCOL_V1.md](PROTOCOL_V1.
 
 Bornite is untouched.
 
-## 7. Not in V1 — TODO
+## 7. A vote
+
+`irena-vote` owns the idea of a vote as a **process**. Bornite still only counts,
+Prunella still only stores, and neither learns anything from it.
+
+```
+Draft ──freeze──▶ Frozen ──open──▶ Open ──close──▶ Closed ──evaluate──▶ Evaluated ──finalize──▶ Finalized
+```
+
+It is a runtime state machine: every operation checks the status first and refuses
+with `InvalidTransition { from, to }` naming both, so an invalid transition is
+something a caller reports, not something the type system hides. The whole state is
+canonical Borsh, so a vote can be written to a file between steps (`irena vote
+--state`) and read back on another day or another machine to exactly the same vote.
+
+### 7.1 Electorate derivation — where Irena earns its place
+
+```
+weight(holder) = shares(holder)          flat shares: one share, one vote
+```
+
+`derive_electorate` turns the share register into a Bornite `ElectorateV1`: holder id
+becomes voter id with no translation, shares become weight, nobody is excluded (the
+register has no notion of exclusion). Every holder has ≥ 1 share by validation, so
+every holder is a voter; a holder **without a signing key** is still a voter — they own
+the shares and count towards quorum — but can never cast a valid ballot, and the
+derivation reports who can. Bornite receives ids and integers and never learns that a
+share exists. When share classes arrive (§8) this one line changes and nothing else.
+
+### 7.2 Freeze
+
+`freeze(store, at)` resolves the company at exactly height `at` (§1: genesis, register,
+rules, all three or nothing), derives the electorate, and records everything in an
+immutable `VoteSnapshotV1`:
+
+| Field | |
+|---|---|
+| `company`, `subject`, `proposal_digest` | What is being voted on. The proposal is identified by its digest and never interpreted |
+| `height` | Where the company was resolved |
+| `genesis_tx_id`, `shares_tx_id`, `rules_tx_id` | The records in force there, **pinned by transaction id**. A Prunella transaction id commits to the payload bytes, so pinning the id pins the exact register and rules |
+| `electorate` | Every voter in id order: id, weight, excluded (always false), registered key |
+
+**The vote id is the digest of the snapshot** (`hash(IRENA/vote/v1/id,
+canonical(snapshot))`). Two votes frozen from identical inputs are the same vote; a
+different proposal, height or register is a different one. Later amendments to the
+register or the rules are irrelevant to this vote for ever after: evaluation and
+verification both resolve at the snapshot height, never at the head.
+
+### 7.3 Ballots
+
+A ballot body is `{ vote_id, voter, choice ∈ {yes, no, abstain} }`, canonical Borsh. A
+holder signs `hash(IRENA/vote/v1/ballot-sign, canonical(body))` with the key in the
+frozen register. `cast` accepts a ballot only while **Open**, and checks in this order,
+reporting the first failure as a typed `BallotRejectionV1`:
+
+1. right vote (`vote_id` matches);
+2. well-formed voter id;
+3. voter is in the frozen electorate;
+4. voter is not excluded;
+5. voter has a registered key in the frozen register;
+6. the signature verifies against that key — Prunella's Ed25519 verifier, **never
+   Bornite**, which never sees a signature;
+7. the voter has not already cast a ballot. The first ballot stands.
+
+Ballots live in a map keyed by voter, so duplicates are impossible and no order ever
+depends on arrival. A ballot for one vote cannot be replayed in another: the vote id
+is inside what was signed.
+
+### 7.4 Evaluate
+
+`evaluate(store)` re-reads the rules record the snapshot pinned — at the snapshot
+height, and checks it is that exact transaction — rebuilds the Bornite electorate
+from the frozen entries, converts the accepted ballots, and calls
+`bornite_eval::evaluate`. Bornite's full `VoteEvaluationV1` is returned for reporting;
+what the vote keeps, and what the final record carries, is `EvaluationSummaryV1`:
+every number in the result (outcome, reason code, electorate before and after
+exclusions, participation, the three-way tally, the quorum as applied, the threshold
+as applied) in a canonical form. The rules are not echoed because the snapshot pins
+them on the chain.
+
+### 7.5 The final record
+
+`finalize(store, key, ts)` reruns the evaluation, requires it to match what was stored,
+and appends `FinalVoteRecordV1` — canonical Borsh under namespace `irena.vote.v1` — in
+its own block:
+
+| Field | |
+|---|---|
+| `version` | 1 |
+| `vote_id` | Stored as well as derivable, so tampering with either it or the snapshot is caught as a disagreement between the two |
+| `snapshot` | §7.2 |
+| `ballot_commitment` | The Merkle root over the accepted ballots' digests, in voter order, built with `prunella_core::merkle::root` under Irena's own `TreeTags` (`IRENA/vote/v1/{leaf,node,empty}`) — one implementation, a separate domain, and inclusion proofs for free, so a holder can prove their ballot was counted |
+| `ballots` | Every accepted signed ballot, in strict voter order |
+| `evaluation` | §7.4 |
+
+The ballots are *in* the record. That is what makes it verifiable from the chain
+alone, and it is acceptable only because ballots here are not secret.
+
+### 7.6 Independent verification
+
+`verify(store, tx_id)` re-establishes a record from nothing but the chain. Every
+check is named, every finding reported; a check that could not run because an earlier
+one failed is absent, not counted as passed:
+
+| Check | Holds when |
+|---|---|
+| `Decodes` | The transaction is in `irena.vote.v1` and its payload decodes as a V1 record that re-encodes to exactly the stored bytes |
+| `VoteIdDerives` | The stored vote id is the digest of the stored snapshot |
+| `SnapshotPrecedesRecord` | The snapshot height is below the record's own height |
+| `RecordsResolve` | The genesis, register and rules in force at the snapshot height are exactly the pinned transactions |
+| `ElectorateDerives` | The electorate re-derived from the pinned register equals the frozen one |
+| `BallotsVerify` | Every ballot is for this vote, from a frozen voter with a key, with a signature that verifies against it |
+| `BallotsOrdered` | Strict voter order, no duplicates |
+| `CommitmentDerives` | The commitment is the root over the ballots as stored |
+| `ResultReproduces` | Bornite, rerun on the pinned rules, the frozen electorate and the stored ballots, gives the stored summary |
+
+A record claiming a register that was never in force at its own declared height fails
+`RecordsResolve` however well-formed it is. A corrupted ballot signature fails
+`BallotsVerify` *and* `CommitmentDerives`, because the ballot's digest moved with it;
+both are reported.
+
+### 7.7 What a verified record does and does not say
+
+It says: at height `h` the chain named these holders with these shares and these keys
+and these rules; these ballots were signed with those keys; counted under those rules
+by Bornite, this is the result; and none of that has changed since. It does not say
+that the register named the real owners, that the proposal document says what anyone
+believes, or that a key was used by the person it was registered to. Those are the
+notary's (§3) and the company's business, and the boundary is drawn on purpose.
+
+## 8. Not in V1 — TODO
 
 Recorded here so they are decisions, not omissions:
 
