@@ -21,35 +21,47 @@ greps every engine source file for the words `irena`, `bornite` and `prunella` t
 it so. There is no bridge crate: a layer that only passes things through is a layer
 that should not exist.
 
-Sections 1–6 are the company on the chain; §7 onwards is a vote on it.
+Sections 1–6 are the company on the chain; §7 is a vote on it; §8 is what comes next.
 
 ## 1. What a company is, to Irena
 
-Three records, each on its own amendment chain because they change at different rates:
+**One company per chain**, founded by one record and amended one part at a time:
 
-| Record | Element | Namespace on the ledger | Changes |
-|---|---|---|---|
-| Founding | `<company-genesis>` | `irena.company.v1` | almost never |
-| Share register | `<share-structure>` | `irena.shares.v1` | often |
-| Voting rules | `<voting-rules>` | `irena.rules.v1` | rarely |
+| Part | Element | Set by | Amended by a record of kind | Namespace |
+|---|---|---|---|---|
+| Identity | `<identity>` | the genesis | `identity` | `irena.company.v1` |
+| Share register | `<share-structure>` | the genesis | `share-structure` | `irena.shares.v1` |
+| Voting rules | `<voting-rules>` (Bornite's, nested in `<governance>`) | the genesis | `voting-rules` | `irena.rules.v1` |
 
-**The company at height `h`** is the record of each kind in force at `h`, resolved
-together (`irena_ledger::company_at`). A company with any of the three missing is not
-yet a company that can vote, and Irena says which is missing rather than returning a
-partial answer.
+**The company at height `h`** is its genesis plus every amendment up to `h`, applied
+in chain order (`irena_ledger::reconstruct`, §4). Every part is always present — the
+genesis carries all three — so there is never a partial company, and each part knows
+which transaction currently provides it.
 
-### 1.1 `<company-genesis>`
+### 1.1 `<company-genesis>` — the whole company
 
 ```xml
 <company-genesis>
   <identity name="Acme Industries Ltd" jurisdiction="gb" registered-number="01234567"/>
   <incorporation document-digest="9a3f…"/>
+  <share-structure>
+    <holder id="alice" key="4e9c…" name="Alice Smith" shares="500"/>
+    …
+  </share-structure>
+  <governance>
+    <voting-rules version="1.0">…</voting-rules>
+  </governance>
 </company-genesis>
 ```
 
-Free text throughout, except the digest. `name` is required and non-empty. Irena
-stores and reproduces it and compares none of it: a company is identified on the
-ledger by its `company` label (§2), and this is what the label stands for.
+One document founds a company. `<identity>` (required; `name` non-empty, the rest
+free text) says who it is; `<incorporation>` (optional) names the document that
+created it by digest; `<share-structure>` (required, §1.2) is the initial register;
+`<governance>` (required) holds the active governance configuration, which in V1 is
+exactly one Bornite `<voting-rules>` element (§1.3). Irena stores and reproduces the
+identity and compares none of it: on the ledger a company is its `company` label (§2),
+and this is what the label stands for. An `identity` amendment carries a standalone
+`<identity …/>` element with the same attributes.
 
 ### 1.2 `<share-structure>` — flat shares
 
@@ -107,7 +119,7 @@ fleet of drones deciding a peaceful deployment democratically.
 Every record on the ledger is one `<irena-record>` element:
 
 ```xml
-<irena-record version="1.0" kind="share-structure" company="acme" supersedes="8f3a…">
+<irena-record version="1.0" kind="share-structure" company="acme" supersedes="5d02…">
   <notarisation id="notary-07" name="Jane Roe" address="12 High Street, London"
                 at="2026-03-01T09:30:00Z" statement="Filed at Companies House"
                 source-digest="c41d…"/>
@@ -118,9 +130,9 @@ Every record on the ledger is one `<irena-record>` element:
 | Attribute | | |
 |---|---|---|
 | `version` | required | `1.0`. Anything else is refused |
-| `kind` | required | `company-genesis`, `share-structure` or `voting-rules`; must match the element carried |
+| `kind` | required | `company-genesis`, `identity`, `share-structure` or `voting-rules`; must match the element carried |
 | `company` | required | An opaque label: 1–64 bytes, `a-z0-9` first, then `a-z0-9._-`. Compared for equality, never interpreted |
-| `supersedes` | optional | The transaction id of the record of this kind currently in force for the company. Absent on the first (§4) |
+| `supersedes` | optional | The transaction id of the record currently providing the part this one amends: the genesis, or the last amendment of that part. Absent on the genesis (§4) |
 
 The body element is embedded **byte for byte** (`irena_core::compose_record`): Irena
 does not re-serialise a document a notary signed off on. A leading XML declaration and
@@ -163,29 +175,33 @@ notary `notary-07` on the date they gave, citing a document with a given digest.
 cannot show that the document says what anyone believes, or that the register reflects
 who really owns the company.
 
-## 4. Amendment and resolution
+## 4. Amendment and reconstruction
 
-* **Each (company, kind) has its own amendment chain.** Amending the register does not
-  touch the rules; the founding record can be amended (a name change) without either.
-* **A record must supersede the record in force.** `supersedes` must name exactly the
-  transaction id of the record of that kind currently in force for the company, or be
-  absent when there is none. Anything else is a **stale amendment**, refused before the
-  ledger is touched. Amending a version you have not seen is how two editors clobber
-  each other.
-* **Resolution walks the chain in ledger order.** `history(company, kind, at)` visits
-  every block from genesis to `at`, every transaction in the kind's namespace whose
-  record names the company, and checks link by link that each supersedes the one
-  before. The record in force is the last one. Block order is total and transaction
-  order within a block is fixed, so two instances holding the same chain resolve the
-  same record at every height, and a past height resolves to what was in force then
-  regardless of anything appended since.
+Nothing is ever edited. The company is **reconstructed** from the chain:
+
+* **The first Irena record founds the company.** `reconstruct(store, at)` walks every
+  block from genesis to `at`. The first transaction in an Irena namespace must be a
+  `company-genesis` (normally in block 0, where `irena init` puts it; a company may
+  also be founded later on an existing chain). It sets all three parts.
+* **Every later record amends one part.** An `identity`, `share-structure` or
+  `voting-rules` record replaces that part in full and must name in `supersedes`
+  exactly the transaction currently providing it — the genesis, or the last
+  amendment of the same part. Amending the register never touches the rules.
+* **A stale amendment is refused before the ledger is touched.** `publish` reconstructs
+  the company at the head and checks `supersedes` against it; naming a version that no
+  longer provides the part is how two editors clobber each other.
+* **Determinism.** Block order is total and transaction order within a block is fixed,
+  so two instances holding the same chain reconstruct the same company at every height,
+  and a past height never changes because of anything appended since.
+* **One company per chain.** A second `company-genesis`, or a record naming another
+  company, is an error (`SecondGenesis`, `ForeignCompany`), as is an amendment before
+  any genesis (`NoGenesisFirst`).
 * **A break is reported, never repaired.** A record in an Irena namespace that does not
-  link, does not parse, or is of the wrong kind for its namespace can only have been
-  written around Irena, through Prunella directly. It is an error naming the exact
-  height and transaction (`BrokenAmendmentChain`, `UnreadableRecord`), and until it is
-  resolved nothing is in force for that (company, kind). Other kinds, other companies
-  and heights before the break are unaffected. `irena verify-structure` walks all
-  three chains and reports.
+  link (`BrokenAmendmentChain`), does not parse or is of the wrong kind for its
+  namespace (`UnreadableRecord`) can only have been written around Irena, through
+  Prunella directly. Reconstruction stops there with the exact height and transaction;
+  heights before the break still reconstruct; nothing can be published on a broken
+  chain. `irena verify-structure` reconstructs and reports.
 * **Transactions in other namespaces are not Irena's business.** A Prunella chain can
   carry anything else alongside a company; Irena reads only its three namespaces.
 
@@ -197,8 +213,8 @@ who both were and imposes no policy on either.
 
 | Crate | |
 |---|---|
-| `irena-core` | `CompanyIdV1`, `CompanyGenesisV1`, `IdentityV1`, `ShareStructureV1`, `HolderV1`, `NotarisationV1`, `NotaryIdV1`, `NotaryTimeV1`, `IrenaRecordV1`, `RecordKindV1`, `RecordBodyV1`; `read_record`, `compose_record`, `read_company_genesis_document`, `read_share_structure_document`, `read_voting_rules_document`; `IrenaError`, `IssueV1` |
-| `irena-ledger` | `genesis_with_company`, `publish`, `history`, `in_force`, `genesis_in_force`, `shares_in_force`, `rules_in_force`, `company_at`; `RecordRefV1`, `InForceV1<T>`, `CompanyStateV1`; `LedgerError` |
+| `irena-core` | `CompanyIdV1`, `CompanyGenesisV1`, `IdentityV1`, `ShareStructureV1`, `HolderV1`, `NotarisationV1`, `NotaryIdV1`, `NotaryTimeV1`, `IrenaRecordV1`, `RecordKindV1`, `RecordBodyV1`; `read_record`, `compose_record`, `read_company_genesis_document`, `read_identity_document`, `read_share_structure_document`, `read_voting_rules_document`; `IrenaError`, `IssueV1` |
+| `irena-ledger` | `genesis_with_company`, `publish`, `reconstruct`, `company_now`, `history`; `CompanyStateV1` (`provider_of`, `history_of`), `InForceV1<T>`, `RecordRefV1`; `LedgerError` |
 | `irena-vote` | `derive_electorate`, `ElectorateDerivationV1`; `VoteV1` (`draft`, `freeze`, `open`, `cast`, `close`, `evaluate`, `finalize`, `final_record`), `VoteStatusV1`, `VoteSnapshotV1`, `VoteIdV1`; `SignedBallotV1`, `BallotBodyV1`, `BallotChoiceV1`, `ballot_commitment`, `COMMITMENT_TAGS`; `FinalVoteRecordV1`, `EvaluationSummaryV1`; `verify`, `VerificationV1`, `CheckV1`, `CheckNameV1`; `VoteError`, `BallotRejectionV1` |
 | `irena-cli` | The `irena` binary — [docs/irena-cli.md](docs/irena-cli.md) |
 
@@ -254,15 +270,16 @@ share exists. When share classes arrive (§8) this one line changes and nothing 
 
 ### 7.2 Freeze
 
-`freeze(store, at)` resolves the company at exactly height `at` (§1: genesis, register,
-rules, all three or nothing), derives the electorate, and records everything in an
-immutable `VoteSnapshotV1`:
+`freeze(store, at)` reconstructs the company at exactly height `at` (§4), derives the
+electorate, and records everything in an immutable `VoteSnapshotV1`. The vote learns
+which company it is about from the chain — one company per chain — so a draft names
+only a subject and a proposal:
 
 | Field | |
 |---|---|
 | `company`, `subject`, `proposal_digest` | What is being voted on. The proposal is identified by its digest and never interpreted |
 | `height` | Where the company was resolved |
-| `genesis_tx_id`, `shares_tx_id`, `rules_tx_id` | The records in force there, **pinned by transaction id**. A Prunella transaction id commits to the payload bytes, so pinning the id pins the exact register and rules |
+| `genesis_tx_id`, `shares_tx_id`, `rules_tx_id` | The founding transaction and the transactions providing the register and the rules there, **pinned by transaction id**. A Prunella transaction id commits to the payload bytes, so pinning the id pins the exact register and rules |
 | `electorate` | Every voter in id order: id, weight, excluded (always false), registered key |
 
 **The vote id is the digest of the snapshot** (`hash(IRENA/vote/v1/id,
@@ -353,15 +370,29 @@ that the register named the real owners, that the proposal document says what an
 believes, or that a key was used by the person it was registered to. Those are the
 notary's (§3) and the company's business, and the boundary is drawn on purpose.
 
-## 8. Not in V1 — TODO
+## 8. Not in V1 — the road ahead
 
-Recorded here so they are decisions, not omissions:
+Recorded here so they are decisions, not omissions. The stages are planned, in this
+order, and none is started:
 
-* **Share classes** with votes-per-share (ordinary, preferred, non-voting). The company
-  this is built for has flat shares. When classes arrive they are a new version of the
-  `<share-structure>` body — the flat body stays readable forever — and the electorate
-  derivation gains one factor in exactly one place.
-* **Shareholder meetings**, votes as meeting business, **board meetings** and **board
-  decisions**: the next stages. Nothing here is shaped around guesses about them.
-* Any policy on who may sign a record transaction, secret ballots, delegation, proxies,
-  networking, consensus, a GUI.
+1. **Shareholder meetings and votes.** A meeting as a ledger record — notice, agenda,
+   a set of motions — each motion a vote of §7 frozen at the meeting's height. The
+   vote lifecycle already exists; the meeting is what groups and schedules it.
+2. **Resolutions and resulting company-state changes.** A passed motion whose subject
+   *is* a company change (a new register, new rules) becomes the amendment, with the
+   final vote record as its authority, so the notary attests to the resolution rather
+   than to the change itself.
+3. **Board membership, meetings and decisions.** A board register as a fourth part of
+   the company, and board decisions as votes under board rules — the same Bornite, a
+   different electorate.
+4. **Identities and authorisation.** Who may sign which record transaction; today any
+   key may, and the notarisation is the only authority. Likely: a signer policy as a
+   company part, checked at reconstruction.
+5. **Placidia coordination and UI.** The Tauri front end and whatever coordinates
+   several instances; nothing in the crates below assumes either.
+
+Also deliberately absent from V1: **share classes** with votes-per-share (the company
+this is built for has flat shares; when classes arrive they are a new version of the
+`<share-structure>` body — the flat body stays readable forever — and the electorate
+derivation gains one factor in exactly one place), secret ballots, delegation,
+proxies, networking, consensus.

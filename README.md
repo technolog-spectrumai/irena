@@ -44,7 +44,7 @@ deployment democratically. So:
 
 | Document | Covers |
 |---|---|
-| [IRENA_V1.md](IRENA_V1.md) | The company model, the record envelope, notarisation, amendment and resolution, the vote lifecycle and its verification, the TODO list |
+| [IRENA_V1.md](IRENA_V1.md) | The company model, the record envelope, notarisation, amendment and reconstruction, the vote lifecycle and its verification, the road ahead |
 | [BORNITE_V1.md](BORNITE_V1.md) | **Normative.** The frozen voting types, rules grammar and evaluation algorithm |
 | [PROTOCOL_V1.md](PROTOCOL_V1.md) | **Normative.** The frozen ledger wire protocol |
 | [docs/irena-cli.md](docs/irena-cli.md) | The `irena` binary |
@@ -54,19 +54,16 @@ deployment democratically. So:
 ```console
 $ prunella keygen --out k.key
 $ irena --chain acme.chain init --network acme-net --company acme \
-      --genesis genesis.xml --signing-key k.key \
+      --genesis company.xml --signing-key k.key \
       --notary-id notary-07 --notary-name "Jane Roe" --notary-at 2026-03-01T09:30:00Z
-$ irena --chain acme.chain publish-shares --company acme --file shares.xml \
-      --signing-key k.key --notary-id notary-07 --notary-name "Jane Roe" \
-      --notary-at 2026-03-01T09:35:00Z
-$ irena --chain acme.chain publish-rules --company acme --file rules.xml \
-      --signing-key k.key --notary-id notary-07 --notary-name "Jane Roe" \
-      --notary-at 2026-03-01T09:40:00Z
-$ irena --chain acme.chain show --company acme          # the company at the head
-$ irena --chain acme.chain shares --company acme --at 1 # the register as it was then
-$ prunella --chain acme.chain export --out acme.xml      # every record readable in its block
+$ irena --chain acme.chain show                     # identity, register, rules at the head
+$ irena --chain acme.chain publish-shares --file shares-v2.xml --signing-key k.key \
+      --supersedes <tx that provides the register> --notary-id notary-07 \
+      --notary-name "Jane Roe" --notary-at 2026-04-01T10:00:00Z
+$ irena --chain acme.chain shares --at 0            # the register as it was founded
+$ prunella --chain acme.chain export --out acme.xml  # every record readable in its block
 
-$ irena --chain acme.chain vote new --company acme --subject "Approve the accounts" \
+$ irena --chain acme.chain vote new --subject "Approve the accounts" \
       --proposal-digest d0d0… --state v.state
 $ irena --chain acme.chain vote freeze --state v.state    # the company as it is now, fixed
 $ irena --chain acme.chain vote open --state v.state
@@ -82,13 +79,49 @@ $ bornite evaluate --rules rules.xml --vote vote.xml     # the same rules, no le
 
 | Crate | Responsibility |
 |---|---|
-| [`irena-core`](crates/irena-core) | The company model — genesis, flat share register with signing keys, notarisation, record envelope — and its strict XML |
-| [`irena-ledger`](crates/irena-ledger) | Records on a Prunella chain: publish, amendment chains, what the company is at any height |
+| [`irena-core`](crates/irena-core) | The company model — a genesis that is the whole company (identity, flat share register with signing keys, nested voting rules), notarisation, the record envelope — and its strict XML |
+| [`irena-ledger`](crates/irena-ledger) | Prunella integration: found, amend, and **reconstruct** the company at any height from the genesis and the amendments in chain order |
 | [`irena-vote`](crates/irena-vote) | Electorate derivation, the vote lifecycle, signed ballots, the final record and its verification from the chain alone |
 | [`irena-cli`](crates/irena-cli) | The `irena` binary |
 
-Not yet built, and listed as such in [IRENA_V1.md §8](IRENA_V1.md): share classes (the
-company has flat shares), shareholder meetings, board meetings and decisions.
+## Decisions
+
+Each choice, what it costs, and where it can go. Recorded so the trade-offs are read
+before they are re-argued.
+
+| Choice | Consequence | Possible upgrade / simplification / integration |
+|---|---|---|
+| **Three layers, no bridge.** Irena imports Prunella and Bornite; neither imports Irena or the other | Company semantics live in one place; a test greps the engines for `irena`/`bornite`/`prunella` | Any other application (a non-profit, a swarm) is another layer beside Irena reusing both engines unchanged |
+| **Rust only, Borsh canonical bytes, BLAKE3, Ed25519 strict** | One representation per value; no floats anywhere (`clippy::float_arithmetic` denied) | A V2 protocol is new types beside V1, never a change to V1 |
+| **Prunella V1 frozen with golden vectors and an independent oracle** | Dependency upgrades cannot move a V1 value silently; Merkle roots were changed *before* the freeze so inclusion proofs are V1 | Consensus attaches at the documented acceptance seam without touching encoding or storage |
+| **Nested XML payloads (transport v2)** | Company records are readable inside exported blocks; the importer cuts raw source bytes so ids match; v1 documents still read | Any application whose payload is one XML element gets the same readability for free |
+| **One Merkle implementation, many domains** (`TreeTags`) | Irena's ballot commitment reuses Prunella's tree and proofs in its own domain | Any future list commitment (meeting minutes, board decisions) is one `TreeTags` constant |
+| **One company per chain; the genesis is the whole company** | No `--company` on any command; a fresh chain is a company from block 0; no partial company ever exists | Several companies would be several chains — or, later, a Placidia-level index over chains |
+| **Reconstruction, not resolution per kind** | The company at height *h* is genesis + amendments applied in order; each part knows which transaction provides it | Deltas (add a holder) instead of full replacements are a new record kind applied by the same walk |
+| **Full-replacement amendments** | Simple to verify and to read; a register change repeats the whole register | A delta kind if registers grow large; the reconstruction walk does not change |
+| **Flat shares: one share, one vote** | `weight = shares` in one function; a keyless holder counts towards quorum but cannot sign | Share classes are a new `<share-structure>` body version and one extra factor in that function |
+| **Signing keys live in the share register** | No key table anywhere else; keys are amended like any company data | Stage 4 identities can add key rotation as an `identity`-like part without touching votes |
+| **Notarisation required on every record** — id, name, optional address, `at` in canonical UTC | Real-world authority enters in one place; `at` is attested metadata and never orders anything | Stage 4 can bind notary ids to keys; a notarisation could carry more attestations without changing the envelope |
+| **Bornite's `<voting-rules>` nested unchanged** | The same rules bytes mean the same rules in a file, a genesis or an amendment; Bornite never sees a company | Board rules (stage 3) are another `<voting-rules>` under another part |
+| **Records pinned by transaction id, never by height or time** | A vote snapshot pins the exact bytes it was decided against; amendments after the freeze cannot reach it | — |
+| **Vote state as a canonical Borsh file; ballots as files** | Every lifecycle step is one command; a holder signs on their own machine | Stage 5 UI drives the same `VoteV1` in memory; stage 1 meetings hold several |
+| **Ballots are not secret and live in the final record** | A record is verifiable from the chain alone, nine named checks | Secret ballots would need a different commitment scheme and are explicitly out of scope |
+| **Final vote record as canonical Borsh, not XML** | Byte-exact re-encoding is one of the verification checks; the export shows it as base64 | An XML rendering for readers is a projection that can be added without changing what is verified |
+| **Strict readers, issues collected and sorted** | Unknown elements refused; a document with three problems is fixed in one round | — |
+| **Breaks reported, never repaired** | Anything written around Irena stops reconstruction at that exact transaction | — |
+
+## Road ahead
+
+Planned, in order, none started — see [IRENA_V1.md §8](IRENA_V1.md):
+
+1. shareholder meetings and votes using Bornite;
+2. resolutions and the company-state changes they cause;
+3. board membership, meetings and decisions;
+4. identities and authorisation;
+5. Placidia coordination and UI.
+
+Also deliberately absent: share classes (the company has flat shares), secret ballots,
+delegation, proxies, networking, consensus.
 
 ---
 

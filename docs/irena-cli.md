@@ -1,20 +1,22 @@
 # Irena CLI
 
-The `irena` binary is a thin front end over `irena-ledger` and `irena-core`. It reads
-files, calls the libraries, and renders what comes back; no validation, resolution or
-composition lives here. `--json` on any command prints the same information as JSON.
+The `irena` binary is a thin front end over `irena-ledger`, `irena-vote` and
+`irena-core`. It reads files, calls the libraries, and renders what comes back; no
+validation, reconstruction or counting lives here. `--json` on any command prints the
+same information as JSON.
 
 The chain file comes from `--chain`, the `IRENA_CHAIN` environment variable, or
-`irena.chain`. An Irena chain is a plain Prunella chain: `prunella verify`,
-`prunella export` and every other Prunella command work on it unchanged.
+`irena.chain`. **One company per chain**, so no command but `init` names the company.
+An Irena chain is a plain Prunella chain: `prunella verify`, `prunella export` and
+every other Prunella command work on it unchanged.
 
 ## Exit codes
 
 | Code | Meaning |
 |---|---|
 | `0` | Success |
-| `1` | A finding: `verify-structure` found a broken chain; `vote evaluate` rejected the motion; `vote verify` found a record that does not hold |
-| `2` | Invalid input or a refused operation (a stale amendment, an invalid body, a bad notary field) |
+| `1` | A finding: `verify-structure` cannot reconstruct the company; `vote evaluate` rejected the motion; `vote verify` found a record that does not hold |
+| `2` | Invalid input or a refused operation (a stale amendment, an invalid body, a bad notary field, no company on the chain) |
 
 ## Notarisation arguments
 
@@ -31,82 +33,78 @@ Every publishing command requires them; a record without a notary is not a recor
 
 ## `init`
 
-Creates a chain whose genesis block carries the company's founding record.
+Creates a chain whose genesis block founds the company. The genesis document is the
+whole company: identity, share register and governance (see IRENA_V1.md §1.1).
 
 ```console
 $ prunella keygen --out k.key
 $ irena --chain acme.chain init --network acme-net --company acme \
-      --genesis genesis.xml --signing-key k.key \
+      --genesis company.xml --signing-key k.key \
       --notary-id notary-07 --notary-name "Jane Roe" \
       --notary-address "12 High Street, London" --notary-at 2026-03-01T09:30:00Z
 created acme.chain
 genesis:        7c1e…
 company:        acme
 name:           Acme Industries Ltd
+holders:        3 (1000 shares)
 genesis record: 5d02…
 ```
 
 `--genesis-timestamp` defaults to 0, so the same founding inputs produce the same
-genesis hash on any machine.
+genesis hash on any machine. A genesis missing its register or its governance is
+refused with every missing part named, and no chain is created.
 
-## `publish-shares`, `publish-rules`, `publish-genesis`
+## `publish-identity`, `publish-shares`, `publish-rules`
 
-Publish a record of one kind in its own block, amending the record of that kind in
-force if there is one.
+Publish an amendment to one part of the company, in its own block. `--supersedes` must
+name the transaction currently providing that part — the genesis for the first
+amendment, then the last amendment of the part; `show` prints it.
 
 ```console
-$ irena publish-shares --company acme --file shares.xml --signing-key k.key \
-      --notary-id notary-07 --notary-name "Jane Roe" --notary-at 2026-03-01T09:35:00Z
+$ irena publish-shares --file shares-v2.xml --signing-key k.key --supersedes 5d02… \
+      --notary-id notary-07 --notary-name "Jane Roe" --notary-at 2026-04-01T10:00:00Z
 published share-structure for acme at height 1 as 9b7a…
-supersedes: none
-notary:     Jane Roe (notary-07) at 2026-03-01T09:35:00Z
+supersedes: 5d02…
+notary:     Jane Roe (notary-07) at 2026-04-01T10:00:00Z
 ```
 
-An amendment must name the record it replaces:
-
-```console
-$ irena publish-shares --company acme --file shares-v2.xml --signing-key k.key \
-      --supersedes 9b7a… --notary-id notary-07 --notary-name "Jane Roe" \
-      --notary-at 2026-04-01T10:00:00Z
-```
-
-Without `--supersedes`, or with the id of a version that is no longer in force, the
-command exits `2` with `stale amendment for company acme: share-structure in force is
-9b7a…, but the record supersedes none`, and nothing is written. `--timestamp` sets the
-block timestamp in milliseconds; it defaults to the clock and is never earlier than
-the parent block's.
+With the id of a version that no longer provides the part, the command exits `2` with
+`stale amendment: share-structure is currently provided by 9b7a…, but the record
+supersedes 5d02…`, and nothing is written. `--timestamp` sets the block timestamp in
+milliseconds; it defaults to the clock and is never earlier than the parent block's.
 
 ## `show`
 
-What the company is at a height — identity, register and rules resolved together.
+The company reconstructed at a height — identity, register and rules, each with the
+record that provides it.
 
 ```console
-$ irena show --company acme --at 2
-company acme at height 2
+$ irena show --at 1
+company acme at height 1 (founded at height 0 by 5d02…)
 name:            Acme Industries Ltd
 jurisdiction:    gb
 registered no.:  01234567
-genesis: 5d02… (height 0, supersedes none)
+identity: 5d02… (height 0, supersedes none)
   notary:     Jane Roe (notary-07), 12 High Street, London at 2026-03-01T09:30:00Z
-shares : 9b7a… (height 1, supersedes none)
-  notary:     Jane Roe (notary-07), 12 High Street, London at 2026-03-01T09:35:00Z
-rules  : e410… (height 2, supersedes none)
-  notary:     Jane Roe (notary-07), 12 High Street, London at 2026-03-01T09:40:00Z
+shares  : 9b7a… (height 1, supersedes 5d02…)
+  notary:     Jane Roe (notary-07) at 2026-04-01T10:00:00Z
+rules   : 5d02… (height 0, supersedes none)
+  notary:     Jane Roe (notary-07), 12 High Street, London at 2026-03-01T09:30:00Z
+2 record(s) applied
 ```
 
-`--at` defaults to the head. Asking at a height where one of the three is not yet in
-force exits `2` naming the missing kind.
+`--at` defaults to the head. On a chain with no company, exit `2`.
 
 ## `shares`
 
-The register in force, with each holder's voting weight as `irena-vote` derives it
+The register at a height, with each holder's voting weight as `irena-vote` derives it
 (flat shares: one share, one vote) and whether they hold a signing key.
 
 ```console
-$ irena shares --company acme
-share register for acme at height 2
-record: 9b7a… (height 1, supersedes none)
-  notary:     Jane Roe (notary-07), 12 High Street, London at 2026-03-01T09:35:00Z
+$ irena shares --at 0
+share register of acme at height 0
+record: 5d02… (height 0, supersedes none)
+  notary:     Jane Roe (notary-07), 12 High Street, London at 2026-03-01T09:30:00Z
 3 holder(s), 1000 share(s) in issue; one share, one vote; total weight 1000; 2 can sign
   alice                    shares          500  weight          500  can sign
   bob                      shares          300  weight          300  can sign
@@ -115,46 +113,47 @@ record: 9b7a… (height 1, supersedes none)
 
 ## `history`
 
-Every version of one kind of record, in ledger order, with the link each carries.
+Every record that has provided one part, in chain order: the genesis, then each
+amendment of the part.
 
 ```console
-$ irena history --company acme --kind share-structure
-2 share-structure version(s) for acme up to height 3
-height 1      9b7a…  supersedes none
-  notary:     Jane Roe (notary-07), 12 High Street, London at 2026-03-01T09:35:00Z
-height 3      c2d8…  supersedes 9b7a…
-  notary:     Jane Roe (notary-07), 12 High Street, London at 2026-04-01T10:00:00Z
+$ irena history --kind share-structure
+2 record(s) have provided share-structure up to height 1
+height 0      5d02…  company-genesis  supersedes none
+  notary:     Jane Roe (notary-07), 12 High Street, London at 2026-03-01T09:30:00Z
+height 1      9b7a…  share-structure  supersedes 5d02…
+  notary:     Jane Roe (notary-07) at 2026-04-01T10:00:00Z
 ```
 
 ## `verify-structure`
 
-Walks all three amendment chains and reports. Exits `1` if any is broken.
+Reconstructs the company record by record and reports. Exits `1` if it cannot.
 
 ```console
-$ irena verify-structure --company acme
-structure of acme up to height 3
-  company-genesis  1 version(s), chain intact, in force: 5d02…
-  share-structure  2 version(s), chain intact, in force: c2d8…
-  voting-rules     1 version(s), chain intact, in force: e410…
-every amendment chain links; nothing was repaired because nothing needed it
+$ irena verify-structure
+company acme reconstructs at height 1: 2 record(s) applied, every link holds
+  identity         1 version(s), provided by 5d02…
+  share-structure  2 version(s), provided by 9b7a…
+  voting-rules     1 version(s), provided by 5d02…
+nothing was repaired because nothing needed it
 ```
 
-A break can only come from a record written around Irena through Prunella directly. It
-is named exactly — height, transaction, what it should have superseded and what it
-claims — and left alone.
+A break can only come from a record written around Irena through Prunella directly:
+an amendment that does not supersede the current provider, a second genesis, a record
+for another company, an unreadable record. It is named exactly and left alone; heights
+before it still reconstruct (`--at`).
 
 ## `vote`
 
 A vote is carried through its lifecycle as a **state file**: the vote's canonical
 bytes, written after every step, so each step is one invocation and the same file on
 another machine is the same vote. Ballots are files too, so a holder signs on their
-own machine and hands the file over.
+own machine and hands the file over. The vote learns its company from the chain.
 
 ```console
-$ irena vote new --company acme --subject "Approve the 2026 accounts" \
-      --proposal-digest d0d0… --state v.state
-$ irena vote freeze --state v.state --at 2
-frozen at height 2: 3 voter(s), register 9b7a…, rules e410…
+$ irena vote new --subject "Approve the 2026 accounts" --proposal-digest d0d0… --state v.state
+$ irena vote freeze --state v.state --at 0
+frozen at height 0: 3 voter(s), register 5d02…, rules 5d02…
 vote id: 79f6…
 $ irena vote open --state v.state
 ```
@@ -181,7 +180,7 @@ tally:   yes 500 no 300 abstain 0
 quorum:  met (participation 800 of 1000)
 threshold: yes 500 of 800 against 1/2, Above
 $ irena vote finalize --state v.state --signing-key k.key
-finalized at height 4 as transaction f9e5…
+finalized at height 2 as transaction f9e5…
 outcome: Accepted, 2 ballot(s), commitment 5406…
 ```
 
@@ -195,11 +194,11 @@ names every check:
 
 ```console
 $ irena vote verify --tx f9e5…
-verification of f9e5… at height 4
+verification of f9e5… at height 2
   ok   Decodes                  canonical V1 record
   ok   VoteIdDerives            stored 79f6… derived 79f6…
-  ok   SnapshotPrecedesRecord   snapshot at height 2, record at height 4
-  ok   RecordsResolve           genesis, register and rules at height 2 are the pinned records
+  ok   SnapshotPrecedesRecord   snapshot at height 0, record at height 2
+  ok   RecordsResolve           genesis, register and rules at height 0 are the pinned records
   ok   ElectorateDerives        3 voter(s), total weight 1000
   ok   BallotsVerify            2 ballot(s) signed by frozen voters
   ok   BallotsOrdered           strict voter order, no duplicates
