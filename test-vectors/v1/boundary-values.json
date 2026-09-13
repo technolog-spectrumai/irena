@@ -1,0 +1,86 @@
+{
+  "protocol": "prunella-v1",
+  "name": "boundary-values",
+  "description": "A genesis block whose network id and one namespace are the maximum 64-byte label, another namespace is the minimum single byte, one payload is empty, and every integer field is at its maximum. Exercises the edges of every V1 field.",
+  "keys": [
+    {
+      "seed_hex": "0101010101010101010101010101010101010101010101010101010101010101",
+      "public_key_hex": "8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c"
+    }
+  ],
+  "block": {
+    "input": {
+      "network_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "height": 0,
+      "previous_hash_hex": "0000000000000000000000000000000000000000000000000000000000000000",
+      "timestamp_millis": 18446744073709551615,
+      "transactions": [
+        {
+          "namespace": "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz",
+          "schema_version": 4294967295,
+          "payload_hex": "",
+          "signer_key_index": 0,
+          "nonce": 18446744073709551615
+        },
+        {
+          "namespace": "0",
+          "schema_version": 0,
+          "payload_hex": "78",
+          "signer_key_index": 0,
+          "nonce": 0
+        }
+      ]
+    },
+    "expected": {
+      "header_hex": "0100400000006161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616100000000000000000000000000000000000000000000000000000000000000000000000000000000e84ef683963a45bd26e48cf7dfa4c9f0311122278c774f92a56e16cef076ee0002000000ffffffffffffffff",
+      "block_hash_hex": "075e6fb63328c798569944742b2626dab5b5f33bc266f2b69a55311fadf01a10",
+      "tx_root_hex": "e84ef683963a45bd26e48cf7dfa4c9f0311122278c774f92a56e16cef076ee00",
+      "tx_count": 2,
+      "canonical_block_hex": "0100400000006161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616100000000000000000000000000000000000000000000000000000000000000000000000000000000e84ef683963a45bd26e48cf7dfa4c9f0311122278c774f92a56e16cef076ee0002000000ffffffffffffffff02000000947d20c9fac00aff8a0df722832e47cd56062fa5317f656bc61c1b660acdd214400000007a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7affffffff000000008a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5cffffffffffffffffbdf47472880ad7caa7b4909bba75cc12338ea65e48d0e96652f3dfdfd02b372f38f4448415c5690d5af28e3b764cf5d556b8b0062490df766ccbc6275b886f0c07f4e32c740e44e4baf1aab8c1f81f0fc9246dd2794bf30df688cf74ab03068801000000300000000001000000788a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c000000000000000074a7a76a0735b8aa92529fdca45664341a46d53a1bf2eca6c8df41cd78e50f17db9d284a988fde490fcabf016268b920c676d9679a96e871ad5c5a982ba71203",
+      "transactions": [
+        {
+          "signing_preimage_hex": "400000007a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7affffffff000000008a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5cffffffffffffffff",
+          "signing_message_hex": "a9fa9936b0180937958e53fa458d59ae7a47e8df7d2f66eaf0a17460161ff436",
+          "signature_hex": "bdf47472880ad7caa7b4909bba75cc12338ea65e48d0e96652f3dfdfd02b372f38f4448415c5690d5af28e3b764cf5d556b8b0062490df766ccbc6275b886f0c",
+          "id_preimage_hex": "400000007a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7affffffff000000008a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5cffffffffffffffffbdf47472880ad7caa7b4909bba75cc12338ea65e48d0e96652f3dfdfd02b372f38f4448415c5690d5af28e3b764cf5d556b8b0062490df766ccbc6275b886f0c",
+          "id_hex": "947d20c9fac00aff8a0df722832e47cd56062fa5317f656bc61c1b660acdd214",
+          "canonical_transaction_hex": "947d20c9fac00aff8a0df722832e47cd56062fa5317f656bc61c1b660acdd214400000007a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7affffffff000000008a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5cffffffffffffffffbdf47472880ad7caa7b4909bba75cc12338ea65e48d0e96652f3dfdfd02b372f38f4448415c5690d5af28e3b764cf5d556b8b0062490df766ccbc6275b886f0c"
+        },
+        {
+          "signing_preimage_hex": "01000000300000000001000000788a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c0000000000000000",
+          "signing_message_hex": "f7d84d2ac4ec8cf85aee455d7c006e0191c134328b5ac76df819c8c507771747",
+          "signature_hex": "74a7a76a0735b8aa92529fdca45664341a46d53a1bf2eca6c8df41cd78e50f17db9d284a988fde490fcabf016268b920c676d9679a96e871ad5c5a982ba71203",
+          "id_preimage_hex": "01000000300000000001000000788a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c000000000000000074a7a76a0735b8aa92529fdca45664341a46d53a1bf2eca6c8df41cd78e50f17db9d284a988fde490fcabf016268b920c676d9679a96e871ad5c5a982ba71203",
+          "id_hex": "07f4e32c740e44e4baf1aab8c1f81f0fc9246dd2794bf30df688cf74ab030688",
+          "canonical_transaction_hex": "07f4e32c740e44e4baf1aab8c1f81f0fc9246dd2794bf30df688cf74ab03068801000000300000000001000000788a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c000000000000000074a7a76a0735b8aa92529fdca45664341a46d53a1bf2eca6c8df41cd78e50f17db9d284a988fde490fcabf016268b920c676d9679a96e871ad5c5a982ba71203"
+        }
+      ],
+      "leaf_hashes_hex": [
+        "b80ed71e36726193b14dea06d9f82b8155d5472322581a7df9cca0b5812857fa",
+        "76ba176785202fd78e5369d1cde34cec79f4c36dd8671cbb13ba52adabda2509"
+      ],
+      "inclusion_proofs": [
+        {
+          "index": 0,
+          "steps": [
+            {
+              "side": "right",
+              "hash_hex": "76ba176785202fd78e5369d1cde34cec79f4c36dd8671cbb13ba52adabda2509"
+            }
+          ],
+          "canonical_proof_hex": "00000000010000000176ba176785202fd78e5369d1cde34cec79f4c36dd8671cbb13ba52adabda2509"
+        },
+        {
+          "index": 1,
+          "steps": [
+            {
+              "side": "left",
+              "hash_hex": "b80ed71e36726193b14dea06d9f82b8155d5472322581a7df9cca0b5812857fa"
+            }
+          ],
+          "canonical_proof_hex": "010000000100000000b80ed71e36726193b14dea06d9f82b8155d5472322581a7df9cca0b5812857fa"
+        }
+      ]
+    }
+  }
+}

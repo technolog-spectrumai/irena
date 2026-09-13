@@ -15,7 +15,7 @@
 //! |---|---|---|
 //! | signing message | `PRUNELLA/v1/tx-sign` | namespace, schema version, payload, signer, nonce |
 //! | transaction id | `PRUNELLA/v1/tx-id` | the above, plus the signature |
-//! | transaction root | `PRUNELLA/v1/tx-root` | transaction count, then each id in order |
+//! | transaction root | `PRUNELLA/v1/tx-leaf`, `tx-node`, `tx-root` | Merkle tree over the ids in order |
 //! | block hash | `PRUNELLA/v1/block-header` | the whole header |
 //!
 //! Every one of them is computed from `prunella-canonical` encodings. No hash in
@@ -38,6 +38,7 @@ mod hash;
 mod head;
 mod keys;
 mod labels;
+pub mod merkle;
 mod transaction;
 
 pub use block::{Block, BlockDraft, BlockHeader, GenesisSpec, HEADER_VERSION};
@@ -46,6 +47,7 @@ pub use hash::{Hash, TxId};
 pub use head::ChainHead;
 pub use keys::{PUBLIC_KEY_LEN, PublicKey, SIGNATURE_LEN, Signature};
 pub use labels::{BlockHeight, MAX_LABEL_LEN, Namespace, NetworkId, SchemaVersion};
+pub use merkle::{InclusionProof, ProofError, ProofStep, Side};
 pub use transaction::{Transaction, TransactionDraft};
 
 /// Protocol version 1 names for the wire types.

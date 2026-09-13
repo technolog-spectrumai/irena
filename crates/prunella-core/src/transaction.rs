@@ -49,6 +49,27 @@ impl Transaction {
     /// than the full pre-image keeps signing cost independent of payload size.
     #[must_use]
     pub fn signing_message(&self) -> Digest {
+        self.signing_body().signing_message()
+    }
+
+    /// Returns the canonical bytes the signing message is derived from.
+    ///
+    /// Exposed so the protocol specification can be tested against an independent
+    /// encoder; applications have no reason to call this.
+    #[must_use]
+    pub fn signing_preimage(&self) -> Vec<u8> {
+        self.signing_body().canonical_bytes()
+    }
+
+    /// Returns the canonical bytes the transaction id is derived from.
+    ///
+    /// Exposed for the same reason as [`Transaction::signing_preimage`].
+    #[must_use]
+    pub fn id_preimage(&self) -> Vec<u8> {
+        self.id_body().canonical_bytes()
+    }
+
+    fn signing_body(&self) -> TxSigningBody {
         TxSigningBody {
             namespace: self.namespace.clone(),
             schema_version: self.schema_version,
@@ -56,7 +77,17 @@ impl Transaction {
             signer: self.signer,
             nonce: self.nonce,
         }
-        .signing_message()
+    }
+
+    fn id_body(&self) -> TxIdBody {
+        TxIdBody {
+            namespace: self.namespace.clone(),
+            schema_version: self.schema_version,
+            payload: self.payload.clone(),
+            signer: self.signer,
+            nonce: self.nonce,
+            signature: self.signature,
+        }
     }
 
     /// Recomputes the transaction id from the transaction's contents.
@@ -67,14 +98,7 @@ impl Transaction {
     pub fn compute_id(&self) -> TxId {
         TxId::from_hash(Hash::from_bytes(hash_canonical(
             domain::TX_ID,
-            &TxIdBody {
-                namespace: self.namespace.clone(),
-                schema_version: self.schema_version,
-                payload: self.payload.clone(),
-                signer: self.signer,
-                nonce: self.nonce,
-                signature: self.signature,
-            },
+            &self.id_body(),
         )))
     }
 
@@ -86,25 +110,26 @@ impl Transaction {
 
     /// Computes the transaction root over an ordered list of transactions.
     ///
-    /// The root is a linear digest over the count followed by each transaction id in
-    /// order: `hash(TX_ROOT, u32_le(count) || id_0 || .. || id_n)`. Absorbing the count
-    /// first means a shorter list can never share a pre-image with a longer one.
+    /// The root is the Merkle root over the transactions' ids in order; see
+    /// [`crate::merkle`] for the construction. Because the tree is over ids, and an id
+    /// commits to everything in a transaction including its signature, the root commits
+    /// to the block's whole transaction content and order.
     ///
     /// # Errors
     ///
     /// Returns [`CoreError::TooManyTransactions`] if the list is longer than [`u32::MAX`].
     pub fn compute_root(transactions: &[Self]) -> Result<Hash, CoreError> {
-        let count =
-            u32::try_from(transactions.len()).map_err(|_| CoreError::TooManyTransactions {
+        if u32::try_from(transactions.len()).is_err() {
+            return Err(CoreError::TooManyTransactions {
                 count: transactions.len(),
                 max: u32::MAX,
-            })?;
-        let mut hasher = prunella_canonical::DomainHasher::new(domain::TX_ROOT);
-        hasher.update(&count.to_le_bytes());
-        for transaction in transactions {
-            hasher.update(transaction.id.as_bytes());
+            });
         }
-        Ok(Hash::from_bytes(hasher.finalize()))
+        let ids: Vec<TxId> = transactions
+            .iter()
+            .map(|transaction| transaction.id)
+            .collect();
+        Ok(crate::merkle::merkle_root(&ids))
     }
 }
 

@@ -59,7 +59,9 @@ a pre-image.
 |---|---|
 | `PRUNELLA/v1/tx-sign` | the message a signer signs |
 | `PRUNELLA/v1/tx-id` | a transaction identifier |
-| `PRUNELLA/v1/tx-root` | a block's transaction root |
+| `PRUNELLA/v1/tx-root` | the root of an empty transaction tree |
+| `PRUNELLA/v1/tx-leaf` | a Merkle leaf: one transaction id |
+| `PRUNELLA/v1/tx-node` | a Merkle interior node |
 | `PRUNELLA/v1/block-header` | a block hash |
 
 All digests are 32 bytes and render as exactly 64 lowercase hex characters. Uppercase
@@ -96,16 +98,30 @@ what makes it safe for the id to depend on it.
 
 ### Transaction root
 
+A binary Merkle tree over the transaction ids in block order, with the shape of
+RFC 6962:
+
 ```
-tx_root = hash_domain("PRUNELLA/v1/tx-root",
-                      u32_le(count) || tx_id[0] || tx_id[1] || … || tx_id[n-1])
+leaf(id)           = hash_domain("PRUNELLA/v1/tx-leaf", id)
+node(l, r)         = hash_domain("PRUNELLA/v1/tx-node", l || r)
+
+root([])           = hash_domain("PRUNELLA/v1/tx-root", "")
+root([id])         = leaf(id)
+root(ids), n > 1   = node(root(ids[..k]), root(ids[k..]))   where k = 2^⌊log2(n-1)⌋
 ```
 
-A linear digest over the ordered ids. The count is absorbed first, so a shorter list
-can never share a pre-image with a longer one. There is no Merkle tree: nothing in
-Prunella needs inclusion proofs yet, and a naively built Merkle tree is a
-second-preimage hazard. A Merkle root is the intended option for header version 2, at
-which point both roots would be distinguishable by the header version.
+`k` is the largest power of two strictly below `n`, so the left subtree is always
+complete and the right holds the remainder. Nothing is padded or duplicated to reach a
+power of two, which is what rules out the classic second-preimage trick where
+duplicating the last leaf reproduces the original root.
+
+Leaves, interior nodes and the empty tree are in three different domains, so a leaf can
+never be reinterpreted as a node and the empty root can never equal a leaf.
+
+The tree is what makes **inclusion proofs** possible: see
+[`prunella_core::merkle`](../crates/prunella-core/src/merkle.rs) and PROTOCOL_V1.md §7.1.
+A proof verifies against a block header alone — `tx_root` and `tx_count` — without the
+block's transactions.
 
 Note what the root does and does not cover. It commits to *declared* transaction ids,
 not to payloads. Rewriting a payload leaves the root intact; it is caught by the id
@@ -135,7 +151,7 @@ a genesis hash. This is verifiable:
 
 ```console
 $ prunella --chain any.chain init --network prunella.example
-genesis: 012673fe1d4bd19b206c326ae34913cf285673955f03f022352a4524e2641b84
+genesis: 4cfcf0687ebd6e97e1ae8aab69ed46793088cfb705c63c91475e1fd75fed507c
 ```
 
 That value is pinned as a regression vector in
@@ -143,6 +159,13 @@ That value is pinned as a regression vector in
 
 ## Stability
 
-Borsh is pinned to a single major version, and the encoding, the domain tags and the
-derivations are covered by golden vectors. Any change to any of them breaks those tests
-loudly, because such a change silently rewrites every hash in every existing chain.
+This document describes the implementation. The **normative** specification is
+[`PROTOCOL_V1.md`](../PROTOCOL_V1.md), and it is frozen.
+
+Borsh is pinned to a single major version, and the encoding, the domain tags and every
+derivation are covered by permanent golden vectors under
+[`test-vectors/v1/`](../test-vectors/v1/). Those vectors are checked against the
+implementation *and* against an independent encoder written from the specification
+alone, so a dependency upgrade that changed a layout, a hash or a signature fails a test
+naming the vector and the field that moved. See
+[`crates/prunella-conformance`](../crates/prunella-conformance).

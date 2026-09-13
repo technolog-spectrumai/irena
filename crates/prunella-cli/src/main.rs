@@ -33,6 +33,7 @@ fn main() -> ExitCode {
         Command::Export(args) => commands::transfer::export_chain(chain, args, format),
         Command::Import(args) => commands::transfer::import_chain(chain, args, format),
         Command::Keygen(args) => commands::write::keygen(args, format),
+        Command::Proof(args) => commands::inspect::proof(chain, args, format),
     };
 
     match outcome {

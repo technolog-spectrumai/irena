@@ -5,8 +5,9 @@
 //! [`BlockDraft`]s, which derive the header fields that must not be supplied by hand.
 
 use crate::error::CoreError;
-use crate::hash::Hash;
+use crate::hash::{Hash, TxId};
 use crate::labels::{BlockHeight, NetworkId};
+use crate::merkle::InclusionProof;
 use crate::transaction::Transaction;
 use borsh::{BorshDeserialize, BorshSerialize};
 use prunella_canonical::{Canonical, domain, hash_canonical};
@@ -91,6 +92,21 @@ impl Block {
     #[must_use]
     pub fn height(&self) -> BlockHeight {
         self.header.height
+    }
+
+    /// Builds an inclusion proof for the transaction at `index`.
+    ///
+    /// The proof verifies against this block's header alone via
+    /// [`InclusionProof::verify_against`]; a verifier does not need the transactions.
+    /// Returns `None` if `index` is out of range.
+    #[must_use]
+    pub fn inclusion_proof(&self, index: usize) -> Option<InclusionProof> {
+        let ids: Vec<TxId> = self
+            .transactions
+            .iter()
+            .map(|transaction| transaction.id)
+            .collect();
+        InclusionProof::generate(&ids, index)
     }
 }
 

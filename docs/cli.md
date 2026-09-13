@@ -146,6 +146,30 @@ $ prunella --chain demo.chain tx b62ac27081b4c1bc59fce99b60579448de1d550b575dedd
 Shows the transaction with the height and index it was committed at. Exits `1` if
 nothing matches.
 
+### `proof`
+
+```console
+$ prunella --chain demo.chain proof b62ac27081b4c1bc… --out p.bin
+transaction: b62ac27081b4c1bc…
+height:      1
+index:       0
+tx count:    1
+tx root:     754153da01e27dad…
+steps:       0
+proof:       0000000000000000
+
+$ prunella --chain demo.chain proof b62ac27081b4c1bc… --verify p.bin
+proof verified
+```
+
+Produces a Merkle inclusion proof for a transaction, or checks one with `--verify`.
+`--out` writes the proof in canonical encoding.
+
+A proof is checked against the block **header** alone — its `tx_root` and `tx_count` —
+so a verifier does not need the block's transactions. Produced proofs are verified
+before being handed out. A proof that does not verify exits `1`; a file that is not a
+canonical proof exits `2`.
+
 ### `export`
 
 ```console

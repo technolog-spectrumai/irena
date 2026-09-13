@@ -8,6 +8,7 @@ use prunella_verify::Finding;
 /// Import refuses rather than adapts. Every variant here describes a document that was
 /// not applied, and in every case the target chain is left exactly as it was.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum XmlError {
     /// The document is not well-formed XML, or is not shaped like a Prunella document.
     #[error("malformed document at byte {position}: {detail}")]
@@ -124,6 +125,30 @@ pub enum XmlError {
     ChainUnreadable {
         /// What disagrees with what.
         detail: String,
+    },
+    /// The document declares or carries more blocks than an importer will accept.
+    #[error("document has {found} block(s), over the {limit} block limit")]
+    TooManyBlocks {
+        /// Blocks declared or seen.
+        found: u64,
+        /// The limit.
+        limit: u64,
+    },
+    /// A block carries more transactions than an importer will accept.
+    #[error("a block carries more than the {limit} transaction limit")]
+    TooManyTransactions {
+        /// The limit.
+        limit: usize,
+    },
+    /// A single binary element is larger than an importer will accept.
+    #[error("{element} holds {found} characters, over the {limit} character limit")]
+    FieldTooLarge {
+        /// The element name.
+        element: String,
+        /// Characters seen.
+        found: usize,
+        /// The limit.
+        limit: usize,
     },
     /// The document exceeded the configured size limit.
     #[error("document is {found} bytes, over the {limit} byte limit")]

@@ -47,8 +47,15 @@ pub mod domain {
     pub const TX_SIGN: &str = "PRUNELLA/v1/tx-sign";
     /// Pre-image of a transaction identifier.
     pub const TX_ID: &str = "PRUNELLA/v1/tx-id";
-    /// Pre-image of a block's transaction root.
+    /// Pre-image of the transaction root of a block with **no** transactions.
+    ///
+    /// A non-empty block's root is a Merkle tree over [`TX_LEAF`] and [`TX_NODE`]
+    /// hashes; the empty tree needs a value of its own that no leaf or node can equal.
     pub const TX_ROOT: &str = "PRUNELLA/v1/tx-root";
+    /// Pre-image of a Merkle leaf: one transaction id.
+    pub const TX_LEAF: &str = "PRUNELLA/v1/tx-leaf";
+    /// Pre-image of a Merkle interior node: left child hash then right child hash.
+    pub const TX_NODE: &str = "PRUNELLA/v1/tx-node";
     /// Pre-image of a block hash.
     pub const BLOCK_HEADER: &str = "PRUNELLA/v1/block-header";
 }
@@ -61,6 +68,7 @@ pub type Digest = [u8; DIGEST_LEN];
 
 /// Failure modes of canonical encoding and decoding.
 #[derive(Debug, thiserror::Error, PartialEq, Eq, Clone)]
+#[non_exhaustive]
 pub enum CanonicalError {
     /// The value could not be encoded. Impossible for the canonical subset.
     #[error("canonical encoding failed: {0}")]

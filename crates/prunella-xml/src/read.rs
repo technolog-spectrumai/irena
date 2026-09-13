@@ -30,6 +30,28 @@ use quick_xml::name::ResolveResult;
 /// allocation before a single rule has been applied.
 pub const DEFAULT_MAX_DOCUMENT_BYTES: u64 = 1 << 30;
 
+/// Largest number of blocks a document may declare or carry.
+///
+/// A separate bound from the byte limit because `block-count` is an attribute the
+/// document supplies: without this, a few bytes of untrusted input could ask a reader
+/// to reserve capacity for billions of blocks before one had been parsed.
+pub const MAX_BLOCKS: u64 = 16_000_000;
+
+/// Largest number of transactions one block may carry in a document.
+///
+/// The protocol's own limit is `u32::MAX` (PROTOCOL_V1.md §11). This is tighter because
+/// a document is untrusted input and each transaction costs at least a key and a
+/// signature. It is import policy, not a protocol rule: two implementations with
+/// different bounds still agree on every hash.
+pub const MAX_TRANSACTIONS_PER_BLOCK: usize = 4_000_000;
+
+/// Largest base64 content accepted for one element, in characters.
+///
+/// Bounds the buffer for a single `<payload>` independently of the whole-document
+/// limit, so one enormous element cannot force a large allocation from a document that
+/// is otherwise small.
+pub const MAX_BINARY_FIELD_CHARS: usize = 96 * 1024 * 1024;
+
 /// Parses a document with the default size limit.
 ///
 /// # Errors
@@ -90,6 +112,12 @@ impl<'a> Parser<'a> {
                     document.projection = Some(self.projection(&element)?);
                 }
                 Event::Start(element) if self.is_named(&element, "block")? => {
+                    if document.blocks.len() as u64 >= MAX_BLOCKS {
+                        return Err(XmlError::TooManyBlocks {
+                            found: MAX_BLOCKS + 1,
+                            limit: MAX_BLOCKS,
+                        });
+                    }
                     let entry = self.block(&element, &document.network_id)?;
                     let height = entry.block.header.height;
                     if let Some(previous_height) = previous
@@ -206,6 +234,26 @@ impl<'a> Parser<'a> {
                 "document declares an empty range {range_start}..={range_end}"
             )));
         }
+        let declared_span = range_end
+            .value()
+            .checked_sub(range_start.value())
+            .and_then(|span| span.checked_add(1))
+            .ok_or_else(|| self.malformed("declared height range is larger than u64"))?;
+        let block_count = self.require(block_count, "prunella-chain", "block-count")?;
+        if block_count != declared_span {
+            return Err(self.malformed(format!(
+                "document declares {block_count} block(s) but a height range of {declared_span}"
+            )));
+        }
+        if block_count > MAX_BLOCKS {
+            return Err(XmlError::TooManyBlocks {
+                found: block_count,
+                limit: MAX_BLOCKS,
+            });
+        }
+        // Reserve only what a document of this declared size could plausibly hold. The
+        // count is untrusted input, so it caps the reservation rather than setting it.
+        let reserve = usize::try_from(block_count.min(4096)).unwrap_or(0);
 
         Ok(ChainDocument {
             format_version,
@@ -220,10 +268,7 @@ impl<'a> Parser<'a> {
                 "exported-at-millis",
             )?,
             projection: None,
-            blocks: Vec::with_capacity(
-                self.require(block_count, "prunella-chain", "block-count")?
-                    .min(4096) as usize,
-            ),
+            blocks: Vec::with_capacity(reserve),
         })
     }
 
@@ -346,7 +391,13 @@ impl<'a> Parser<'a> {
             match self.event()? {
                 Event::Text(_) | Event::Comment(_) => {}
                 Event::Start(child) if self.is_named(&child, "transaction")? => {
-                    let expected_index = transactions.len() as u32;
+                    if transactions.len() >= MAX_TRANSACTIONS_PER_BLOCK {
+                        return Err(XmlError::TooManyTransactions {
+                            limit: MAX_TRANSACTIONS_PER_BLOCK,
+                        });
+                    }
+                    let expected_index = u32::try_from(transactions.len())
+                        .map_err(|_| self.malformed("too many transactions in one block"))?;
                     transactions.push(self.transaction(&child, expected_index)?);
                 }
                 Event::End(_) => break,
@@ -446,6 +497,13 @@ impl<'a> Parser<'a> {
                     )));
                 }
             }
+        }
+        if text.len() > MAX_BINARY_FIELD_CHARS {
+            return Err(XmlError::FieldTooLarge {
+                element: name.to_owned(),
+                found: text.len(),
+                limit: MAX_BINARY_FIELD_CHARS,
+            });
         }
         let compact: String = text.chars().filter(|c| !c.is_ascii_whitespace()).collect();
         BASE64

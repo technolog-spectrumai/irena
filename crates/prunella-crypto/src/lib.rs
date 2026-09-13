@@ -25,6 +25,7 @@ use prunella_core::{
 
 /// Failure modes of signing and verification.
 #[derive(Debug, thiserror::Error, PartialEq, Eq, Clone)]
+#[non_exhaustive]
 pub enum CryptoError {
     /// The signer's public key bytes are not a valid Ed25519 point.
     #[error("public key {signer} is not a valid ed25519 verifying key")]

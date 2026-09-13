@@ -10,6 +10,7 @@ use prunella_core::{BlockHeight, Hash};
 
 /// Failure modes of the chain store.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum StoreError {
     /// The database file could not be opened, created or written.
     #[error("chain database error: {0}")]

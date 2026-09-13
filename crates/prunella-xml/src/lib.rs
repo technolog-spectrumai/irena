@@ -49,5 +49,8 @@ pub use document::{
 pub use error::XmlError;
 pub use export::{ExportRequest, export};
 pub use import::{ImportPlan, import, plan_import, restore};
-pub use read::{DEFAULT_MAX_DOCUMENT_BYTES, read_document, read_document_with_limit};
+pub use read::{
+    DEFAULT_MAX_DOCUMENT_BYTES, MAX_BINARY_FIELD_CHARS, MAX_BLOCKS, MAX_TRANSACTIONS_PER_BLOCK,
+    read_document, read_document_with_limit,
+};
 pub use write::write_document;

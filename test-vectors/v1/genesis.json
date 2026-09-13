@@ -1,0 +1,25 @@
+{
+  "protocol": "prunella-v1",
+  "name": "genesis",
+  "description": "The genesis block of network prunella.example at timestamp 0 with no transactions. Its hash is the chain's genesis hash.",
+  "keys": [],
+  "block": {
+    "input": {
+      "network_id": "prunella.example",
+      "height": 0,
+      "previous_hash_hex": "0000000000000000000000000000000000000000000000000000000000000000",
+      "timestamp_millis": 0,
+      "transactions": []
+    },
+    "expected": {
+      "header_hex": "0100100000007072756e656c6c612e6578616d706c65000000000000000000000000000000000000000000000000000000000000000000000000000000005a7957f48dc6c0d661317152de95501995f7b2cb421bca82fe2c764886f4b111000000000000000000000000",
+      "block_hash_hex": "4cfcf0687ebd6e97e1ae8aab69ed46793088cfb705c63c91475e1fd75fed507c",
+      "tx_root_hex": "5a7957f48dc6c0d661317152de95501995f7b2cb421bca82fe2c764886f4b111",
+      "tx_count": 0,
+      "canonical_block_hex": "0100100000007072756e656c6c612e6578616d706c65000000000000000000000000000000000000000000000000000000000000000000000000000000005a7957f48dc6c0d661317152de95501995f7b2cb421bca82fe2c764886f4b11100000000000000000000000000000000",
+      "transactions": [],
+      "leaf_hashes_hex": [],
+      "inclusion_proofs": []
+    }
+  }
+}

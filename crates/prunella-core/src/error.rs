@@ -5,6 +5,7 @@
 /// Every variant names a value that could not be built. None of them describe I/O,
 /// storage or verification failures; those belong to the crates that own them.
 #[derive(Debug, thiserror::Error, PartialEq, Eq, Clone)]
+#[non_exhaustive]
 pub enum CoreError {
     /// A network identifier did not satisfy the documented character rules.
     #[error("invalid network id {value:?}: {reason}")]
@@ -58,6 +59,7 @@ pub enum CoreError {
 
 /// Why a network id or namespace was rejected.
 #[derive(Debug, thiserror::Error, PartialEq, Eq, Clone, Copy)]
+#[non_exhaustive]
 pub enum LabelRejection {
     /// The label was empty.
     #[error("must not be empty")]

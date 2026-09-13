@@ -1,0 +1,25 @@
+{
+  "protocol": "prunella-v1",
+  "name": "empty-block",
+  "description": "A block at height 1 carrying no transactions. Exercises the empty transactions root and a non-zero previous hash.",
+  "keys": [],
+  "block": {
+    "input": {
+      "network_id": "prunella.example",
+      "height": 1,
+      "previous_hash_hex": "4cfcf0687ebd6e97e1ae8aab69ed46793088cfb705c63c91475e1fd75fed507c",
+      "timestamp_millis": 1000,
+      "transactions": []
+    },
+    "expected": {
+      "header_hex": "0100100000007072756e656c6c612e6578616d706c6501000000000000004cfcf0687ebd6e97e1ae8aab69ed46793088cfb705c63c91475e1fd75fed507c5a7957f48dc6c0d661317152de95501995f7b2cb421bca82fe2c764886f4b11100000000e803000000000000",
+      "block_hash_hex": "bfb9507e8624fd6cb4f96b9e7773b33eb1ebc37bccc113144c2017c47b249704",
+      "tx_root_hex": "5a7957f48dc6c0d661317152de95501995f7b2cb421bca82fe2c764886f4b111",
+      "tx_count": 0,
+      "canonical_block_hex": "0100100000007072756e656c6c612e6578616d706c6501000000000000004cfcf0687ebd6e97e1ae8aab69ed46793088cfb705c63c91475e1fd75fed507c5a7957f48dc6c0d661317152de95501995f7b2cb421bca82fe2c764886f4b11100000000e80300000000000000000000",
+      "transactions": [],
+      "leaf_hashes_hex": [],
+      "inclusion_proofs": []
+    }
+  }
+}

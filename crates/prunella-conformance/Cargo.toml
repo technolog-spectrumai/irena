@@ -1,0 +1,25 @@
+[package]
+name = "prunella-conformance"
+description = "Golden vectors and an independent encoder that freeze Prunella Protocol V1"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+prunella-canonical.workspace = true
+prunella-core.workspace = true
+prunella-crypto.workspace = true
+blake3.workspace = true
+ed25519-dalek.workspace = true
+hex.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[[bin]]
+name = "generate-v1-vectors"
+path = "src/bin/generate_v1_vectors.rs"
+
+[lints]
+workspace = true

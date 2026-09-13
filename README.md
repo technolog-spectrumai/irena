@@ -8,6 +8,18 @@ uninterpreted namespace label. That restriction is the point: a ledger that unde
 what it stores will eventually be asked to make decisions about it, and those decisions
 become rules two instances can disagree about.
 
+## Protocol V1 is frozen
+
+[`PROTOCOL_V1.md`](PROTOCOL_V1.md) is the normative specification: every canonical type,
+field order, integer representation, Borsh rule, domain tag and derivation. It does not
+change. A future format change is a V2, introduced as new types alongside V1.
+
+Permanent golden vectors under [`test-vectors/v1/`](test-vectors/v1/) hold the freeze.
+Each carries human-readable input plus expected canonical bytes, hashes, signatures and
+inclusion proofs, and is checked against the implementation **and** an independent
+encoder written from the specification alone — so a dependency upgrade cannot move a
+V1 value without failing a test that names it.
+
 ## Core invariant
 
 > Given the same genesis and the same ordered valid blocks, every correct Prunella
@@ -15,10 +27,10 @@ become rules two instances can disagree about.
 
 ```console
 $ prunella --chain a.chain init --network prunella.example
-genesis: 012673fe1d4bd19b206c326ae34913cf285673955f03f022352a4524e2641b84
+genesis: 4cfcf0687ebd6e97e1ae8aab69ed46793088cfb705c63c91475e1fd75fed507c
 
 $ prunella --chain b.chain init --network prunella.example   # different machine, no contact
-genesis: 012673fe1d4bd19b206c326ae34913cf285673955f03f022352a4524e2641b84
+genesis: 4cfcf0687ebd6e97e1ae8aab69ed46793088cfb705c63c91475e1fd75fed507c
 ```
 
 ## What it does
@@ -31,6 +43,8 @@ genesis: 012673fe1d4bd19b206c326ae34913cf285673955f03f022352a4524e2641b84
 * **BLAKE3 hashing, Ed25519 signatures**, with strict verification.
 * **Full verification from genesis to head**, reporting every defect with its exact
   height, transaction index and identifier.
+* **Merkle transaction roots with inclusion proofs**, verifiable against a block header
+  alone, without the block's transactions.
 * **Lossless versioned XML export and import** — atomic, idempotent, dry-runnable —
   preserving payload bytes exactly.
 * **A storage abstraction** with one local persistent implementation: atomic appends,
@@ -57,6 +71,7 @@ $ prunella init --network demo
 $ prunella append --signing-key signer.key --namespace app.demo --nonce 1 \
       --payload-hex 48656c6c6f
 $ prunella verify
+$ prunella proof <tx-id> --out proof.bin
 $ prunella export --out backup.xml
 $ prunella --chain restored.chain import --in backup.xml --create
 $ prunella --chain restored.chain verify
@@ -86,11 +101,13 @@ prunella-canonical  →  prunella-core  →  prunella-crypto  →  prunella-veri
 | [`prunella-store`](crates/prunella-store) | The `ChainStorage` contract, a redb implementation, the acceptance boundary |
 | [`prunella-xml`](crates/prunella-xml) | Versioned XML transport |
 | [`prunella-cli`](crates/prunella-cli) | The `prunella` binary |
+| [`prunella-conformance`](crates/prunella-conformance) | Golden vectors and an independent encoder that freeze V1 |
 
 ## Documentation
 
 | Document | Covers |
 |---|---|
+| [PROTOCOL_V1.md](PROTOCOL_V1.md) | **Normative.** The frozen wire protocol |
 | [architecture.md](docs/architecture.md) | Crate layout, why the boundaries fall where they do |
 | [api.md](docs/api.md) | The public Rust API of every crate |
 | [canonicalization.md](docs/canonicalization.md) | The encoding, the domain tags, every derivation |
@@ -111,5 +128,10 @@ $ cargo fmt --all
 $ cargo clippy --all-targets --all-features -- -D warnings
 $ cargo test --workspace
 ```
+
+`cargo test --workspace` includes the conformance suite and the property/fuzz suites;
+they run in CI as-is, with no separate step and no nightly toolchain. Property tests use
+[proptest](https://docs.rs/proptest) with fixed case counts, so a run is bounded and
+reproducible.
 
 Requires Rust 1.94 or newer (edition 2024).

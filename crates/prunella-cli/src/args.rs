@@ -49,6 +49,8 @@ pub enum Command {
     Import(ImportArgs),
     /// Generate an ed25519 signing key.
     Keygen(KeygenArgs),
+    /// Produce or check a transaction inclusion proof.
+    Proof(ProofArgs),
 }
 
 #[derive(clap::Args, Debug)]
@@ -175,6 +177,23 @@ pub struct ImportArgs {
     /// Create the chain from the document, which must be a full export.
     #[arg(long)]
     pub create: bool,
+}
+
+#[derive(clap::Args, Debug)]
+pub struct ProofArgs {
+    /// A 64-character transaction id.
+    pub id: String,
+
+    /// Check a proof from this file instead of producing one.
+    ///
+    /// The proof is verified against the block header alone, so this works without
+    /// trusting the chain the proof came from.
+    #[arg(long)]
+    pub verify: Option<PathBuf>,
+
+    /// Write the produced proof, in canonical encoding, to this file.
+    #[arg(long, short)]
+    pub out: Option<PathBuf>,
 }
 
 #[derive(clap::Args, Debug)]

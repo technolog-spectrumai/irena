@@ -330,6 +330,6 @@ fn locked_genesis_hash_vector() {
         .expect("genesis");
     assert_eq!(
         genesis.hash().to_string(),
-        "012673fe1d4bd19b206c326ae34913cf285673955f03f022352a4524e2641b84"
+        "4cfcf0687ebd6e97e1ae8aab69ed46793088cfb705c63c91475e1fd75fed507c"
     );
 }

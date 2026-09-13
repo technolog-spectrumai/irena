@@ -22,6 +22,7 @@ Everything below exists to make that true:
 
 | Mechanism | What it rules out |
 |---|---|
+| A frozen specification with independent golden vectors | An upgrade quietly changing a V1 value |
 | One canonical encoding, with trailing bytes rejected | Two byte strings meaning the same value |
 | Domain-separated hashing | One pre-image serving two purposes |
 | Derived, never supplied, header fields | A header disagreeing with its own block |
@@ -51,6 +52,7 @@ The graph is acyclic and every crate is testable on its own.
 | `prunella-store` | redb persistence, the acceptance boundary | XML, presentation |
 | `prunella-xml` | Versioned XML transport | Hashing rules (it re-derives) |
 | `prunella-cli` | Presentation | Everything else — it only calls libraries |
+| `prunella-conformance` | Golden vectors, an independent encoder | Nothing: it deliberately shares no code with the implementation |
 
 ### Why verification sits below storage
 

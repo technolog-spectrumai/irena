@@ -15,6 +15,7 @@ quick-xml.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
+proptest.workspace = true
 prunella-canonical.workspace = true
 prunella-crypto.workspace = true
 redb.workspace = true

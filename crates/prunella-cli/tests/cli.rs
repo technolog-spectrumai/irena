@@ -413,6 +413,92 @@ fn append_needs_something_to_append() {
 }
 
 #[test]
+fn proof_produces_and_verifies_an_inclusion_proof() {
+    let cli = Cli::new();
+    cli.demo();
+    let block = cli
+        .run(&["--chain", "demo.chain", "block", "1", "--json"])
+        .ok()
+        .json();
+    let id = block["transaction_ids"][0].as_str().expect("id").to_owned();
+
+    let produced = cli
+        .run(&[
+            "--chain",
+            "demo.chain",
+            "proof",
+            &id,
+            "--out",
+            "p.bin",
+            "--json",
+        ])
+        .ok()
+        .json();
+    assert_eq!(produced["transaction_id"], id);
+    assert_eq!(produced["height"], 1);
+    assert_eq!(produced["index"], 0);
+    assert_eq!(produced["tx_root"], block["header"]["tx_root"]);
+
+    let verified = cli
+        .run(&[
+            "--chain",
+            "demo.chain",
+            "proof",
+            &id,
+            "--verify",
+            "p.bin",
+            "--json",
+        ])
+        .ok()
+        .json();
+    assert_eq!(verified["verified"], true);
+}
+
+#[test]
+fn proof_rejects_a_tampered_proof_file() {
+    let cli = Cli::new();
+    cli.demo();
+    let block = cli
+        .run(&["--chain", "demo.chain", "block", "1", "--json"])
+        .ok()
+        .json();
+    let id = block["transaction_ids"][0].as_str().expect("id").to_owned();
+    cli.run(&["--chain", "demo.chain", "proof", &id, "--out", "p.bin"])
+        .ok();
+
+    let mut bytes = std::fs::read(cli.path("p.bin")).expect("read proof");
+    bytes[0] ^= 0x01;
+    std::fs::write(cli.path("bad.bin"), &bytes).expect("write");
+
+    let run = cli.run(&["--chain", "demo.chain", "proof", &id, "--verify", "bad.bin"]);
+    assert_ne!(run.code(), 0, "{}", run.stdout());
+
+    std::fs::write(cli.path("junk.bin"), b"not a proof").expect("write");
+    let junk = cli.run(&[
+        "--chain",
+        "demo.chain",
+        "proof",
+        &id,
+        "--verify",
+        "junk.bin",
+    ]);
+    assert_eq!(junk.code(), 2);
+    assert!(
+        junk.stderr().contains("canonical inclusion proof"),
+        "{}",
+        junk.stderr()
+    );
+}
+
+#[test]
+fn proof_exits_one_for_an_unknown_transaction() {
+    let cli = Cli::new();
+    cli.demo();
+    let run = cli.run(&["--chain", "demo.chain", "proof", &"aa".repeat(32)]);
+    assert_eq!(run.code(), 1);
+}
+
+#[test]
 fn keygen_writes_a_usable_key() {
     let cli = Cli::new();
     let run = cli.run(&["keygen", "--out", "k.key", "--json"]).ok();

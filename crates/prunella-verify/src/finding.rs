@@ -78,6 +78,7 @@ impl core::fmt::Display for Location {
 /// that is almost consistent is inconsistent.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum FindingKind {
     /// The header declares a format version this build does not understand.
     UnsupportedHeaderVersion,

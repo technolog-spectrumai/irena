@@ -1,4 +1,8 @@
 //! An in-memory chain used to exercise verification without a storage backend.
+//!
+//! Shared by more than one test binary. Each binary compiles the whole module but uses
+//! only the part it needs, so items unused by one of them are expected.
+#![allow(dead_code)]
 
 use prunella_core::{
     Block, BlockDraft, BlockHeight, ChainHead, GenesisSpec, Hash, Namespace, NetworkId,

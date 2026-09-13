@@ -67,6 +67,7 @@ impl<'a> AcceptanceContext<'a> {
 
 /// Why a policy refused a block.
 #[derive(Debug, thiserror::Error, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum AcceptanceError {
     /// The block broke one or more deterministic rules.
     #[error("block failed local validation with {} finding(s): {}", .findings.len(), render(.findings))]

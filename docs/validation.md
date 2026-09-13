@@ -45,6 +45,19 @@ ordering or per-signer uniqueness: doing so would require account state, which i
 application concern. The field exists so that two otherwise identical payloads from the
 same signer produce distinct transaction ids.
 
+### Inclusion proofs
+
+Because `tx_root` is a Merkle root, a verifier can be shown that one transaction is in a
+block without being given the block. `Block::inclusion_proof(index)` produces the audit
+path; `InclusionProof::verify_against(id, header)` checks it against the header's
+`tx_root` and `tx_count` alone. Altering the transaction, the index, a step's hash or
+side, or the number of steps is rejected. Proof logic is over transaction ids only and
+knows nothing about namespaces or payloads.
+
+What binds a proof to a block is the root, not the count: some tree sizes share a path
+shape for a given index. A header carries both together, and two different transaction
+lists have different roots, so a proof cannot be replayed from one block to another.
+
 ### Why three overlapping transaction rules
 
 The transaction root commits to declared ids, not to payloads. So:

@@ -14,6 +14,7 @@ redb.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
+proptest.workspace = true
 prunella-canonical.workspace = true
 prunella-crypto.workspace = true
 tempfile.workspace = true

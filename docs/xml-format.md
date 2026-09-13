@@ -109,12 +109,35 @@ prints a warning saying so.
 | Document contradicts a committed block | `Fork` |
 | Any block breaks a deterministic rule | `InvalidBlocks`, carrying the findings |
 | The document is a projection | `NotImportable` |
-| Input exceeds the size limit (default 1 GiB) | `TooLarge` |
+| Input exceeds the byte limit (default 1 GiB) | `TooLarge` |
+| Declared or carried blocks exceed 16,000,000 | `TooManyBlocks` |
+| A block carries more than 4,000,000 transactions | `TooManyTransactions` |
+| One base64 element exceeds 96 MiB of characters | `FieldTooLarge` |
+| `block-count` disagrees with the declared height range | `Malformed` |
 
 Note which error catches which tampering. Rewriting a header changes the block hash and
 is caught as `DeclaredHashMismatch`. Rewriting a payload does *not* change the block
 hash — it is caught as `InvalidBlocks`, by the transaction id derivation and the
 signature. Both layers are needed.
+
+### Input limits
+
+A document is untrusted input, so the reader bounds what it will accept before it
+allocates for it:
+
+| Limit | Default | Why it is separate |
+|---|---|---|
+| `DEFAULT_MAX_DOCUMENT_BYTES` | 1 GiB | Checked before parsing begins |
+| `MAX_BLOCKS` | 16,000,000 | `block-count` is an attribute the document supplies; without a cap, a few bytes could ask for capacity for billions of blocks |
+| `MAX_TRANSACTIONS_PER_BLOCK` | 4,000,000 | Each transaction costs at least a key and a signature |
+| `MAX_BINARY_FIELD_CHARS` | 96 MiB | Bounds one element independently, so a single enormous `<payload>` cannot force a large allocation from an otherwise small document |
+
+`block-count` is additionally required to equal `range-end - range-start + 1`, so the
+declared size cannot disagree with the declared range.
+
+These are **import policy, not protocol rules** (PROTOCOL_V1.md §11). Two
+implementations with different bounds still agree on every hash; they only differ in
+what they are willing to read.
 
 ## The schema and the parser
 
