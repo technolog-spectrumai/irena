@@ -1,0 +1,28 @@
+[package]
+name = "governance-cli"
+description = "Command line interface for the governance bridge"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "governance"
+path = "src/main.rs"
+
+[dependencies]
+bornite-eval.workspace = true
+governance-bridge.workspace = true
+prunella-core.workspace = true
+prunella-crypto.workspace = true
+prunella-store.workspace = true
+clap.workspace = true
+hex.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
+tempfile.workspace = true
+
+[lints]
+workspace = true

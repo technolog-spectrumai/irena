@@ -36,4 +36,4 @@ pub use ledger::{
     history, publish_roll, publish_rules, roll_in_force, rules_in_force,
 };
 pub use record::{GovernanceRecordV1, NotarisationV1, RecordBodyV1, RecordKindV1, SubjectV1};
-pub use xml::{compose_record, read_electorate_document, read_record};
+pub use xml::{compose_record, read_ballots_document, read_electorate_document, read_record};

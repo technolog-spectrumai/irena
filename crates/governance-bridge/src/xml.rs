@@ -254,6 +254,32 @@ pub fn read_electorate_document(xml: &str) -> Result<bornite_core::ElectorateV1,
     Ok(electorate)
 }
 
+/// Reads a standalone `<ballots>` document.
+///
+/// # Errors
+///
+/// Returns [`BridgeError`] for anything that is not a valid ballots element.
+pub fn read_ballots_document(xml: &str) -> Result<bornite_core::BallotSetV1, BridgeError> {
+    let mut reader = open(xml);
+    let root = loop {
+        match next_event(&mut reader)? {
+            Event::Decl(_) | Event::Comment(_) | Event::Text(_) => {}
+            Event::Start(root) if root.name().as_ref() == "ballots" => break (root, false),
+            Event::Empty(root) if root.name().as_ref() == "ballots" => break (root, true),
+            other => {
+                return Err(malformed(
+                    &reader,
+                    format!("expected a <ballots> root, found {}", describe(&other)),
+                )
+                .into());
+            }
+        }
+    };
+    let ballots = bornite_xml::parse_ballots(&mut reader, &root.0, root.1)?;
+    expect_eof(&mut reader)?;
+    Ok(ballots)
+}
+
 /// Removes a leading XML declaration and surrounding whitespace, leaving the element.
 fn strip_declaration(text: &str) -> &str {
     let trimmed = text.trim();
