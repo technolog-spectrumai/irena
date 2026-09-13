@@ -19,8 +19,8 @@ use bornite_xml::{
     root_start,
 };
 use irena_core::{
-    CompanyIdV1, IrenaError, IssueV1, NotarisationV1, escape_attribute, normalise_body,
-    read_notarisation, write_notarisation,
+    ChannelIdV1, CompanyIdV1, IrenaError, IssueV1, NotarisationV1, escape_attribute,
+    normalise_body, read_notarisation, write_notarisation,
 };
 use prunella_core::{Hash, TxId};
 use quick_xml::events::Event;
@@ -113,15 +113,27 @@ pub fn compose_resolution(
         }])
         .into());
     }
+    let channel = authority.channel_id()?;
     let mut xml = format!(
-        "<irena-resolution version=\"{RESOLUTION_VERSION}\" kind=\"{}\" company=\"{}\" title=\"{}\" meeting=\"{}\" item=\"{}\" vote=\"{}\"",
+        "<irena-resolution version=\"{RESOLUTION_VERSION}\" kind=\"{}\" company=\"{}\" title=\"{}\" channel=\"{}\"",
         kind.as_str(),
         company.as_str(),
         escape_attribute(title),
-        authority.meeting_tx,
-        authority.item_number,
-        authority.vote_tx,
+        channel.as_str(),
     );
+    match authority {
+        AuthorityV1::Collective {
+            meeting_tx,
+            item_number,
+            vote_tx,
+            ..
+        } => xml.push_str(&format!(
+            " meeting=\"{meeting_tx}\" item=\"{item_number}\" vote=\"{vote_tx}\""
+        )),
+        AuthorityV1::Individual { decision_tx, .. } => {
+            xml.push_str(&format!(" decision=\"{decision_tx}\""));
+        }
+    }
     match kind {
         ResolutionKindV1::Declarative { document_digest } => {
             xml.push_str(&format!(" document-digest=\"{document_digest}\">\n  "));
@@ -170,8 +182,8 @@ fn validate_body(target: AmendmentTargetV1, body: &str) -> Result<(), Resolution
         AmendmentTargetV1::ShareStructure => {
             irena_core::read_share_structure_document(body)?;
         }
-        AmendmentTargetV1::VotingRules => {
-            irena_core::read_voting_rules_document(body)?;
+        AmendmentTargetV1::DecisionChannels => {
+            irena_core::read_decision_channels_document(body)?;
         }
     }
     Ok(())
@@ -231,9 +243,11 @@ pub fn read_resolution_record(xml: &str) -> Result<ResolutionRecordV1, Resolutio
     let kind = require(&mut attributes, "kind", &mut issues);
     let company = require(&mut attributes, "company", &mut issues);
     let title = require(&mut attributes, "title", &mut issues);
-    let meeting = require(&mut attributes, "meeting", &mut issues);
-    let item = require(&mut attributes, "item", &mut issues);
-    let vote = require(&mut attributes, "vote", &mut issues);
+    let channel = require(&mut attributes, "channel", &mut issues);
+    let meeting = attributes.take("meeting");
+    let item = attributes.take("item");
+    let vote = attributes.take("vote");
+    let decision = attributes.take("decision");
     let document_digest = attributes.take("document-digest");
     let target = attributes.take("target");
     attributes.finish(&reader).map_err(IrenaError::from)?;
@@ -251,10 +265,35 @@ pub fn read_resolution_record(xml: &str) -> Result<ResolutionRecordV1, Resolutio
             "must not be empty",
         ));
     }
-    let authority = AuthorityV1 {
-        meeting_tx: tx_of("meeting", &meeting.expect("checked"))?,
-        item_number: number_of("item", &item.expect("checked"))?,
-        vote_tx: tx_of("vote", &vote.expect("checked"))?,
+    let channel = channel.expect("checked");
+    let channel = ChannelIdV1::new(channel.clone())
+        .map_err(|error| invalid("irena-resolution", "channel", &channel, &error.to_string()))?
+        .as_str()
+        .to_owned();
+    let authority = match (meeting, item, vote, decision) {
+        (Some(meeting), Some(item), Some(vote), None) => AuthorityV1::Collective {
+            channel,
+            meeting_tx: tx_of("meeting", &meeting)?,
+            item_number: number_of("item", &item)?,
+            vote_tx: tx_of("vote", &vote)?,
+        },
+        (None, None, None, Some(decision)) => AuthorityV1::Individual {
+            channel,
+            decision_tx: tx_of("decision", &decision)?,
+        },
+        (None, None, None, None) => {
+            return Err(IrenaError::invalid(vec![IssueV1::MissingAttribute {
+                element: "irena-resolution",
+                attribute: "meeting, item and vote, or decision",
+            }])
+            .into());
+        }
+        _ => {
+            return Err(malformed_at(
+                &reader,
+                "a resolution rests on one authority: meeting, item and vote together, or decision alone",
+            ));
+        }
     };
     let declared = kind.expect("checked");
 
@@ -335,7 +374,7 @@ pub fn read_resolution_record(xml: &str) -> Result<ResolutionRecordV1, Resolutio
                     "irena-resolution",
                     "target",
                     &text,
-                    "expected share-structure or voting-rules",
+                    "expected share-structure or decision-channels",
                 )
             })?;
             validate_body(target, &body)?;
@@ -404,7 +443,7 @@ pub fn read_execution_record(xml: &str) -> Result<ExecutionRecordV1, ResolutionE
             "irena-execution",
             "target",
             &target_text,
-            "expected share-structure or voting-rules",
+            "expected share-structure or decision-channels",
         )
     })?;
     let execution = ResolutionExecutionV1 {

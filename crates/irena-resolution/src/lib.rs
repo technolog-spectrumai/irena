@@ -34,12 +34,14 @@
 //! decision is taken against "the current company" — the company an execution replaces
 //! must still be the one the voters saw (§[`ResolutionV1::execute`]).
 
+mod demotion;
 mod error;
 mod lifecycle;
 mod record;
 mod resolution;
 mod verify;
 
+pub use demotion::{SelfDemotionV1, self_demotion};
 pub use error::ResolutionError;
 pub use lifecycle::{ExecutedV1, ResolutionV1};
 pub use record::{
@@ -48,7 +50,7 @@ pub use record::{
     compose_execution, compose_resolution, read_execution_record, read_resolution_record,
 };
 pub use resolution::{
-    AmendmentTargetV1, AuthorityV1, PROPOSAL_TAG, ResolutionIdV1, ResolutionKindV1,
+    AmendmentTargetV1, ApprovalV1, AuthorityV1, PROPOSAL_TAG, ResolutionIdV1, ResolutionKindV1,
     ResolutionStatusV1, proposal_digest,
 };
 pub use verify::{

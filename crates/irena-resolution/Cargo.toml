@@ -9,7 +9,9 @@ repository.workspace = true
 [dependencies]
 bornite-xml.workspace = true
 borsh.workspace = true
+bornite-core.workspace = true
 irena-core.workspace = true
+irena-decision.workspace = true
 irena-ledger.workspace = true
 irena-meeting.workspace = true
 irena-vote.workspace = true

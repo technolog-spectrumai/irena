@@ -1,9 +1,9 @@
 //! What a resolution is: its id, kind, status and the authority it rests on.
 
 use borsh::{BorshDeserialize, BorshSerialize};
-use irena_core::{RecordKindV1, normalise_body};
+use irena_core::{ChannelIdV1, RecordKindV1, normalise_body};
 use prunella_canonical::hash_domain;
-use prunella_core::{Hash, TxId};
+use prunella_core::{BlockHeight, Hash, TxId};
 
 /// Domain tag for the digest that binds a proposal to what is executed.
 pub const PROPOSAL_TAG: &str = "IRENA/resolution/v1/proposal";
@@ -74,20 +74,20 @@ impl serde::Serialize for ResolutionIdV1 {
 pub enum AmendmentTargetV1 {
     /// Replace the share register.
     ShareStructure,
-    /// Replace the voting rules.
-    VotingRules,
+    /// Replace the channel set: who decides, and how.
+    DecisionChannels,
 }
 
 impl AmendmentTargetV1 {
     /// Both targets, in a fixed order.
-    pub const ALL: [Self; 2] = [Self::ShareStructure, Self::VotingRules];
+    pub const ALL: [Self; 2] = [Self::ShareStructure, Self::DecisionChannels];
 
     /// The company record kind this target amends.
     #[must_use]
     pub const fn record_kind(self) -> RecordKindV1 {
         match self {
             Self::ShareStructure => RecordKindV1::ShareStructure,
-            Self::VotingRules => RecordKindV1::VotingRules,
+            Self::DecisionChannels => RecordKindV1::DecisionChannels,
         }
     }
 
@@ -96,7 +96,7 @@ impl AmendmentTargetV1 {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::ShareStructure => "share-structure",
-            Self::VotingRules => "voting-rules",
+            Self::DecisionChannels => "decision-channels",
         }
     }
 
@@ -200,18 +200,115 @@ impl core::fmt::Display for ResolutionStatusV1 {
 
 /// What authorised a resolution, pinned by transaction id.
 ///
-/// Never a height, never a time, never "the current meeting": the exact finalised
-/// meeting record, the exact agenda item on it, and the exact finalised vote that
-/// answered that item.
-#[derive(BorshSerialize, BorshDeserialize, Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
-pub struct AuthorityV1 {
-    /// The transaction carrying the meeting's **final** record — the only record that
-    /// says which vote answered which item.
-    pub meeting_tx: TxId,
-    /// The agenda item number.
-    pub item_number: u32,
-    /// The transaction carrying that item's final vote record.
-    pub vote_tx: TxId,
+/// Never a height, never a time, never "the current meeting": the exact channel, and
+/// the exact finalised record through which that channel decided. A collective channel
+/// decides by a vote at a meeting, so the authority names the meeting's final record,
+/// the agenda item and the vote that answered it; an individual channel decides by one
+/// signed decision record. Both end at the same fact — a proposal digest one channel
+/// approved — and everything after the authority check is the same code.
+#[derive(BorshSerialize, BorshDeserialize, Clone, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(tag = "mode", rename_all = "kebab-case")]
+pub enum AuthorityV1 {
+    /// A vote of a collective channel, at a meeting of that channel.
+    Collective {
+        /// The channel the meeting was of.
+        channel: String,
+        /// The transaction carrying the meeting's **final** record — the only record
+        /// that says which vote answered which item.
+        meeting_tx: TxId,
+        /// The agenda item number.
+        item_number: u32,
+        /// The transaction carrying that item's final vote record.
+        vote_tx: TxId,
+    },
+    /// A signed decision of an individual channel.
+    Individual {
+        /// The channel the decision was through.
+        channel: String,
+        /// The transaction carrying the final decision record.
+        decision_tx: TxId,
+    },
+}
+
+impl AuthorityV1 {
+    /// The channel named.
+    #[must_use]
+    pub fn channel(&self) -> &str {
+        match self {
+            Self::Collective { channel, .. } | Self::Individual { channel, .. } => channel,
+        }
+    }
+
+    /// The channel named, validated.
+    ///
+    /// # Errors
+    ///
+    /// [`irena_core::IrenaError`] if the label is not a channel id.
+    pub fn channel_id(&self) -> Result<ChannelIdV1, irena_core::IrenaError> {
+        ChannelIdV1::new(self.channel())
+    }
+
+    /// The mode the named channel must have.
+    #[must_use]
+    pub const fn mode(&self) -> &'static str {
+        match self {
+            Self::Collective { .. } => "collective",
+            Self::Individual { .. } => "individual",
+        }
+    }
+
+    /// Whether this rests on one signature rather than a vote.
+    #[must_use]
+    pub const fn is_individual(&self) -> bool {
+        matches!(self, Self::Individual { .. })
+    }
+
+    /// The record the decision was through: the vote or the decision transaction.
+    #[must_use]
+    pub const fn through_tx(&self) -> TxId {
+        match self {
+            Self::Collective { vote_tx, .. } => *vote_tx,
+            Self::Individual { decision_tx, .. } => *decision_tx,
+        }
+    }
+}
+
+/// What a channel approved, as established from the chain.
+///
+/// The fact both kinds of authority end at. A vote's final record and a decision's
+/// final record both pin the company they were taken against and the digest they
+/// approved; this is that content, read back and verified, without the record around
+/// it. Everything downstream — the stale-base rule, the amendment, the execution
+/// record — works from this and never asks which kind it came from.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+pub struct ApprovalV1 {
+    /// The channel that approved.
+    pub channel: String,
+    /// The sole actor, for an individual channel; `None` for a collective one.
+    pub actor: Option<String>,
+    /// Which company.
+    pub company: String,
+    /// What was approved.
+    pub proposal_digest: Hash,
+    /// The height the company was frozen at.
+    pub height: BlockHeight,
+    /// The share register the approval was taken against.
+    pub shares_tx_id: TxId,
+    /// The channel set the approval was taken against.
+    pub channels_tx_id: TxId,
+    /// The record it was read from: the vote or the decision transaction.
+    pub through_tx: TxId,
+}
+
+impl ApprovalV1 {
+    /// The record the actors saw providing the part an amendment replaces.
+    #[must_use]
+    pub const fn base_of(&self, target: AmendmentTargetV1) -> TxId {
+        match target {
+            AmendmentTargetV1::ShareStructure => self.shares_tx_id,
+            AmendmentTargetV1::DecisionChannels => self.channels_tx_id,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -251,13 +348,16 @@ mod tests {
 
     #[test]
     fn a_kind_knows_what_the_shareholders_approved() {
-        let body = "<voting-rules version=\"1.0\"/>";
+        let body = "<decision-channels/>";
         let amendment = ResolutionKindV1::Amendment {
-            target: AmendmentTargetV1::VotingRules,
+            target: AmendmentTargetV1::DecisionChannels,
             body: body.to_owned(),
         };
         assert_eq!(amendment.approved_digest(), proposal_digest(body));
-        assert_eq!(amendment.target(), Some(AmendmentTargetV1::VotingRules));
+        assert_eq!(
+            amendment.target(),
+            Some(AmendmentTargetV1::DecisionChannels)
+        );
         assert_eq!(amendment.body(), Some(body));
 
         let document_digest = Hash::from_bytes([7; 32]);

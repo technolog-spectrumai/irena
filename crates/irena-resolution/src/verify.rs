@@ -1,15 +1,17 @@
 //! Independent verification of a resolution and its execution, from the chain alone.
 
+use crate::demotion::self_demotion;
 use crate::error::ResolutionError;
-use crate::lifecycle::{approved_base, company_at, find_execution};
+use crate::lifecycle::{company_at, find_execution};
 use crate::record::{
     EXECUTION_NAMESPACE, RESOLUTION_NAMESPACE, ResolutionExecutionV1, ResolutionRecordV1,
     body_matches, read_execution_record, read_resolution_record,
 };
-use crate::resolution::ResolutionKindV1;
+use crate::resolution::{AmendmentTargetV1, ApprovalV1, AuthorityV1, ResolutionKindV1};
+use bornite_core::VoterIdV1;
 use irena_core::{RecordBodyV1, read_record};
+use irena_decision::verify_decision;
 use irena_meeting::verify_meeting;
-use irena_vote::FinalVoteRecordV1;
 use prunella_core::{BlockHeight, Transaction, TxId};
 use prunella_store::LocalChainStore;
 
@@ -20,22 +22,30 @@ use prunella_store::LocalChainStore;
 pub enum ResolutionCheckNameV1 {
     /// The transaction is in the resolution namespace and holds a V1 resolution.
     Decodes,
-    /// The meeting it names verifies from the chain, every check.
+    /// Collective authority: the meeting it names verifies from the chain, every check.
     MeetingVerifies,
-    /// The agenda item it names exists on that meeting and is a vote item.
+    /// Collective authority: the agenda item it names exists on that meeting and is a
+    /// vote item.
     ItemIsAVote,
-    /// The vote it names is the vote that answered that item.
+    /// Collective authority: the vote it names is the vote that answered that item.
     VoteAnsweredTheItem,
-    /// That vote verifies from the chain, every check.
+    /// Collective authority: that vote verifies from the chain, every check — which
+    /// includes that its channel was collective at the frozen height.
     VoteVerifies,
-    /// Bornite accepted the motion.
+    /// Collective authority: Bornite accepted the motion.
     VotePassed,
-    /// What the resolution carries is what the shareholders approved: its digest is
-    /// the agenda item's proposal digest.
+    /// Individual authority: the decision it names verifies from the chain, every
+    /// check — which includes that its channel was individual at the frozen height
+    /// and resolved to its signer.
+    DecisionVerifies,
+    /// The vote or decision was through the channel the resolution names.
+    ChannelMatches,
+    /// What the resolution carries is what was approved: its digest is the proposal
+    /// digest the channel decided on.
     ProposalMatches,
-    /// The resolution is for the company this chain holds, and so is the vote.
+    /// The resolution is for the company this chain holds, and so is the approval.
     CompanyMatches,
-    /// The meeting was finalised before the resolution was recorded.
+    /// The meeting or decision was recorded before the resolution was.
     HeightsOrdered,
 }
 
@@ -57,9 +67,13 @@ pub enum ExecutionCheckNameV1 {
     /// The amendment's body is byte for byte what the resolution carries, and digests
     /// to what the vote approved.
     AmendmentMatchesResolution,
-    /// The amendment superseded exactly the record the shareholders approved for
+    /// The amendment superseded exactly the record the actors approved for
     /// replacement.
     AmendmentReplacedApprovedBase,
+    /// A channel-set amendment on an individual decision satisfies the self-demotion
+    /// rule: the signer's reach did not grow. Passes trivially for any other
+    /// amendment, and says so.
+    SelfDemotionHolds,
     /// The amendment is part of the company reconstructed at the execution's height:
     /// it actually took effect.
     AmendmentApplied,
@@ -197,31 +211,181 @@ pub fn verify_resolution(
     Ok(report)
 }
 
-/// The authority checks, shared by both verifiers. Returns the vote when every check
-/// that depends on it held.
+/// The authority checks, shared by both verifiers. Returns the approval when every
+/// check that depends on it held.
 fn verify_authority(
     store: &LocalChainStore,
     record: &ResolutionRecordV1,
     at: BlockHeight,
     report: &mut ResolutionVerificationV1,
-) -> Result<Option<FinalVoteRecordV1>, ResolutionError> {
-    let authority = &record.authority;
+) -> Result<Option<ApprovalV1>, ResolutionError> {
+    let (approval, decided_height) = match &record.authority {
+        AuthorityV1::Collective {
+            channel,
+            meeting_tx,
+            item_number,
+            vote_tx,
+        } => {
+            let Some(vote) = verify_collective(store, *meeting_tx, *item_number, *vote_tx, report)?
+            else {
+                return Ok(None);
+            };
+            let decided_height = store
+                .get_transaction(meeting_tx)?
+                .map(|located| located.height);
+            (
+                ApprovalV1 {
+                    channel: channel.clone(),
+                    actor: None,
+                    company: vote.snapshot.company.clone(),
+                    proposal_digest: vote.snapshot.proposal_digest,
+                    height: vote.snapshot.height,
+                    shares_tx_id: vote.snapshot.shares_tx_id,
+                    channels_tx_id: vote.snapshot.channels_tx_id,
+                    through_tx: *vote_tx,
+                },
+                (
+                    decided_height,
+                    "meeting finalised",
+                    vote.snapshot.channel.clone(),
+                ),
+            )
+        }
+        AuthorityV1::Individual {
+            channel,
+            decision_tx,
+        } => {
+            let verification = verify_decision(store, decision_tx)?;
+            if !report.check(
+                ResolutionCheckNameV1::DecisionVerifies,
+                verification.is_valid(),
+                if verification.is_valid() {
+                    format!("decision {decision_tx} verifies")
+                } else {
+                    verification
+                        .failures()
+                        .map(|check| format!("{:?}", check.name))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                },
+            ) {
+                return Ok(None);
+            }
+            let Some(decision) = verification.record else {
+                report.check(
+                    ResolutionCheckNameV1::ChannelMatches,
+                    false,
+                    "the decision transaction holds no final record",
+                );
+                return Ok(None);
+            };
+            (
+                ApprovalV1 {
+                    channel: channel.clone(),
+                    actor: Some(decision.snapshot.actor.clone()),
+                    company: decision.snapshot.company.clone(),
+                    proposal_digest: decision.snapshot.proposal_digest,
+                    height: decision.snapshot.height,
+                    shares_tx_id: decision.snapshot.shares_tx_id,
+                    channels_tx_id: decision.snapshot.channels_tx_id,
+                    through_tx: *decision_tx,
+                },
+                (
+                    Some(verification.height),
+                    "decision recorded",
+                    decision.snapshot.channel.clone(),
+                ),
+            )
+        }
+    };
+    let (decided_height, decided_label, decided_channel) = decided_height;
 
-    // 2. The meeting.
-    let meeting = verify_meeting(store, &authority.meeting_tx)?;
-    let meeting_height = store
-        .get_transaction(&authority.meeting_tx)?
-        .map(|located| located.height);
+    // The channel.
+    let same_channel = decided_channel == approval.channel;
+    report.check(
+        ResolutionCheckNameV1::ChannelMatches,
+        same_channel,
+        if same_channel {
+            format!("{} channel {}", record.authority.mode(), approval.channel)
+        } else {
+            format!(
+                "the resolution names channel {}, the record was decided through {decided_channel}",
+                approval.channel
+            )
+        },
+    );
+
+    // What was approved.
+    let approved = approval.proposal_digest;
+    let carried = record.kind.approved_digest();
+    report.check(
+        ResolutionCheckNameV1::ProposalMatches,
+        carried == approved,
+        if carried == approved {
+            match &record.kind {
+                ResolutionKindV1::Declarative { .. } => {
+                    format!("the decision document approved, {approved}")
+                }
+                ResolutionKindV1::Amendment { target, body } => format!(
+                    "the {target} body approved, {approved} ({} bytes)",
+                    body.len()
+                ),
+            }
+        } else {
+            format!("the channel approved {approved}, the resolution carries {carried}")
+        },
+    );
+
+    // The company.
+    let chain = company_at(store, at)?;
+    let same = record.company == chain.company && approval.company == chain.company.as_str();
+    report.check(
+        ResolutionCheckNameV1::CompanyMatches,
+        same,
+        if same {
+            format!("{}", chain.company)
+        } else {
+            format!(
+                "chain holds {}, resolution says {}, approval says {}",
+                chain.company, record.company, approval.company
+            )
+        },
+    );
+
+    // Heights.
+    let ordered = decided_height.is_some_and(|height| height < at);
+    report.check(
+        ResolutionCheckNameV1::HeightsOrdered,
+        ordered,
+        match decided_height {
+            Some(height) => format!("{decided_label} at {height}, resolution at {at}"),
+            None => "the authority's transaction is not on the chain".to_owned(),
+        },
+    );
+
+    Ok(Some(approval))
+}
+
+/// The collective authority checks: meeting, item, vote, result.
+fn verify_collective(
+    store: &LocalChainStore,
+    meeting_tx: TxId,
+    item_number: u32,
+    vote_tx: TxId,
+    report: &mut ResolutionVerificationV1,
+) -> Result<Option<irena_vote::FinalVoteRecordV1>, ResolutionError> {
+    // The meeting.
+    let meeting = verify_meeting(store, &meeting_tx)?;
     if !report.check(
         ResolutionCheckNameV1::MeetingVerifies,
         meeting.is_valid(),
         if meeting.is_valid() {
             format!(
                 "meeting {} verifies at height {}",
-                meeting.record.as_ref().map_or_else(
-                    || authority.meeting_tx.to_string(),
-                    |r| r.meeting_id.to_string()
-                ),
+                meeting
+                    .record
+                    .as_ref()
+                    .map_or_else(|| meeting_tx.to_string(), |r| r.meeting_id.to_string()),
                 meeting.height
             )
         } else {
@@ -243,17 +407,17 @@ fn verify_authority(
         return Ok(None);
     };
 
-    // 3. The agenda item.
+    // The agenda item.
     let entry = final_record
         .items
         .iter()
-        .find(|entry| entry.item.number == authority.item_number);
+        .find(|entry| entry.item.number == item_number);
     let is_vote = entry.is_some_and(|entry| entry.item.body.is_vote());
     if !report.check(
         ResolutionCheckNameV1::ItemIsAVote,
         is_vote,
         match entry {
-            None => format!("the meeting has no item {}", authority.item_number),
+            None => format!("the meeting has no item {item_number}"),
             Some(entry) if !is_vote => format!(
                 "item {} is informational: {:?}",
                 entry.item.number, entry.item.title
@@ -265,18 +429,18 @@ fn verify_authority(
     }
     let entry = entry.expect("checked");
 
-    // 4. The vote answered that item.
+    // The vote answered that item.
     let answered = entry.vote_tx_id;
     if !report.check(
         ResolutionCheckNameV1::VoteAnsweredTheItem,
-        answered == Some(authority.vote_tx),
+        answered == Some(vote_tx),
         match answered {
-            Some(answered) if answered == authority.vote_tx => {
+            Some(answered) if answered == vote_tx => {
                 format!("item {} was answered by {answered}", entry.item.number)
             }
             Some(answered) => format!(
-                "item {} was answered by {answered}, the resolution names {}",
-                entry.item.number, authority.vote_tx
+                "item {} was answered by {answered}, the resolution names {vote_tx}",
+                entry.item.number
             ),
             None => format!("item {} has no vote", entry.item.number),
         },
@@ -284,13 +448,13 @@ fn verify_authority(
         return Ok(None);
     }
 
-    // 5. and 6. The vote itself.
-    let verification = irena_vote::verify(store, &authority.vote_tx)?;
+    // The vote itself.
+    let verification = irena_vote::verify(store, &vote_tx)?;
     if !report.check(
         ResolutionCheckNameV1::VoteVerifies,
         verification.is_valid(),
         if verification.is_valid() {
-            format!("vote {} verifies", authority.vote_tx)
+            format!("vote {vote_tx} verifies")
         } else {
             verification
                 .failures()
@@ -319,55 +483,6 @@ fn verify_authority(
             vote.evaluation.reason
         ),
     );
-
-    // 7. What was approved.
-    let approved = vote.snapshot.proposal_digest;
-    let carried = record.kind.approved_digest();
-    report.check(
-        ResolutionCheckNameV1::ProposalMatches,
-        carried == approved,
-        if carried == approved {
-            match &record.kind {
-                ResolutionKindV1::Declarative { .. } => {
-                    format!("the decision document approved, {approved}")
-                }
-                ResolutionKindV1::Amendment { target, body } => format!(
-                    "the {target} body approved, {approved} ({} bytes)",
-                    body.len()
-                ),
-            }
-        } else {
-            format!("the vote approved {approved}, the resolution carries {carried}")
-        },
-    );
-
-    // 8. The company.
-    let chain = company_at(store, at)?;
-    let same = record.company == chain.company && vote.snapshot.company == chain.company.as_str();
-    report.check(
-        ResolutionCheckNameV1::CompanyMatches,
-        same,
-        if same {
-            format!("{}", chain.company)
-        } else {
-            format!(
-                "chain holds {}, resolution says {}, vote says {}",
-                chain.company, record.company, vote.snapshot.company
-            )
-        },
-    );
-
-    // 9. Heights.
-    let ordered = meeting_height.is_some_and(|height| height < at);
-    report.check(
-        ResolutionCheckNameV1::HeightsOrdered,
-        ordered,
-        match meeting_height {
-            Some(height) => format!("meeting finalised at {height}, resolution at {at}"),
-            None => "the meeting transaction is not on the chain".to_owned(),
-        },
-    );
-
     Ok(Some(vote))
 }
 
@@ -416,7 +531,7 @@ pub fn verify_execution(
         checks: Vec::new(),
     };
     let decoded = decode_resolution(&resolution_located.transaction, &mut resolution_report);
-    let vote = match &decoded {
+    let approval = match &decoded {
         Some(record) => {
             resolution_report.record = Some(record.clone());
             verify_authority(
@@ -442,7 +557,7 @@ pub fn verify_execution(
         return Ok(report);
     }
     let resolution = decoded.expect("valid implies decoded");
-    let vote = vote.expect("valid implies a vote");
+    let approval = approval.expect("valid implies an approval");
 
     // 3. It authorises this.
     let target = resolution.kind.target();
@@ -506,19 +621,19 @@ pub fn verify_execution(
 
     // 5. It is the approved body.
     let published = match &amendment.body {
-        RecordBodyV1::ShareStructure(_) | RecordBodyV1::VotingRules(_) => {
+        RecordBodyV1::ShareStructure(_) | RecordBodyV1::DecisionChannels(_) => {
             published_body(amendment_text.expect("read"), body)
         }
         _ => false,
     };
     let digest_matches = body_matches(body, execution.body_digest)
-        && execution.body_digest == vote.snapshot.proposal_digest;
+        && execution.body_digest == approval.proposal_digest;
     report.check(
         ExecutionCheckNameV1::AmendmentMatchesResolution,
         published && digest_matches,
         if published && digest_matches {
             format!(
-                "the {} the shareholders approved, {}",
+                "the {} the channel approved, {}",
                 execution.target, execution.body_digest
             )
         } else if !published {
@@ -528,13 +643,13 @@ pub fn verify_execution(
                 "the execution claims digest {}, the resolution's body digests to {}, the vote approved {}",
                 execution.body_digest,
                 crate::resolution::proposal_digest(body),
-                vote.snapshot.proposal_digest
+                approval.proposal_digest
             )
         },
     );
 
     // 6. It replaced what was approved.
-    let approved = approved_base(&vote, execution.target);
+    let approved = approval.base_of(execution.target);
     let replaced = amendment.supersedes;
     report.check(
         ExecutionCheckNameV1::AmendmentReplacedApprovedBase,
@@ -553,7 +668,67 @@ pub fn verify_execution(
         },
     );
 
-    // 7. It took effect.
+    // 7. One person rewriting who decides: only ever downwards.
+    match (&execution.target, &approval.actor, &amendment.body) {
+        (AmendmentTargetV1::DecisionChannels, Some(actor), RecordBodyV1::DecisionChannels(new)) => {
+            // The company just before the amendment: the set it replaced, and the
+            // register the sources resolved against.
+            let before = amendment_located
+                .height
+                .value()
+                .checked_sub(1)
+                .map(BlockHeight)
+                .ok_or_else(|| ResolutionError::Chain {
+                    detail: "an amendment cannot sit in the genesis block".to_owned(),
+                })
+                .and_then(|height| company_at(store, height));
+            let verdict = before.and_then(|state| {
+                let signer =
+                    VoterIdV1::new(actor.clone()).map_err(|error| ResolutionError::Chain {
+                        detail: format!("the decision's actor is not a voter id: {error}"),
+                    })?;
+                self_demotion(&signer, &state.channels.value, new, &state.shares.value)
+            });
+            match verdict {
+                Ok(verdict) => {
+                    report.check(
+                        ExecutionCheckNameV1::SelfDemotionHolds,
+                        verdict.holds,
+                        format!(
+                            "channel {} on {actor}'s own signature: {}",
+                            approval.channel, verdict.detail
+                        ),
+                    );
+                }
+                Err(error) => {
+                    report.check(
+                        ExecutionCheckNameV1::SelfDemotionHolds,
+                        false,
+                        error.to_string(),
+                    );
+                }
+            }
+        }
+        (AmendmentTargetV1::DecisionChannels, None, _) => {
+            report.check(
+                ExecutionCheckNameV1::SelfDemotionHolds,
+                true,
+                format!(
+                    "not applicable: channel {} decided collectively",
+                    approval.channel
+                ),
+            );
+        }
+        _ => {
+            report.check(
+                ExecutionCheckNameV1::SelfDemotionHolds,
+                true,
+                format!("not applicable: a {} amendment", execution.target),
+            );
+        }
+    }
+
+    // 8. It took effect.
     let applied = match company_at(store, located.height) {
         Ok(state) => state
             .history_of(execution.target.record_kind())
@@ -574,7 +749,7 @@ pub fn verify_execution(
         },
     );
 
-    // 8. Heights.
+    // 9. Heights.
     let ordered = resolution_located.height < amendment_located.height
         && amendment_located.height <= located.height;
     report.check(
@@ -586,7 +761,7 @@ pub fn verify_execution(
         ),
     );
 
-    // 9. Once only.
+    // 10. Once only.
     let first = find_execution(store, resolution_tx)?;
     let once = first.is_some_and(|(found, _)| found == *tx_id);
     report.check(

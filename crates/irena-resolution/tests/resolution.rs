@@ -86,9 +86,64 @@ fn register_v2() -> String {
 
 fn genesis_xml() -> String {
     format!(
-        "<company-genesis><identity name=\"Acme Industries Ltd\"/>{}<governance>{RULES}</governance></company-genesis>",
-        register()
+        "<company-genesis><identity name=\"Acme Industries Ltd\"/>{}<governance>{}</governance></company-genesis>",
+        register(),
+        channels(RULES)
     )
+}
+
+/// The channel set: shareholders (share register, collective, `rules`); board (chair
+/// key 5 weight 2, dir-a key 6, dir-b key 7; collective, simple majority, no quorum);
+/// ceo (chair, individual).
+fn channels(rules: &str) -> String {
+    format!(
+        r#"<decision-channels>
+  <channel id="shareholders" mode="collective">
+    <actors source="share-register"/>
+    {rules}
+  </channel>
+  <channel id="board" mode="collective">
+    <actors source="roster">
+      <member id="chair" key="{}" weight="2"/>
+      <member id="dir-a" key="{}"/>
+      <member id="dir-b" key="{}"/>
+    </actors>
+    <voting-rules version="1.0">
+      <weight type="electorate"/>
+      <exclusions enabled="false"/>
+      <quorum type="none"/>
+      <threshold type="simple-majority" basis="votes-cast"/>
+      <abstentions treatment="exclude"/>
+      <tie treatment="reject"/>
+    </voting-rules>
+  </channel>
+  <channel id="ceo" mode="individual">
+    <actors source="roster">
+      <member id="chair" key="{}"/>
+    </actors>
+  </channel>
+</decision-channels>"#,
+        key(5).public_key(),
+        key(6).public_key(),
+        key(7).public_key(),
+        key(5).public_key()
+    )
+}
+
+/// The same channels with the shareholders under RULES_V2: the channel-set amendment
+/// a resolution installs.
+fn channels_v2() -> String {
+    channels(RULES_V2)
+}
+
+/// The shareholders' rules of a channel set in force.
+fn rules_of(channels: &irena_core::DecisionChannelsV1) -> &irena_core::VotingRulesV1 {
+    channels
+        .get(&irena_core::ChannelIdV1::new("shareholders").unwrap())
+        .expect("shareholders channel")
+        .mode
+        .rules()
+        .expect("collective")
 }
 
 struct Chain {
@@ -135,6 +190,7 @@ struct Held {
 /// where it landed. Item numbers are 1-based in the order given.
 fn hold(chain: &Chain, items: &[(&str, Hash, bool)]) -> Held {
     let mut meeting = MeetingV1::draft(MeetingMetadataV1 {
+        channel: "shareholders".to_owned(),
         title: "Annual General Meeting 2026".to_owned(),
         scheduled_at: "2026-06-01T10:00:00Z".to_owned(),
         notice_digest: None,
@@ -202,7 +258,8 @@ fn vote_of(chain: &Chain, held: &Held, item: u32) -> TxId {
 }
 
 fn authority(chain: &Chain, held: &Held, item: u32) -> AuthorityV1 {
-    AuthorityV1 {
+    AuthorityV1::Collective {
+        channel: "shareholders".to_owned(),
         meeting_tx: held.meeting_tx,
         item_number: item,
         vote_tx: vote_of(chain, held, item),
@@ -322,34 +379,34 @@ fn a_passed_vote_becomes_a_resolution_that_replaces_the_share_register() {
     // And both records verify from the chain alone.
     let report = verify_resolution(&chain.store, &id.tx_id()).expect("verify");
     assert!(report.is_valid(), "{report:#?}");
-    assert_eq!(report.checks.len(), 9);
+    assert_eq!(report.checks.len(), 10);
     let report = verify_execution(&chain.store, &executed.execution_tx).expect("verify");
     assert!(report.is_valid(), "{report:#?}");
-    assert_eq!(report.checks.len(), 9);
+    assert_eq!(report.checks.len(), 10);
     assert!(report.resolution.as_ref().unwrap().is_valid());
 }
 
 #[test]
-fn a_resolution_can_replace_the_voting_rules_and_the_next_vote_uses_them() {
+fn a_resolution_can_replace_the_channel_set_and_the_next_vote_uses_it() {
     let chain = founded();
-    let digest = proposal_digest(RULES_V2);
+    let digest = proposal_digest(&channels_v2());
     let held = hold(&chain, &[("Adopt a two-thirds majority", digest, true)]);
-    let before = company_now(&chain.store).unwrap().rules.tx_id;
+    let before = company_now(&chain.store).unwrap().channels.tx_id;
 
     let resolution = resolve_amendment(
         &chain,
         &held,
         1,
-        AmendmentTargetV1::VotingRules,
-        RULES_V2,
+        AmendmentTargetV1::DecisionChannels,
+        &channels_v2(),
         "Resolution 1: two-thirds majority",
     );
     let executed = resolution.executed().expect("executed");
     let after = company_now(&chain.store).expect("state");
-    assert_eq!(after.rules.tx_id, executed.amendment_tx);
-    assert_ne!(after.rules.tx_id, before);
+    assert_eq!(after.channels.tx_id, executed.amendment_tx);
+    assert_ne!(after.channels.tx_id, before);
     assert_eq!(
-        after.rules.value,
+        *rules_of(&after.channels.value),
         bornite_xml::read_rules_document(RULES_V2).unwrap()
     );
     assert_eq!(after.shares.tx_id, before, "the register is untouched");
@@ -414,7 +471,7 @@ fn a_declarative_resolution_records_a_decision_and_changes_nothing() {
     let after = company_now(&chain.store).expect("state");
     assert_eq!(after.identity.tx_id, before.identity.tx_id);
     assert_eq!(after.shares.tx_id, before.shares.tx_id);
-    assert_eq!(after.rules.tx_id, before.rules.tx_id);
+    assert_eq!(after.channels.tx_id, before.channels.tx_id);
     assert_eq!(after.applied.len(), before.applied.len());
 
     let report = verify_resolution(&chain.store, &id.tx_id()).expect("verify");
@@ -425,7 +482,7 @@ fn a_declarative_resolution_records_a_decision_and_changes_nothing() {
 fn several_resolutions_from_one_meeting_are_independent() {
     let chain = founded();
     let shares_digest = proposal_digest(&register_v2());
-    let rules_digest = proposal_digest(RULES_V2);
+    let rules_digest = proposal_digest(&channels_v2());
     let document = Hash::from_bytes([0xdd; 32]);
     let held = hold(
         &chain,
@@ -463,15 +520,15 @@ fn several_resolutions_from_one_meeting_are_independent() {
         &chain,
         &held,
         3,
-        AmendmentTargetV1::VotingRules,
-        RULES_V2,
+        AmendmentTargetV1::DecisionChannels,
+        &channels_v2(),
         "Resolution 3",
     );
 
     // Both amendments landed, each on its own part.
     let state = company_now(&chain.store).expect("state");
     assert_eq!(state.shares.tx_id, shares.executed().unwrap().amendment_tx);
-    assert_eq!(state.rules.tx_id, rules.executed().unwrap().amendment_tx);
+    assert_eq!(state.channels.tx_id, rules.executed().unwrap().amendment_tx);
     assert_eq!(state.shares.value.len(), 2);
     // Three resolutions, two executions, every one verifying.
     for id in [
@@ -534,7 +591,7 @@ fn a_rejected_vote_authorises_nothing() {
 fn a_resolution_must_name_the_vote_that_answered_its_item() {
     let chain = founded();
     let first = proposal_digest(&register_v2());
-    let second = proposal_digest(RULES_V2);
+    let second = proposal_digest(&channels_v2());
     let held = hold(
         &chain,
         &[
@@ -547,7 +604,8 @@ fn a_resolution_must_name_the_vote_that_answered_its_item() {
     // Item 1's resolution, pointing at item 2's vote.
     let mut crossed = ResolutionV1::draft(
         "Resolution 1",
-        AuthorityV1 {
+        AuthorityV1::Collective {
+            channel: "shareholders".to_owned(),
             meeting_tx: held.meeting_tx,
             item_number: 1,
             vote_tx: vote_of(&chain, &held, 2),
@@ -580,7 +638,8 @@ fn a_resolution_must_name_the_vote_that_answered_its_item() {
     let other = hold(&chain, &[("Buy out carol", first, true)]);
     let mut foreign = ResolutionV1::draft(
         "Resolution 1",
-        AuthorityV1 {
+        AuthorityV1::Collective {
+            channel: "shareholders".to_owned(),
             meeting_tx: held.meeting_tx,
             item_number: 1,
             vote_tx: vote_of(&chain, &other, 1),
@@ -605,7 +664,8 @@ fn a_resolution_must_name_the_vote_that_answered_its_item() {
     let head = chain.store.head().expect("head");
     let mut absent = ResolutionV1::draft(
         "Resolution 9",
-        AuthorityV1 {
+        AuthorityV1::Collective {
+            channel: "shareholders".to_owned(),
             meeting_tx: held.meeting_tx,
             item_number: 9,
             vote_tx: vote_of(&chain, &held, 1),
@@ -625,7 +685,8 @@ fn a_resolution_must_name_the_vote_that_answered_its_item() {
     ));
     let mut nowhere = ResolutionV1::draft(
         "Resolution 1",
-        AuthorityV1 {
+        AuthorityV1::Collective {
+            channel: "shareholders".to_owned(),
             meeting_tx: TxId::from_hash(Hash::from_bytes([0x77; 32])),
             item_number: 1,
             vote_tx: vote_of(&chain, &held, 1),
@@ -921,14 +982,14 @@ fn a_resolution_passed_against_a_company_that_has_since_changed_is_refused() {
     // A rules resolution is just as strict about its own part.
     let rules_held = hold(
         &chain,
-        &[("Adopt two thirds", proposal_digest(RULES_V2), true)],
+        &[("Adopt two thirds", proposal_digest(&channels_v2()), true)],
     );
     let mut rules = ResolutionV1::draft(
         "Resolution 1",
         authority(&chain, &rules_held, 1),
         ResolutionKindV1::Amendment {
-            target: AmendmentTargetV1::VotingRules,
-            body: RULES_V2.to_owned(),
+            target: AmendmentTargetV1::DecisionChannels,
+            body: channels_v2(),
         },
     );
     rules
@@ -1151,7 +1212,8 @@ fn a_forged_resolution_is_caught_by_the_chain() {
         &acme(),
         &notary("2026-06-02T09:00:00Z"),
         "Resolution 1",
-        &AuthorityV1 {
+        &AuthorityV1::Collective {
+            channel: "shareholders".to_owned(),
             meeting_tx: held.meeting_tx,
             item_number: 1,
             vote_tx,
@@ -1173,7 +1235,8 @@ fn a_forged_resolution_is_caught_by_the_chain() {
         &acme(),
         &notary("2026-06-02T09:00:00Z"),
         "Resolution 1",
-        &AuthorityV1 {
+        &AuthorityV1::Collective {
+            channel: "shareholders".to_owned(),
             meeting_tx: passed.meeting_tx,
             item_number: 1,
             vote_tx: vote_of(&chain, &passed, 1),
@@ -1197,14 +1260,15 @@ fn a_forged_resolution_is_caught_by_the_chain() {
         &chain,
         &[
             ("Buy out carol", digest, true),
-            ("Adopt two thirds", proposal_digest(RULES_V2), true),
+            ("Adopt two thirds", proposal_digest(&channels_v2()), true),
         ],
     );
     let payload = compose_resolution(
         &acme(),
         &notary("2026-06-02T09:00:00Z"),
         "Resolution 1",
-        &AuthorityV1 {
+        &AuthorityV1::Collective {
+            channel: "shareholders".to_owned(),
             meeting_tx: two.meeting_tx,
             item_number: 1,
             vote_tx: vote_of(&chain, &two, 2),
@@ -1248,7 +1312,7 @@ fn a_forged_execution_is_caught_by_the_chain() {
     let held = hold(&chain, &[("Buy out carol", digest, true)]);
     let rules_held = hold(
         &chain,
-        &[("Adopt two thirds", proposal_digest(RULES_V2), true)],
+        &[("Adopt two thirds", proposal_digest(&channels_v2()), true)],
     );
     let resolution = resolve_amendment(
         &chain,
@@ -1315,7 +1379,7 @@ fn a_forged_execution_is_caught_by_the_chain() {
 
     // An execution whose target is not what the resolution authorises.
     let mut wrong_target = genuine.clone();
-    wrong_target.target = AmendmentTargetV1::VotingRules;
+    wrong_target.target = AmendmentTargetV1::DecisionChannels;
     let report = verify_execution(&chain.store, &republish(&wrong_target)).expect("verify");
     assert!(
         execution_failures(&report).contains(&"ResolutionAuthorisesThis".to_owned()),
@@ -1468,7 +1532,14 @@ fn both_records_are_nested_readable_xml_on_the_chain() {
         proposal_digest(&register_v2())
     );
     assert_eq!(record.title, "Resolution 1: buy out carol");
-    assert_eq!(record.authority.item_number, 1);
+    assert!(
+        matches!(
+            record.authority,
+            AuthorityV1::Collective { item_number: 1, ref channel, .. } if channel == "shareholders"
+        ),
+        "{:?}",
+        record.authority
+    );
 
     // The export shows both, readable, and re-imports to the same verdict.
     let document =
@@ -1576,7 +1647,7 @@ fn resolution_records_are_read_strictly() {
         ),
         (
             "a body of the wrong kind",
-            good.replace(&register_v2(), RULES_V2),
+            good.replace(&register_v2(), &channels_v2()),
         ),
     ] {
         assert!(
@@ -1639,7 +1710,7 @@ fn resolution_records_are_read_strictly() {
             "Resolution 1",
             &authority(&chain, &held, 1),
             &ResolutionKindV1::Amendment {
-                target: AmendmentTargetV1::VotingRules,
+                target: AmendmentTargetV1::DecisionChannels,
                 body: register_v2(),
             },
         )

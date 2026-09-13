@@ -56,6 +56,40 @@ pub enum ResolutionError {
         /// Which checks failed.
         detail: String,
     },
+    /// The decision does not verify from the chain.
+    #[error("the decision {decision_tx} does not verify: {detail}")]
+    DecisionUnverified {
+        /// The decision.
+        decision_tx: TxId,
+        /// Which checks failed.
+        detail: String,
+    },
+    /// The vote or decision was through a different channel than the resolution
+    /// names.
+    #[error(
+        "the resolution names channel {expected}, but record {through} was decided through channel {found}"
+    )]
+    WrongChannel {
+        /// The channel the resolution names.
+        expected: String,
+        /// The channel the record was decided through.
+        found: String,
+        /// The vote or decision record.
+        through: TxId,
+    },
+    /// An individual channel tried to amend the channel set in its own favour.
+    ///
+    /// The self-demotion rule (`crate::self_demotion`): the signer's reach must not
+    /// grow. Refused here and re-checked by anyone verifying the execution.
+    #[error("channel {channel} may not carry this amendment alone: {detail}")]
+    SelfPromotion {
+        /// The channel.
+        channel: String,
+        /// Its sole actor.
+        actor: String,
+        /// Which rule failed, and how.
+        detail: String,
+    },
     /// The vote did not pass.
     ///
     /// A resolution rests on a decision, and a rejected motion is a decision not to
@@ -121,6 +155,9 @@ pub enum ResolutionError {
     /// A vote could not be read.
     #[error("{0}")]
     Vote(#[source] Box<irena_vote::VoteError>),
+    /// A decision could not be read, or a channel could not be resolved.
+    #[error("{0}")]
+    Decision(#[source] Box<irena_decision::DecisionError>),
     /// The company could not be reconstructed, or the amendment was refused.
     #[error("{0}")]
     Ledger(#[source] Box<irena_ledger::LedgerError>),
@@ -159,6 +196,7 @@ macro_rules! boxed_from {
 
 boxed_from!(irena_meeting::MeetingError, Meeting);
 boxed_from!(irena_vote::VoteError, Vote);
+boxed_from!(irena_decision::DecisionError, Decision);
 boxed_from!(irena_ledger::LedgerError, Ledger);
 boxed_from!(irena_core::IrenaError, Record);
 boxed_from!(prunella_store::StoreError, Store);

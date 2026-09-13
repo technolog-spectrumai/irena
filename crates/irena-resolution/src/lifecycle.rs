@@ -1,18 +1,22 @@
 //! The resolution as a process.
 
+use crate::demotion::self_demotion;
 use crate::error::ResolutionError;
 use crate::record::{
     EXECUTION_NAMESPACE, EXECUTION_SCHEMA_VERSION, RESOLUTION_NAMESPACE, RESOLUTION_SCHEMA_VERSION,
     ResolutionExecutionV1, compose_execution, compose_resolution, read_execution_record,
 };
 use crate::resolution::{
-    AmendmentTargetV1, AuthorityV1, ResolutionIdV1, ResolutionKindV1, ResolutionStatusV1,
+    AmendmentTargetV1, ApprovalV1, AuthorityV1, ResolutionIdV1, ResolutionKindV1,
+    ResolutionStatusV1,
 };
+use bornite_core::VoterIdV1;
 use borsh::{BorshDeserialize, BorshSerialize};
-use irena_core::{CompanyIdV1, NotarisationV1};
+use irena_core::{CompanyIdV1, NotarisationV1, read_decision_channels_document};
+use irena_decision::verify_decision;
 use irena_ledger::{company_now, publish, reconstruct};
 use irena_meeting::verify_meeting;
-use irena_vote::{FinalVoteRecordV1, verify};
+use irena_vote::verify;
 use prunella_canonical::Canonical;
 use prunella_core::{BlockHeight, Namespace, SchemaVersion, TransactionDraft, TxId};
 use prunella_crypto::SigningKey;
@@ -139,22 +143,30 @@ impl ResolutionV1 {
     /// Finalises the resolution: checks its authority against the chain, then records
     /// it.
     ///
-    /// Nothing the draft says is trusted. Read back from the chain:
+    /// Nothing the draft says is trusted. Read back from the chain, for a
+    /// **collective** authority:
     ///
     /// 1. the meeting's final record verifies, every check, including its votes;
     /// 2. the named agenda item exists and is a vote item;
     /// 3. that item was answered by exactly the vote the resolution names;
-    /// 4. the vote verifies, every check;
+    /// 4. the vote verifies, every check — which includes that its channel was
+    ///    collective at the frozen height;
     /// 5. **Bornite accepted it** — a rejected motion authorises nothing;
-    /// 6. what the resolution carries is what the shareholders approved: its
+    /// 6. the vote was through the channel the resolution names;
+    /// 7. what the resolution carries is what was approved: its
     ///    [`ResolutionKindV1::approved_digest`] is the agenda item's proposal digest.
+    ///
+    /// For an **individual** authority: the decision record verifies, every check —
+    /// which includes that its channel was individual and resolved to its signer —
+    /// then 6 and 7 as above.
     ///
     /// # Errors
     ///
     /// [`ResolutionError::InvalidTransition`] unless a draft, or the named failure:
     /// [`ResolutionError::MeetingUnverified`], [`ResolutionError::NoSuchVoteItem`],
     /// [`ResolutionError::WrongVote`], [`ResolutionError::VoteUnverified`],
-    /// [`ResolutionError::VoteRejected`], [`ResolutionError::ProposalMismatch`].
+    /// [`ResolutionError::VoteRejected`], [`ResolutionError::DecisionUnverified`],
+    /// [`ResolutionError::WrongChannel`], [`ResolutionError::ProposalMismatch`].
     pub fn finalize(
         &mut self,
         store: &LocalChainStore,
@@ -163,12 +175,12 @@ impl ResolutionV1 {
         timestamp_millis: u64,
     ) -> Result<ResolutionIdV1, ResolutionError> {
         self.expect_status(ResolutionStatusV1::Draft, "finalize")?;
-        let vote = self.check_authority(store)?;
+        let approval = self.check_authority(store)?;
         let state = company_now(store)?;
-        if vote.snapshot.company != state.company.as_str() {
+        if approval.company != state.company.as_str() {
             return Err(ResolutionError::CompanyMismatch {
                 expected: state.company.to_string(),
-                found: vote.snapshot.company.clone(),
+                found: approval.company,
             });
         }
         let payload = compose_resolution(
@@ -192,82 +204,143 @@ impl ResolutionV1 {
         Ok(ResolutionIdV1::from_tx(tx_id))
     }
 
-    /// Checks the authority and returns the vote it rests on.
-    fn check_authority(
-        &self,
-        store: &LocalChainStore,
-    ) -> Result<FinalVoteRecordV1, ResolutionError> {
-        let meeting = verify_meeting(store, &self.authority.meeting_tx)?;
-        if !meeting.is_valid() {
-            let failed: Vec<String> = meeting
-                .failures()
-                .map(|check| format!("{:?}", check.name))
-                .collect();
-            return Err(ResolutionError::MeetingUnverified {
-                meeting_tx: self.authority.meeting_tx,
-                detail: if failed.is_empty() {
-                    "a referenced vote does not verify".to_owned()
-                } else {
-                    failed.join(", ")
-                },
-            });
-        }
-        let record = meeting.record.ok_or(ResolutionError::MeetingUnverified {
-            meeting_tx: self.authority.meeting_tx,
-            detail: "the transaction does not hold a final meeting record".to_owned(),
-        })?;
-        let entry = record
-            .items
-            .iter()
-            .find(|entry| entry.item.number == self.authority.item_number)
-            .filter(|entry| entry.item.body.is_vote())
-            .ok_or(ResolutionError::NoSuchVoteItem {
-                meeting_tx: self.authority.meeting_tx,
-                item_number: self.authority.item_number,
-            })?;
-        let answered = entry.vote_tx_id.ok_or(ResolutionError::NoSuchVoteItem {
-            meeting_tx: self.authority.meeting_tx,
-            item_number: self.authority.item_number,
-        })?;
-        if answered != self.authority.vote_tx {
-            return Err(ResolutionError::WrongVote {
-                meeting_tx: self.authority.meeting_tx,
-                item_number: self.authority.item_number,
-                expected: answered,
-                found: self.authority.vote_tx,
-            });
-        }
+    /// Checks the authority and returns what it established: the approval.
+    fn check_authority(&self, store: &LocalChainStore) -> Result<ApprovalV1, ResolutionError> {
+        let approval = match &self.authority {
+            AuthorityV1::Collective {
+                channel,
+                meeting_tx,
+                item_number,
+                vote_tx,
+            } => {
+                let meeting = verify_meeting(store, meeting_tx)?;
+                if !meeting.is_valid() {
+                    let failed: Vec<String> = meeting
+                        .failures()
+                        .map(|check| format!("{:?}", check.name))
+                        .collect();
+                    return Err(ResolutionError::MeetingUnverified {
+                        meeting_tx: *meeting_tx,
+                        detail: if failed.is_empty() {
+                            "a referenced vote does not verify".to_owned()
+                        } else {
+                            failed.join(", ")
+                        },
+                    });
+                }
+                let record = meeting.record.ok_or(ResolutionError::MeetingUnverified {
+                    meeting_tx: *meeting_tx,
+                    detail: "the transaction does not hold a final meeting record".to_owned(),
+                })?;
+                let entry = record
+                    .items
+                    .iter()
+                    .find(|entry| entry.item.number == *item_number)
+                    .filter(|entry| entry.item.body.is_vote())
+                    .ok_or(ResolutionError::NoSuchVoteItem {
+                        meeting_tx: *meeting_tx,
+                        item_number: *item_number,
+                    })?;
+                let answered = entry.vote_tx_id.ok_or(ResolutionError::NoSuchVoteItem {
+                    meeting_tx: *meeting_tx,
+                    item_number: *item_number,
+                })?;
+                if answered != *vote_tx {
+                    return Err(ResolutionError::WrongVote {
+                        meeting_tx: *meeting_tx,
+                        item_number: *item_number,
+                        expected: answered,
+                        found: *vote_tx,
+                    });
+                }
 
-        let verification = verify(store, &self.authority.vote_tx)?;
-        if !verification.is_valid() {
-            let failed: Vec<String> = verification
-                .failures()
-                .map(|check| format!("{:?}", check.name))
-                .collect();
-            return Err(ResolutionError::VoteUnverified {
-                vote_tx: self.authority.vote_tx,
-                detail: failed.join(", "),
-            });
-        }
-        let vote = verification.record.ok_or(ResolutionError::VoteUnverified {
-            vote_tx: self.authority.vote_tx,
-            detail: "the transaction does not hold a final vote record".to_owned(),
-        })?;
-        if !vote.evaluation.accepted() {
-            return Err(ResolutionError::VoteRejected {
-                vote_tx: self.authority.vote_tx,
-                reason: vote.evaluation.reason.clone(),
-            });
-        }
-        let approved = vote.snapshot.proposal_digest;
+                let verification = verify(store, vote_tx)?;
+                if !verification.is_valid() {
+                    let failed: Vec<String> = verification
+                        .failures()
+                        .map(|check| format!("{:?}", check.name))
+                        .collect();
+                    return Err(ResolutionError::VoteUnverified {
+                        vote_tx: *vote_tx,
+                        detail: failed.join(", "),
+                    });
+                }
+                let vote = verification.record.ok_or(ResolutionError::VoteUnverified {
+                    vote_tx: *vote_tx,
+                    detail: "the transaction does not hold a final vote record".to_owned(),
+                })?;
+                if !vote.evaluation.accepted() {
+                    return Err(ResolutionError::VoteRejected {
+                        vote_tx: *vote_tx,
+                        reason: vote.evaluation.reason.clone(),
+                    });
+                }
+                if vote.snapshot.channel != *channel {
+                    return Err(ResolutionError::WrongChannel {
+                        expected: channel.clone(),
+                        found: vote.snapshot.channel.clone(),
+                        through: *vote_tx,
+                    });
+                }
+                ApprovalV1 {
+                    channel: channel.clone(),
+                    actor: None,
+                    company: vote.snapshot.company.clone(),
+                    proposal_digest: vote.snapshot.proposal_digest,
+                    height: vote.snapshot.height,
+                    shares_tx_id: vote.snapshot.shares_tx_id,
+                    channels_tx_id: vote.snapshot.channels_tx_id,
+                    through_tx: *vote_tx,
+                }
+            }
+            AuthorityV1::Individual {
+                channel,
+                decision_tx,
+            } => {
+                let verification = verify_decision(store, decision_tx)?;
+                if !verification.is_valid() {
+                    let failed: Vec<String> = verification
+                        .failures()
+                        .map(|check| format!("{:?}", check.name))
+                        .collect();
+                    return Err(ResolutionError::DecisionUnverified {
+                        decision_tx: *decision_tx,
+                        detail: failed.join(", "),
+                    });
+                }
+                let decision = verification
+                    .record
+                    .ok_or(ResolutionError::DecisionUnverified {
+                        decision_tx: *decision_tx,
+                        detail: "the transaction does not hold a final decision record".to_owned(),
+                    })?;
+                if decision.snapshot.channel != *channel {
+                    return Err(ResolutionError::WrongChannel {
+                        expected: channel.clone(),
+                        found: decision.snapshot.channel.clone(),
+                        through: *decision_tx,
+                    });
+                }
+                ApprovalV1 {
+                    channel: channel.clone(),
+                    actor: Some(decision.snapshot.actor.clone()),
+                    company: decision.snapshot.company.clone(),
+                    proposal_digest: decision.snapshot.proposal_digest,
+                    height: decision.snapshot.height,
+                    shares_tx_id: decision.snapshot.shares_tx_id,
+                    channels_tx_id: decision.snapshot.channels_tx_id,
+                    through_tx: *decision_tx,
+                }
+            }
+        };
         let carried = self.kind.approved_digest();
-        if carried != approved {
+        if carried != approval.proposal_digest {
             return Err(ResolutionError::ProposalMismatch {
-                expected: approved,
+                expected: approval.proposal_digest,
                 found: carried,
             });
         }
-        Ok(vote)
+        Ok(approval)
     }
 
     /// Executes an amendment resolution: publishes the amendment it authorises, then
@@ -277,20 +350,23 @@ impl ResolutionV1 {
     /// so the record that changes reconstructed state is the same one it has always
     /// been; the execution record only says which resolution authorised it.
     ///
-    /// Two things are refused:
+    /// Three things are refused:
     ///
-    /// * **A stale base.** The shareholders approved replacing one exact record. If
-    ///   that record no longer provides its part, executing would replace something
-    ///   they never saw, so it is refused ([`ResolutionError::StaleBase`]) and the
-    ///   resolution must go back to a meeting.
+    /// * **A stale base.** The actors approved replacing one exact record. If that
+    ///   record no longer provides its part, executing would replace something they
+    ///   never saw, so it is refused ([`ResolutionError::StaleBase`]) and the
+    ///   resolution must be decided again.
     /// * **A second execution.** The chain is scanned for an execution of this
     ///   resolution ([`ResolutionError::AlreadyExecuted`]); even without that,
     ///   `publish` would refuse the second amendment as stale.
+    /// * **Self-promotion.** A channel-set amendment resting on an individual decision
+    ///   must satisfy the self-demotion rule ([`crate::self_demotion`]): the signer's
+    ///   reach may not grow ([`ResolutionError::SelfPromotion`]).
     ///
     /// # Errors
     ///
     /// [`ResolutionError::InvalidTransition`] unless finalised;
-    /// [`ResolutionError::NothingToExecute`] for a declarative resolution; the two
+    /// [`ResolutionError::NothingToExecute`] for a declarative resolution; the three
     /// refusals above; or the chain's own errors.
     pub fn execute(
         &mut self,
@@ -317,9 +393,9 @@ impl ResolutionV1 {
             });
         }
 
-        // The company is still the one the shareholders approved against.
-        let vote = self.check_authority(store)?;
-        let approved = approved_base(&vote, target);
+        // The company is still the one the actors approved against.
+        let approval = self.check_authority(store)?;
+        let approved = approval.base_of(target);
         let state = company_now(store)?;
         let current = state.provider_of(target.record_kind());
         if current != approved {
@@ -328,6 +404,24 @@ impl ResolutionV1 {
                 approved,
                 current,
             });
+        }
+
+        // One person rewriting who decides: only ever downwards.
+        if target == AmendmentTargetV1::DecisionChannels
+            && let Some(actor) = &approval.actor
+        {
+            let signer = VoterIdV1::new(actor.clone()).map_err(|error| ResolutionError::Chain {
+                detail: format!("the decision's actor is not a voter id: {error}"),
+            })?;
+            let new = read_decision_channels_document(&body)?;
+            let verdict = self_demotion(&signer, &state.channels.value, &new, &state.shares.value)?;
+            if !verdict.holds {
+                return Err(ResolutionError::SelfPromotion {
+                    channel: approval.channel.clone(),
+                    actor: actor.clone(),
+                    detail: verdict.detail,
+                });
+            }
         }
 
         // The amendment: an ordinary company record, superseding what was approved.
@@ -370,14 +464,6 @@ impl ResolutionV1 {
         self.executed = Some(executed);
         self.status = ResolutionStatusV1::Executed;
         Ok(executed)
-    }
-}
-
-/// The record the voters saw providing the part an amendment replaces.
-pub(crate) fn approved_base(vote: &FinalVoteRecordV1, target: AmendmentTargetV1) -> TxId {
-    match target {
-        AmendmentTargetV1::ShareStructure => vote.snapshot.shares_tx_id,
-        AmendmentTargetV1::VotingRules => vote.snapshot.rules_tx_id,
     }
 }
 
