@@ -123,6 +123,13 @@ The tree is what makes **inclusion proofs** possible: see
 A proof verifies against a block header alone — `tx_root` and `tx_count` — without the
 block's transactions.
 
+The construction is generic. `merkle::TreeTags` names the three domains, and
+`merkle::root`, `InclusionProof::generate_with` and `InclusionProof::verify_with` build
+and check the same tree under any tags over any 32-byte leaves. `TreeTags::PRUNELLA_V1`
+is the block tree above; an application that needs to commit to a list of its own (a
+set of ballots, say) supplies its own tags and gets identical shape and proofs in a
+domain that can never collide with a block's. The tree and proof logic exist once.
+
 Note what the root does and does not cover. It commits to *declared* transaction ids,
 not to payloads. Rewriting a payload leaves the root intact; it is caught by the id
 derivation and by the signature. All three rules exist because each covers what the

@@ -23,42 +23,105 @@
 //! needs only the header's `tx_root` and `tx_count`, not the block's transactions.
 //! Proofs are over transaction ids alone and know nothing about namespaces, payloads
 //! or what a transaction means.
+//!
+//! The construction itself is generic: [`TreeTags`] names the three hash domains, and
+//! [`root`], [`InclusionProof::generate_with`] and [`InclusionProof::verify_with`] take
+//! any tags over any 32-byte leaves. [`TreeTags::PRUNELLA_V1`] is the block tree; an
+//! application committing to its own list (ballots, records, anything) supplies its own
+//! tags and gets the same shape, the same proofs and no way to collide with a block
+//! tree. The convenience functions without a `tags` argument are the Prunella V1 tree.
 
 use crate::hash::{Hash, TxId};
 use borsh::{BorshDeserialize, BorshSerialize};
 use prunella_canonical::{Canonical, DomainHasher, domain, hash_domain};
 
-/// Hashes one transaction id as a leaf.
-#[must_use]
-pub fn leaf_hash(id: &TxId) -> Hash {
-    Hash::from_bytes(hash_domain(domain::TX_LEAF, id.as_bytes()))
+/// The three hash domains a Merkle tree is built in.
+///
+/// Separate tags keep leaves, interior nodes and the empty tree in distinct domains, and
+/// keep one application's tree from ever equalling another's over the same leaves.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TreeTags {
+    /// Domain for a leaf: `hash_domain(leaf, content)`.
+    pub leaf: &'static str,
+    /// Domain for an interior node: `hash_domain(node, left || right)`.
+    pub node: &'static str,
+    /// Domain for the root of the empty tree: `hash_domain(empty, "")`.
+    pub empty: &'static str,
 }
 
-/// Hashes two child roots as an interior node.
+impl TreeTags {
+    /// The Prunella V1 block tree over transaction ids, as frozen in `PROTOCOL_V1.md`.
+    pub const PRUNELLA_V1: Self = Self {
+        leaf: domain::TX_LEAF,
+        node: domain::TX_NODE,
+        empty: domain::TX_ROOT,
+    };
+}
+
+/// Hashes one 32-byte leaf content in `tags.leaf`.
 #[must_use]
-pub fn node_hash(left: &Hash, right: &Hash) -> Hash {
-    let mut hasher = DomainHasher::new(domain::TX_NODE);
+pub fn leaf_hash_with(tags: TreeTags, content: &Hash) -> Hash {
+    Hash::from_bytes(hash_domain(tags.leaf, content.as_bytes()))
+}
+
+/// Hashes two child roots as an interior node in `tags.node`.
+#[must_use]
+pub fn node_hash_with(tags: TreeTags, left: &Hash, right: &Hash) -> Hash {
+    let mut hasher = DomainHasher::new(tags.node);
     hasher.update(left.as_bytes()).update(right.as_bytes());
     Hash::from_bytes(hasher.finalize())
 }
 
-/// The root of the empty tree.
+/// The root of the empty tree in `tags.empty`.
 #[must_use]
-pub fn empty_root() -> Hash {
-    Hash::from_bytes(hash_domain(domain::TX_ROOT, b""))
+pub fn empty_root_with(tags: TreeTags) -> Hash {
+    Hash::from_bytes(hash_domain(tags.empty, b""))
 }
 
-/// Computes the Merkle root over an ordered list of transaction ids.
+/// Computes the Merkle root over an ordered list of leaf contents under `tags`.
 #[must_use]
-pub fn merkle_root(ids: &[TxId]) -> Hash {
-    match ids {
-        [] => empty_root(),
-        [only] => leaf_hash(only),
+pub fn root(tags: TreeTags, leaves: &[Hash]) -> Hash {
+    match leaves {
+        [] => empty_root_with(tags),
+        [only] => leaf_hash_with(tags, only),
         _ => {
-            let split = split_point(ids.len());
-            node_hash(&merkle_root(&ids[..split]), &merkle_root(&ids[split..]))
+            let split = split_point(leaves.len());
+            node_hash_with(
+                tags,
+                &root(tags, &leaves[..split]),
+                &root(tags, &leaves[split..]),
+            )
         }
     }
+}
+
+/// Hashes one transaction id as a leaf of the Prunella V1 tree.
+#[must_use]
+pub fn leaf_hash(id: &TxId) -> Hash {
+    leaf_hash_with(TreeTags::PRUNELLA_V1, &id.hash())
+}
+
+/// Hashes two child roots as an interior node of the Prunella V1 tree.
+#[must_use]
+pub fn node_hash(left: &Hash, right: &Hash) -> Hash {
+    node_hash_with(TreeTags::PRUNELLA_V1, left, right)
+}
+
+/// The root of the empty Prunella V1 tree.
+#[must_use]
+pub fn empty_root() -> Hash {
+    empty_root_with(TreeTags::PRUNELLA_V1)
+}
+
+/// Computes the Prunella V1 Merkle root over an ordered list of transaction ids.
+#[must_use]
+pub fn merkle_root(ids: &[TxId]) -> Hash {
+    root(TreeTags::PRUNELLA_V1, &id_hashes(ids))
+}
+
+/// The leaf contents of a Prunella V1 tree: the ids' digests, in order.
+fn id_hashes(ids: &[TxId]) -> Vec<Hash> {
+    ids.iter().map(|id| id.hash()).collect()
 }
 
 /// The largest power of two strictly less than `n`, for `n >= 2`.
@@ -146,16 +209,25 @@ pub enum ProofError {
 }
 
 impl InclusionProof {
-    /// Builds the proof for the transaction at `index` among `ids`.
+    /// Builds the proof for the transaction at `index` among `ids` in the Prunella V1
+    /// tree.
     ///
     /// Returns `None` if `index` is out of range.
     #[must_use]
     pub fn generate(ids: &[TxId], index: usize) -> Option<Self> {
-        if index >= ids.len() {
+        Self::generate_with(TreeTags::PRUNELLA_V1, &id_hashes(ids), index)
+    }
+
+    /// Builds the proof for the leaf at `index` among `leaves` in a tree under `tags`.
+    ///
+    /// Returns `None` if `index` is out of range or exceeds [`u32::MAX`].
+    #[must_use]
+    pub fn generate_with(tags: TreeTags, leaves: &[Hash], index: usize) -> Option<Self> {
+        if index >= leaves.len() {
             return None;
         }
         let mut steps = Vec::new();
-        audit_path(ids, index, &mut steps);
+        audit_path(tags, leaves, index, &mut steps);
         Some(Self {
             index: u32::try_from(index).ok()?,
             steps,
@@ -172,6 +244,22 @@ impl InclusionProof {
     /// different root. Any alteration of the id, the index or a step is caught by one
     /// of these.
     pub fn verify(&self, id: &TxId, count: u32, root: &Hash) -> Result<(), ProofError> {
+        self.verify_with(TreeTags::PRUNELLA_V1, &id.hash(), count, root)
+    }
+
+    /// Verifies that `leaf` sits at this proof's index in a tree of `count` leaves under
+    /// `tags` whose root is `root`.
+    ///
+    /// # Errors
+    ///
+    /// As [`InclusionProof::verify`].
+    pub fn verify_with(
+        &self,
+        tags: TreeTags,
+        leaf: &Hash,
+        count: u32,
+        root: &Hash,
+    ) -> Result<(), ProofError> {
         if self.index >= count {
             return Err(ProofError::IndexOutOfRange {
                 index: self.index,
@@ -191,11 +279,11 @@ impl InclusionProof {
             });
         }
 
-        let mut running = leaf_hash(id);
+        let mut running = leaf_hash_with(tags, leaf);
         for step in &self.steps {
             running = match step.side {
-                Side::Left => node_hash(&step.hash, &running),
-                Side::Right => node_hash(&running, &step.hash),
+                Side::Left => node_hash_with(tags, &step.hash, &running),
+                Side::Right => node_hash_with(tags, &running, &step.hash),
             };
         }
         if running == *root {
@@ -223,22 +311,22 @@ impl InclusionProof {
 }
 
 /// Appends the audit path for leaf `index`, leaf-most step first.
-fn audit_path(ids: &[TxId], index: usize, steps: &mut Vec<ProofStep>) {
-    if ids.len() <= 1 {
+fn audit_path(tags: TreeTags, leaves: &[Hash], index: usize, steps: &mut Vec<ProofStep>) {
+    if leaves.len() <= 1 {
         return;
     }
-    let split = split_point(ids.len());
+    let split = split_point(leaves.len());
     if index < split {
-        audit_path(&ids[..split], index, steps);
+        audit_path(tags, &leaves[..split], index, steps);
         steps.push(ProofStep {
             side: Side::Right,
-            hash: merkle_root(&ids[split..]),
+            hash: root(tags, &leaves[split..]),
         });
     } else {
-        audit_path(&ids[split..], index - split, steps);
+        audit_path(tags, &leaves[split..], index - split, steps);
         steps.push(ProofStep {
             side: Side::Left,
-            hash: merkle_root(&ids[..split]),
+            hash: root(tags, &leaves[..split]),
         });
     }
 }
@@ -446,5 +534,54 @@ mod tests {
         let decoded =
             InclusionProof::from_canonical_bytes(&proof.canonical_bytes()).expect("decode");
         assert_eq!(decoded, proof);
+    }
+    const OTHER: TreeTags = TreeTags {
+        leaf: "TEST/other-leaf",
+        node: "TEST/other-node",
+        empty: "TEST/other-empty",
+    };
+
+    #[test]
+    fn the_generic_tree_under_prunella_tags_is_the_block_tree() {
+        for count in 0..=9usize {
+            let ids: Vec<TxId> = (0..count).map(|i| id(i as u8 + 1)).collect();
+            let leaves: Vec<Hash> = ids.iter().map(|id| id.hash()).collect();
+            assert_eq!(root(TreeTags::PRUNELLA_V1, &leaves), merkle_root(&ids));
+            for index in 0..count {
+                let generic = InclusionProof::generate_with(TreeTags::PRUNELLA_V1, &leaves, index)
+                    .expect("in range");
+                assert_eq!(
+                    generic,
+                    InclusionProof::generate(&ids, index).expect("in range")
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn different_tags_give_different_trees_over_the_same_leaves() {
+        let leaves: Vec<Hash> = (1..=4).map(|i| id(i).hash()).collect();
+        assert_ne!(root(OTHER, &leaves), root(TreeTags::PRUNELLA_V1, &leaves));
+        assert_ne!(root(OTHER, &[]), root(TreeTags::PRUNELLA_V1, &[]));
+        assert_ne!(
+            root(OTHER, &leaves[..1]),
+            root(TreeTags::PRUNELLA_V1, &leaves[..1])
+        );
+
+        // A proof built in one domain never verifies in another.
+        let proof = InclusionProof::generate_with(OTHER, &leaves, 2).expect("in range");
+        assert!(
+            proof
+                .verify_with(OTHER, &leaves[2], 4, &root(OTHER, &leaves))
+                .is_ok()
+        );
+        assert!(matches!(
+            proof.verify_with(TreeTags::PRUNELLA_V1, &leaves[2], 4, &root(OTHER, &leaves)),
+            Err(ProofError::RootMismatch { .. })
+        ));
+        assert!(matches!(
+            proof.verify_with(OTHER, &leaves[2], 4, &root(TreeTags::PRUNELLA_V1, &leaves)),
+            Err(ProofError::RootMismatch { .. })
+        ));
     }
 }

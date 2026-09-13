@@ -47,7 +47,7 @@ pub use hash::{Hash, TxId};
 pub use head::ChainHead;
 pub use keys::{PUBLIC_KEY_LEN, PublicKey, SIGNATURE_LEN, Signature};
 pub use labels::{BlockHeight, MAX_LABEL_LEN, Namespace, NetworkId, SchemaVersion};
-pub use merkle::{InclusionProof, ProofError, ProofStep, Side};
+pub use merkle::{InclusionProof, ProofError, ProofStep, Side, TreeTags};
 pub use transaction::{Transaction, TransactionDraft};
 
 /// Protocol version 1 names for the wire types.
