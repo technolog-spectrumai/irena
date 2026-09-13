@@ -1,23 +1,24 @@
 # Irena
 
-Three independent engines in one workspace, each of which knows nothing about the
-others' purpose:
+A company and its votes on an immutable ledger. Three layers in one workspace, two of
+which know nothing about the third:
 
-| Engine | What it is | What it does not know |
+```
+                    irena-*        ← the company layer: knows what a share is
+                   ╱        ╲
+          prunella-*        bornite-*
+      ledger, opaque      voting arithmetic
+```
+
+| Layer | What it is | What it does not know |
 |---|---|---|
 | **Prunella** | An immutable, organisation-agnostic ledger | What any payload means |
 | **Bornite** | A deterministic voting engine | Who is voting, or why |
-| **The governance bridge** | The only place both exist | What a subject or a notarised document refers to |
+| **Irena** | The company: genesis, share register, voting rules, notarised on the ledger | Whether the register names the real owners |
 
-```
-prunella-*  ←── governance-bridge ──→  bornite-*
-```
-
-Neither arrow points the other way. No Prunella crate mentions Bornite; no Bornite
-crate mentions Prunella; a test greps every source file to make sure. The bridge stores
-Bornite's voting rules and electorate rolls on a Prunella ledger, records every
-amendment, and resolves what was in force at any height so a vote can be evaluated
-against ledger truth.
+Irena imports both engines directly. Neither imports Irena; no Prunella crate mentions
+Bornite and no Bornite crate mentions Prunella; a test greps every engine source file
+to make sure. There is no bridge.
 
 ## The rule that shapes the whole design
 
@@ -28,33 +29,53 @@ deployment democratically. So:
 
 * The rules document says how to count and what passing means — weights, exclusions,
   quorum, threshold, abstentions, ties — and **nothing** about who is voting or why.
-* The electorate is voter ids and integer weights. Where a weight comes from — shares,
-  one member one vote, a drone's node count — is not recorded anywhere in the engine.
+* The electorate Bornite sees is voter ids and integer weights. Where a weight comes
+  from — shares, one member one vote, a drone's node count — is Irena's business, and
+  Bornite never learns it.
 * One schema defines the `voting-rules` element, and the standalone file and the
   on-ledger record both include it. A rules file written for one purpose is stored on a
   ledger for another **byte for byte unchanged**.
-* Organisation-specific truth — a company's share structure, a non-profit's minutes,
-  a swarm's fleet manifest — reaches the ledger only through a **notarisation**: a
-  notary id and the digest of an external document, entered manually. The bridge
-  stores it and never parses it. Every change to rules or roll is a new ledger record
-  that names the one it amends, so the full history is on the chain.
+* Company truth — the share register, the founding identity — reaches the ledger only
+  through a **notarised record**: who attested to it (id, name, address), when they say
+  the change took effect, and optionally the digest of an external document, entered
+  by hand. Every change is a new record that names the one it amends, so the full
+  history is on the chain, and Prunella's XML export shows each record **nested and
+  readable inside its block**.
 
 | Document | Covers |
 |---|---|
+| [IRENA_V1.md](IRENA_V1.md) | The company model, the record envelope, notarisation, amendment and resolution, the TODO list |
 | [BORNITE_V1.md](BORNITE_V1.md) | **Normative.** The frozen voting types, rules grammar and evaluation algorithm |
-| [GOVERNANCE_BRIDGE.md](GOVERNANCE_BRIDGE.md) | Records, notarisation, amendment and resolution, the boundary |
+| [PROTOCOL_V1.md](PROTOCOL_V1.md) | **Normative.** The frozen ledger wire protocol |
+| [docs/irena-cli.md](docs/irena-cli.md) | The `irena` binary |
 | [docs/bornite-cli.md](docs/bornite-cli.md) | The `bornite` binary |
-| [docs/governance-cli.md](docs/governance-cli.md) | The `governance` binary |
+| [docs/cli.md](docs/cli.md) | The `prunella` binary |
 
 ```console
 $ prunella keygen --out k.key
-$ governance --chain gov.chain init --network swarm --subject swarm-alpha \
-      --rules rules.xml --signing-key k.key            # rules live in the genesis block
-$ governance --chain gov.chain publish-roll --subject swarm-alpha \
-      --roll roll.xml --signing-key k.key
-$ governance --chain gov.chain evaluate --subject swarm-alpha --ballots ballots.xml
-$ bornite evaluate --rules rules.xml --vote vote.xml   # the same rules, no ledger at all
+$ irena --chain acme.chain init --network acme-net --company acme \
+      --genesis genesis.xml --signing-key k.key \
+      --notary-id notary-07 --notary-name "Jane Roe" --notary-at 2026-03-01T09:30:00Z
+$ irena --chain acme.chain publish-shares --company acme --file shares.xml \
+      --signing-key k.key --notary-id notary-07 --notary-name "Jane Roe" \
+      --notary-at 2026-03-01T09:35:00Z
+$ irena --chain acme.chain publish-rules --company acme --file rules.xml \
+      --signing-key k.key --notary-id notary-07 --notary-name "Jane Roe" \
+      --notary-at 2026-03-01T09:40:00Z
+$ irena --chain acme.chain show --company acme          # the company at the head
+$ irena --chain acme.chain shares --company acme --at 1 # the register as it was then
+$ prunella --chain acme.chain export --out acme.xml      # every record readable in its block
+$ bornite evaluate --rules rules.xml --vote vote.xml     # the same rules, no ledger at all
 ```
+
+| Crate | Responsibility |
+|---|---|
+| [`irena-core`](crates/irena-core) | The company model — genesis, flat share register with signing keys, notarisation, record envelope — and its strict XML |
+| [`irena-ledger`](crates/irena-ledger) | Records on a Prunella chain: publish, amendment chains, what the company is at any height |
+| [`irena-cli`](crates/irena-cli) | The `irena` binary |
+
+Not yet built, and listed as such in [IRENA_V1.md §7](IRENA_V1.md): share classes (the
+company has flat shares), shareholder meetings, board meetings and decisions.
 
 ---
 
@@ -104,9 +125,11 @@ genesis: 4cfcf0687ebd6e97e1ae8aab69ed46793088cfb705c63c91475e1fd75fed507c
 * **Full verification from genesis to head**, reporting every defect with its exact
   height, transaction index and identifier.
 * **Merkle transaction roots with inclusion proofs**, verifiable against a block header
-  alone, without the block's transactions.
+  alone, without the block's transactions; the tree is generic over its hash domains so
+  an application can commit to lists of its own with the same code.
 * **Lossless versioned XML export and import** — atomic, idempotent, dry-runnable —
-  preserving payload bytes exactly.
+  preserving payload bytes exactly, with a payload that is itself an XML element
+  carried nested and readable rather than as base64.
 * **A storage abstraction** with one local persistent implementation: atomic appends,
   height/hash/transaction indexes, clean close and reopen.
 * **A narrow acceptance boundary** so consensus can be added later without touching
@@ -186,14 +209,7 @@ same auditable result on every machine.
 | [`bornite-xml`](crates/bornite-xml) | Strict readers for `<voting-rules>` and `<vote>` documents |
 | [`bornite-cli`](crates/bornite-cli) | The `bornite` binary |
 
-# The governance bridge
-
-| Crate | Responsibility |
-|---|---|
-| [`governance-bridge`](crates/governance-bridge) | Records on the ledger, amendment chains, resolution at a height, evaluation against ledger truth |
-| [`governance-cli`](crates/governance-cli) | The `governance` binary |
-
-Schemas for all three live under [`schemas/`](schemas/).
+Schemas for all three layers live under [`schemas/`](schemas/).
 
 ## Documentation
 
@@ -211,7 +227,8 @@ Schemas for all three live under [`schemas/`](schemas/).
 | [consensus-boundary.md](docs/consensus-boundary.md) | The seam a consensus engine would occupy |
 
 The XML schema is published at
-[`schemas/prunella-chain-v1.xsd`](schemas/prunella-chain-v1.xsd).
+[`schemas/prunella-chain-v2.xsd`](schemas/prunella-chain-v2.xsd); version 1 documents
+([`prunella-chain-v1.xsd`](schemas/prunella-chain-v1.xsd)) still import.
 
 ## Development
 

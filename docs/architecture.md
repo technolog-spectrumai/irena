@@ -1,5 +1,9 @@
 # Architecture
 
+This document covers Prunella, the ledger. For the layer above it — Irena, the company
+model that imports Prunella and Bornite and that neither of them knows exists — see
+[IRENA_V1.md](../IRENA_V1.md); for the voting engine, [BORNITE_V1.md](../BORNITE_V1.md).
+
 Prunella is a standalone immutable ledger. It is organization-agnostic by construction:
 nothing in it knows about companies, governance, voters, shareholders or any business
 rule. Application meaning lives in exactly two places, neither of which Prunella

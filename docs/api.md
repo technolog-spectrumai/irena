@@ -75,6 +75,23 @@ pub struct GenesisSpec { pub network_id: NetworkId, pub timestamp_millis: u64,
                          pub transactions: Vec<Transaction> }
 ```
 
+```rust
+pub mod merkle {
+    pub struct TreeTags { pub leaf: &'static str, pub node: &'static str, pub empty: &'static str }
+    impl TreeTags { pub const PRUNELLA_V1: Self; }
+    pub fn root(tags: TreeTags, leaves: &[Hash]) -> Hash;       // generic tree
+    pub fn merkle_root(ids: &[TxId]) -> Hash;                    // the block tree
+    pub struct InclusionProof { pub index: u32, pub steps: Vec<ProofStep> }
+    impl InclusionProof {
+        pub fn generate(ids: &[TxId], index: usize) -> Option<Self>;
+        pub fn generate_with(tags: TreeTags, leaves: &[Hash], index: usize) -> Option<Self>;
+        pub fn verify(&self, id: &TxId, count: u32, root: &Hash) -> Result<(), ProofError>;
+        pub fn verify_with(&self, tags: TreeTags, leaf: &Hash, count: u32, root: &Hash) -> Result<(), ProofError>;
+        pub fn verify_against(&self, id: &TxId, header: &BlockHeader) -> Result<(), ProofError>;
+    }
+}
+```
+
 `BlockDraft::build` derives `tx_root` and `tx_count`, so they cannot be made to disagree
 with the transaction list. `TransactionDraft::into_transaction` derives the id after the
 signature is attached, so an id can never be computed before the signature it commits to.
@@ -244,6 +261,11 @@ pub enum DocumentKind { Full, Range, Projection }
 pub struct ChainDocument { /* … */ pub blocks: Vec<DocumentBlock> }
 pub struct DocumentBlock { pub block: Block, pub declared_hash: Hash }
 pub struct ImportPlan { /* what an import would do, computed without writing */ }
+
+pub const FORMAT_VERSION: u32 = 2;                 // written
+pub const SUPPORTED_FORMAT_VERSIONS: [u32; 2];     // read: 1 and 2
+pub enum PayloadEncoding { Base64, Xml }           // choose(&[u8]) is a pure function of the bytes
+pub fn is_single_element(text: &str) -> bool;      // the nesting criterion
 ```
 
 `DocumentBlock` keeps the declared hash separate from the block so a mismatch between

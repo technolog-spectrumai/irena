@@ -291,7 +291,13 @@ hash.
 * Consensus, finality, fork choice, validator sets.
 * Any meaning for `payload`, `namespace`, `schema_version` or `nonce`.
 * Storage layout or transport format. The XML transport is separately versioned and is
-  never a hash pre-image.
+  never a hash pre-image. XML transport version 2 (nested payloads) changed nothing in
+  this document: a payload's bytes are the pre-image whatever they look like in a
+  document.
+* How an application uses the Merkle construction of §7 for its own purposes. The
+  implementation exposes the tree generically over its three domain tags; only the
+  tags named in §2 are Prunella's, and roots under any other tags are not
+  `tx_root` values.
 * Time. `timestamp_millis` is a producer's claim, constrained only to be non-decreasing.
 
 ## 13. Assumptions
