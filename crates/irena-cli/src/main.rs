@@ -6,14 +6,16 @@
 //! `irena-ledger`; the only things this binary adds are file reading, a clock for
 //! block timestamps, and output formatting.
 //!
-//! The `vote` subcommands carry a vote through its lifecycle as a state file, so each
-//! step is one invocation; see `vote.rs`.
+//! The `vote` and `meeting` subcommands carry a vote or a meeting through its
+//! lifecycle as a state file, so each step is one invocation; see `vote.rs` and
+//! `meeting.rs`.
 //!
 //! Exit codes: `0` success; `1` a finding (a broken amendment chain from
 //! `verify-structure`, a rejected motion from `vote evaluate`, a record that fails
 //! `vote verify`); `2` invalid input or a refused operation.
 
 mod company;
+mod meeting;
 mod vote;
 
 use clap::{Parser, Subcommand};
@@ -171,12 +173,16 @@ pub(crate) enum Command {
     /// A vote, carried through its lifecycle as a state file.
     #[command(subcommand)]
     Vote(vote::VoteCommand),
+    /// A shareholder meeting: an agenda, its votes, and the record of both.
+    #[command(subcommand)]
+    Meeting(meeting::MeetingCommand),
 }
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
     let outcome = match &cli.command {
         Command::Vote(command) => vote::run(&cli, command),
+        Command::Meeting(command) => meeting::run(&cli, command),
         _ => company::run(&cli),
     };
     match outcome {

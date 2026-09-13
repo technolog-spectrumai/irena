@@ -837,3 +837,452 @@ fn a_vote_needs_a_frozen_company_and_a_rejected_motion_exits_one() {
     assert_eq!(evaluated.code(), 1, "{}", evaluated.err());
     assert!(evaluated.out().contains("Rejected"), "{}", evaluated.out());
 }
+
+// ---------------------------------------------------------------------------------
+// Meetings.
+// ---------------------------------------------------------------------------------
+
+impl Cli {
+    fn meeting(&self, args: &[&str]) -> Run {
+        let mut full = vec!["meeting"];
+        full.extend_from_slice(args);
+        self.run(&full)
+    }
+    /// A drafted meeting: one informational item and two vote items.
+    fn agenda(&self) {
+        self.meeting(&[
+            "new",
+            "--title",
+            "Annual General Meeting 2026",
+            "--scheduled-at",
+            "2026-06-01T10:00:00Z",
+            "--notice-digest",
+            &"a0".repeat(32),
+            "--state",
+            "m.state",
+        ])
+        .ok();
+        self.meeting(&[
+            "add-item",
+            "--state",
+            "m.state",
+            "--title",
+            "Report of the directors",
+            "--document-digest",
+            &"11".repeat(32),
+        ])
+        .ok();
+        self.meeting(&[
+            "add-item",
+            "--state",
+            "m.state",
+            "--title",
+            "Approve the 2026 accounts",
+            "--proposal-digest",
+            &"22".repeat(32),
+        ])
+        .ok();
+        self.meeting(&[
+            "add-item",
+            "--state",
+            "m.state",
+            "--title",
+            "Re-appoint the auditor",
+            "--proposal-digest",
+            &"33".repeat(32),
+        ])
+        .ok();
+    }
+    fn meeting_ballot(&self, item: &str, voter: &str, choice: &str, seed: u8) -> String {
+        let out = format!("{voter}-{item}.ballot");
+        self.meeting(&[
+            "ballot",
+            "--state",
+            "m.state",
+            "--item",
+            item,
+            "--voter",
+            voter,
+            "--choice",
+            choice,
+            "--signing-key",
+            &format!("holder{seed}.key"),
+            "--out",
+            &out,
+        ])
+        .ok();
+        out
+    }
+}
+
+#[test]
+fn a_meeting_runs_end_to_end_with_several_votes_and_verifies() {
+    let cli = Cli::new();
+    cli.founded();
+    cli.agenda();
+
+    let drafted = cli
+        .meeting(&["show", "--state", "m.state", "--json"])
+        .ok()
+        .json();
+    assert_eq!(drafted["status"], "draft");
+    assert_eq!(drafted["items"].as_array().map(Vec::len), Some(3));
+    assert_eq!(drafted["items"][0]["kind"], "informational");
+    assert_eq!(drafted["items"][1]["kind"], "vote");
+    assert!(drafted["meeting_id"].is_null());
+
+    let convened = cli
+        .with_notary(&[
+            "meeting",
+            "convene",
+            "--state",
+            "m.state",
+            "--signing-key",
+            "k.key",
+            "--timestamp",
+            "1000",
+            "--json",
+        ])
+        .ok();
+    assert_eq!(convened.json()["status"], "convened");
+    assert_eq!(convened.json()["company"], "acme");
+    let meeting_id = convened.json()["meeting_id"].as_str().unwrap().to_owned();
+    assert_eq!(convened.json()["convened"]["height"], 1);
+
+    // Ballots need an open meeting.
+    let early = cli.meeting(&[
+        "ballot",
+        "--state",
+        "m.state",
+        "--item",
+        "2",
+        "--voter",
+        "alice",
+        "--choice",
+        "yes",
+        "--signing-key",
+        "holder1.key",
+        "--out",
+        "x.ballot",
+    ]);
+    assert_eq!(early.code(), 2);
+
+    let opened = cli.meeting(&["open", "--state", "m.state", "--json"]).ok();
+    assert_eq!(opened.json()["status"], "open");
+    assert_eq!(opened.json()["opened_at"], 1);
+    // Two votes, with different ids: each froze the company on its own.
+    let two = opened.json()["items"][1]["vote_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let three = opened.json()["items"][2]["vote_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert_ne!(two, three);
+    assert!(
+        opened.json()["items"][0]["vote_id"].is_null(),
+        "informational"
+    );
+
+    // Item 2 passes, item 3 fails.
+    let alice2 = cli.meeting_ballot("2", "alice", "yes", 1);
+    let bob2 = cli.meeting_ballot("2", "bob", "no", 2);
+    let alice3 = cli.meeting_ballot("3", "alice", "no", 1);
+    cli.meeting(&[
+        "cast", "--state", "m.state", "--item", "2", "--ballot", &alice2,
+    ])
+    .ok();
+    cli.meeting(&[
+        "cast", "--state", "m.state", "--item", "2", "--ballot", &bob2,
+    ])
+    .ok();
+    cli.meeting(&[
+        "cast", "--state", "m.state", "--item", "3", "--ballot", &alice3,
+    ])
+    .ok();
+
+    // A ballot for item 2 is not a ballot for item 3.
+    let wrong = cli.meeting(&[
+        "cast", "--state", "m.state", "--item", "3", "--ballot", &alice2,
+    ]);
+    assert_eq!(wrong.code(), 2);
+    assert!(wrong.err().contains("item 3"), "{}", wrong.err());
+    // Nor is an informational item votable.
+    let info = cli.meeting(&[
+        "cast", "--state", "m.state", "--item", "1", "--ballot", &alice2,
+    ]);
+    assert_eq!(info.code(), 2);
+    assert!(info.err().contains("informational"), "{}", info.err());
+
+    // The register is amended mid-meeting; the frozen votes do not notice.
+    cli.amend("publish-shares", "shares2.xml", "shares", "1500")
+        .ok();
+
+    let closed = cli.meeting(&["close", "--state", "m.state", "--json"]).ok();
+    assert_eq!(closed.json()["status"], "closed");
+    assert_eq!(closed.json()["items"][1]["outcome"], "accepted");
+    assert_eq!(closed.json()["items"][2]["outcome"], "rejected");
+    assert_eq!(closed.json()["items"][1]["ballots"], 2);
+
+    let finalized = cli
+        .with_notary(&[
+            "meeting",
+            "finalize",
+            "--state",
+            "m.state",
+            "--signing-key",
+            "k.key",
+            "--timestamp",
+            "2000",
+            "--json",
+        ])
+        .ok();
+    let tx = finalized.json()["tx_id"].as_str().unwrap().to_owned();
+    assert_eq!(finalized.json()["record"]["meeting_id"], meeting_id);
+    assert_eq!(
+        finalized.json()["record"]["items"].as_array().map(Vec::len),
+        Some(3)
+    );
+
+    // Verification: the meeting's own checks plus every vote's.
+    let verified = cli.meeting(&["verify", "--tx", &tx]).ok();
+    assert!(
+        verified.out().contains("ok   VotesBelong"),
+        "{}",
+        verified.out()
+    );
+    assert!(
+        verified.out().contains("exactly what the chain says"),
+        "{}",
+        verified.out()
+    );
+    let report = cli.meeting(&["verify", "--tx", &tx, "--json"]).ok().json();
+    assert_eq!(report["checks"].as_array().map(Vec::len), Some(9));
+    assert_eq!(report["votes"].as_array().map(Vec::len), Some(2));
+    assert!(
+        report["checks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|c| c["passed"] == true),
+        "{report}"
+    );
+
+    // Each vote also verifies on its own, without the meeting.
+    for index in [1, 2] {
+        let vote_tx = finalized.json()["record"]["items"][index]["vote_tx_id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        assert_eq!(cli.vote(&["verify", "--tx", &vote_tx]).code(), 0);
+    }
+
+    // A finalised meeting is finished.
+    let again = cli.with_notary(&[
+        "meeting",
+        "finalize",
+        "--state",
+        "m.state",
+        "--signing-key",
+        "k.key",
+    ]);
+    assert_eq!(again.code(), 2);
+    assert!(
+        again
+            .err()
+            .contains("cannot finalize a meeting that is finalized"),
+        "{}",
+        again.err()
+    );
+}
+
+#[test]
+fn a_meeting_with_no_votes_is_still_a_meeting() {
+    let cli = Cli::new();
+    cli.founded();
+    cli.meeting(&[
+        "new",
+        "--title",
+        "Information session",
+        "--scheduled-at",
+        "2026-06-01T10:00:00Z",
+        "--state",
+        "m.state",
+    ])
+    .ok();
+    cli.meeting(&[
+        "add-item",
+        "--state",
+        "m.state",
+        "--title",
+        "Report",
+        "--document-digest",
+        &"11".repeat(32),
+    ])
+    .ok();
+    cli.with_notary(&[
+        "meeting",
+        "convene",
+        "--state",
+        "m.state",
+        "--signing-key",
+        "k.key",
+        "--timestamp",
+        "1000",
+    ])
+    .ok();
+    cli.meeting(&["open", "--state", "m.state"]).ok();
+    cli.meeting(&["close", "--state", "m.state"]).ok();
+    let finalized = cli
+        .with_notary(&[
+            "meeting",
+            "finalize",
+            "--state",
+            "m.state",
+            "--signing-key",
+            "k.key",
+            "--timestamp",
+            "2000",
+            "--json",
+        ])
+        .ok();
+    let tx = finalized.json()["tx_id"].as_str().unwrap().to_owned();
+    let report = cli.meeting(&["verify", "--tx", &tx, "--json"]).ok().json();
+    assert_eq!(report["votes"].as_array().map(Vec::len), Some(0));
+    assert!(
+        report["checks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|c| c["passed"] == true),
+        "{report}"
+    );
+}
+
+#[test]
+fn meeting_input_is_checked_and_lifecycle_order_is_enforced() {
+    let cli = Cli::new();
+    cli.founded();
+
+    // Bad metadata at creation.
+    let bad_time = cli.meeting(&[
+        "new",
+        "--title",
+        "AGM",
+        "--scheduled-at",
+        "soon",
+        "--state",
+        "m.state",
+    ]);
+    assert_eq!(bad_time.code(), 2);
+    let bad_digest = cli.meeting(&[
+        "new",
+        "--title",
+        "AGM",
+        "--scheduled-at",
+        "2026-06-01T10:00:00Z",
+        "--notice-digest",
+        "zz",
+        "--state",
+        "m.state",
+    ]);
+    assert_eq!(bad_digest.code(), 2);
+
+    cli.meeting(&[
+        "new",
+        "--title",
+        "AGM",
+        "--scheduled-at",
+        "2026-06-01T10:00:00Z",
+        "--state",
+        "m.state",
+    ])
+    .ok();
+    // An item is one kind or the other.
+    let neither = cli.meeting(&["add-item", "--state", "m.state", "--title", "x"]);
+    assert_eq!(neither.code(), 2);
+    let both = cli.meeting(&[
+        "add-item",
+        "--state",
+        "m.state",
+        "--title",
+        "x",
+        "--document-digest",
+        &"11".repeat(32),
+        "--proposal-digest",
+        &"22".repeat(32),
+    ]);
+    assert_eq!(both.code(), 2);
+    // An empty agenda cannot be convened.
+    let empty = cli.with_notary(&[
+        "meeting",
+        "convene",
+        "--state",
+        "m.state",
+        "--signing-key",
+        "k.key",
+        "--timestamp",
+        "1000",
+    ]);
+    assert_eq!(empty.code(), 2);
+    assert!(empty.err().contains("at least one item"), "{}", empty.err());
+
+    cli.meeting(&[
+        "add-item",
+        "--state",
+        "m.state",
+        "--title",
+        "Approve",
+        "--proposal-digest",
+        &"22".repeat(32),
+    ])
+    .ok();
+    // Opening before convening, closing before opening.
+    assert_eq!(cli.meeting(&["open", "--state", "m.state"]).code(), 2);
+    assert_eq!(cli.meeting(&["close", "--state", "m.state"]).code(), 2);
+    cli.with_notary(&[
+        "meeting",
+        "convene",
+        "--state",
+        "m.state",
+        "--signing-key",
+        "k.key",
+        "--timestamp",
+        "1000",
+    ])
+    .ok();
+    // The agenda is fixed once convened.
+    let late = cli.meeting(&[
+        "add-item",
+        "--state",
+        "m.state",
+        "--title",
+        "Late",
+        "--document-digest",
+        &"44".repeat(32),
+    ]);
+    assert_eq!(late.code(), 2);
+    assert!(
+        late.err()
+            .contains("cannot add an item to a meeting that is convened"),
+        "{}",
+        late.err()
+    );
+    // And finalizing before closing.
+    assert_eq!(
+        cli.with_notary(&[
+            "meeting",
+            "finalize",
+            "--state",
+            "m.state",
+            "--signing-key",
+            "k.key"
+        ])
+        .code(),
+        2
+    );
+
+    let missing = cli.meeting(&["verify", "--tx", &"00".repeat(32)]);
+    assert_eq!(missing.code(), 2);
+}

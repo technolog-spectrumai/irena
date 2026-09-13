@@ -459,6 +459,7 @@ dependencies = [
  "hex",
  "irena-core",
  "irena-ledger",
+ "irena-meeting",
  "irena-vote",
  "prunella-canonical",
  "prunella-core",
