@@ -70,7 +70,7 @@ pub fn plan_import(store: &ChainStore, document: &ChainDocument) -> Result<Impor
         if height.value() <= head.height.value() {
             let committed = store
                 .block_at(height)?
-                .ok_or_else(|| XmlError::NotRestorable {
+                .ok_or_else(|| XmlError::ChainUnreadable {
                     detail: format!("the chain claims height {height} but holds no block there"),
                 })?;
             if committed == entry.block {
@@ -261,7 +261,7 @@ fn validate_run(
 ) -> Result<Vec<Finding>, XmlError> {
     let parent_block = store
         .block_at(head.height)?
-        .ok_or_else(|| XmlError::NotRestorable {
+        .ok_or_else(|| XmlError::ChainUnreadable {
             detail: format!("the chain head is {head} but no block is stored there"),
         })?;
 

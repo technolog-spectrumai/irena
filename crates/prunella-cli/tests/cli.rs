@@ -347,6 +347,64 @@ fn append_refuses_a_replayed_transaction() {
 }
 
 #[test]
+fn append_refuses_a_timestamp_that_moves_the_clock_backwards() {
+    // An explicit timestamp before the parent's is refused rather than adjusted:
+    // quietly changing a value the operator asked for would mean the block committed is
+    // not the block they described.
+    let cli = Cli::new();
+    cli.demo();
+    let backwards = cli.run(&[
+        "--chain",
+        "demo.chain",
+        "append",
+        "--signing-key",
+        "signer.key",
+        "--namespace",
+        "app.demo",
+        "--nonce",
+        "9",
+        "--payload-hex",
+        "00",
+        "--timestamp",
+        "500",
+    ]);
+    assert_eq!(backwards.code(), 2);
+    assert!(
+        backwards.stderr().contains("backwards"),
+        "{}",
+        backwards.stderr()
+    );
+
+    let status = cli
+        .run(&["--chain", "demo.chain", "status", "--json"])
+        .ok()
+        .json();
+    assert_eq!(
+        status["head"]["height"], 3,
+        "a refused append must write nothing"
+    );
+
+    // The parent's own timestamp is allowed: the rule is non-decreasing, not increasing.
+    cli.run(&[
+        "--chain",
+        "demo.chain",
+        "append",
+        "--signing-key",
+        "signer.key",
+        "--namespace",
+        "app.demo",
+        "--nonce",
+        "9",
+        "--payload-hex",
+        "00",
+        "--timestamp",
+        "3000",
+    ])
+    .ok();
+    cli.run(&["--chain", "demo.chain", "verify"]).ok();
+}
+
+#[test]
 fn append_needs_something_to_append() {
     let cli = Cli::new();
     cli.demo();

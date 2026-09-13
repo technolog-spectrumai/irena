@@ -71,6 +71,11 @@ transactions: 1
 | `--tx-file <file>` | Append a pre-signed transaction in canonical encoding. Repeatable |
 | `--timestamp <ms>` | Block timestamp. Defaults to the system clock |
 
+A timestamp may not precede the parent block's. An explicit `--timestamp` that does is
+refused rather than adjusted, because quietly changing a value you asked for would mean
+the block committed is not the block you described. The default, taken from the system
+clock, is nudged forward instead — nobody chose it.
+
 No payload source means an empty payload, which is a legitimate transaction: Prunella
 never reads payload bytes, so it has no opinion about how many there should be.
 

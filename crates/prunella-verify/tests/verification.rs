@@ -43,6 +43,79 @@ fn an_empty_chain_of_only_genesis_verifies() {
 }
 
 #[test]
+fn a_genesis_block_checks_clean_against_a_genesis_context() {
+    let chain = MemoryChain::with_blocks(0);
+    let genesis = chain.blocks[0].as_ref().expect("genesis");
+    let findings = check_block(&BlockContext::genesis(&chain.network_id), genesis);
+    assert!(findings.is_empty(), "{findings:?}");
+}
+
+#[test]
+fn a_genesis_context_rejects_a_block_that_is_not_genesis() {
+    let chain = MemoryChain::with_blocks(1);
+    let second = chain.blocks[1].as_ref().expect("block");
+    let findings = check_block(&BlockContext::genesis(&chain.network_id), second);
+    let found = kinds(&findings);
+    assert!(found.contains(&FindingKind::HeightOutOfOrder), "{found:?}");
+    assert!(
+        found.contains(&FindingKind::PreviousHashMismatch),
+        "{found:?}"
+    );
+}
+
+#[test]
+fn supplied_chain_state_is_consulted_for_committed_transaction_ids() {
+    struct Everything;
+    impl prunella_verify::TxIdLookup for Everything {
+        fn contains(&self, _id: &TxId) -> Result<bool, prunella_verify::SourceError> {
+            Ok(true)
+        }
+    }
+
+    let chain = MemoryChain::with_blocks(0);
+    let block = chain.next_block(vec![signed_transaction(1, "fresh", 1)]);
+    let parent = &chain.blocks[0].as_ref().expect("g").header;
+
+    // Without chain state the block is fine; with state that claims to hold everything,
+    // the same block is a replay. The rule lives in one place and takes its answer from
+    // whoever has the state.
+    assert!(check_block(&BlockContext::child_of(&chain.network_id, parent), &block).is_empty());
+
+    let lookup = Everything;
+    let findings = check_block(
+        &BlockContext::child_of(&chain.network_id, parent).with_committed_transactions(&lookup),
+        &block,
+    );
+    only(&findings, FindingKind::DuplicateTxIdInChain);
+}
+
+#[test]
+fn a_failure_to_read_chain_state_is_reported_rather_than_assumed_away() {
+    struct Broken;
+    impl prunella_verify::TxIdLookup for Broken {
+        fn contains(&self, _id: &TxId) -> Result<bool, prunella_verify::SourceError> {
+            Err(prunella_verify::SourceError::new("index unavailable"))
+        }
+    }
+
+    let chain = MemoryChain::with_blocks(0);
+    let block = chain.next_block(vec![signed_transaction(1, "fresh", 1)]);
+    let parent = &chain.blocks[0].as_ref().expect("g").header;
+    let lookup = Broken;
+
+    let findings = check_block(
+        &BlockContext::child_of(&chain.network_id, parent).with_committed_transactions(&lookup),
+        &block,
+    );
+    let finding = only(&findings, FindingKind::SourceFailure);
+    assert!(
+        finding.detail.contains("index unavailable"),
+        "{}",
+        finding.detail
+    );
+}
+
+#[test]
 fn a_wrong_previous_hash_is_reported_at_its_height() {
     let mut chain = MemoryChain::with_blocks(2);
     let tampered = rebuild(chain.blocks[2].as_ref().expect("block"), |draft| {

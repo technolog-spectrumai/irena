@@ -108,6 +108,23 @@ pub enum XmlError {
         /// Why the document cannot found a chain.
         detail: String,
     },
+    /// The requested export range holds no blocks.
+    #[error("the requested range {from}..={to} contains no blocks")]
+    EmptyRange {
+        /// First height requested.
+        from: BlockHeight,
+        /// Last height requested, after clamping to the head.
+        to: BlockHeight,
+    },
+    /// The chain's own bookkeeping does not match its contents.
+    ///
+    /// Reported, never worked around: a chain that disagrees with itself is a matter
+    /// for an operator with a backup, not something an importer should paper over.
+    #[error("the chain is not in a readable state: {detail}")]
+    ChainUnreadable {
+        /// What disagrees with what.
+        detail: String,
+    },
     /// The document exceeded the configured size limit.
     #[error("document is {found} bytes, over the {limit} byte limit")]
     TooLarge {

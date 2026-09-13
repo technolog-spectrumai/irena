@@ -107,7 +107,7 @@ fn stored_blocks(path: &Path) -> Vec<(u64, Vec<u8>)> {
 #[test]
 fn a_full_export_reimports_into_an_identical_chain() {
     let workspace = Workspace::new();
-    let (source_path, source) = workspace.chain(5);
+    let (_source_path, source) = workspace.chain(5);
     let xml = export_xml(
         &source,
         &ExportRequest::full().exported_at(1_700_000_000_000),
@@ -138,8 +138,6 @@ fn a_full_export_reimports_into_an_identical_chain() {
             "block {height} differs"
         );
     }
-    drop(source);
-    let _ = source_path;
 }
 
 #[test]
@@ -635,7 +633,6 @@ fn malformed_documents_are_refused_with_a_reason() {
         let result = read_document(&xml);
         assert!(result.is_err(), "{label} should have been refused");
     }
-    let _ = workspace;
 }
 
 #[test]
@@ -695,8 +692,11 @@ fn exporting_an_empty_range_is_refused() {
         &ExportRequest::range(BlockHeight(5), BlockHeight(9)),
     )
     .expect_err("nothing to export");
+    // The end is clamped to the head before the range is judged, so the error reports
+    // the range that was actually asked of the chain.
     assert!(
-        matches!(error, XmlError::NotRestorable { .. }),
+        matches!(error, XmlError::EmptyRange { from, to }
+            if from == BlockHeight(5) && to == BlockHeight(1)),
         "got {error}"
     );
 }

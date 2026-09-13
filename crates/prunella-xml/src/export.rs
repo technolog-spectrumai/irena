@@ -66,9 +66,7 @@ pub fn export(store: &ChainStore, request: &ExportRequest) -> Result<ChainDocume
     let from = request.from.unwrap_or(BlockHeight::GENESIS);
     let to = request.to.map_or(head.height, |to| to.min(head.height));
     if from > to {
-        return Err(XmlError::NotRestorable {
-            detail: format!("the requested range {from}..={to} contains no blocks"),
-        });
+        return Err(XmlError::EmptyRange { from, to });
     }
 
     let kind = if request.namespace.is_some() {

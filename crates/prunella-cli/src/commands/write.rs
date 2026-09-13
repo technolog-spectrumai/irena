@@ -34,10 +34,21 @@ pub fn append(path: &Path, args: &AppendArgs, format: Format) -> Result<u8, Stri
         .map_err(|error| error.to_string())?
         .ok_or_else(|| format!("the chain head is {head} but no block is stored there"))?;
 
-    let timestamp = args
-        .timestamp
-        .unwrap_or_else(now_millis)
-        .max(parent.header.timestamp_millis);
+    // A block's timestamp may not precede its parent's. An explicit --timestamp that
+    // does is refused rather than adjusted: quietly changing a value the operator asked
+    // for would mean the block committed is not the block they described. The system
+    // clock, which nobody chose, is allowed to be nudged forward.
+    let parent_timestamp = parent.header.timestamp_millis;
+    let timestamp = match args.timestamp {
+        Some(chosen) if chosen < parent_timestamp => {
+            return Err(format!(
+                "--timestamp {chosen} precedes the parent block's timestamp \
+                 {parent_timestamp}; a block may not move the chain's clock backwards"
+            ));
+        }
+        Some(chosen) => chosen,
+        None => now_millis().max(parent_timestamp),
+    };
     let block = parent
         .header
         .child_draft(transactions, timestamp)
