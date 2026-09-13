@@ -1135,7 +1135,8 @@ fn a_vote_needs_a_collective_channel() {
     assert!(
         matches!(
             error,
-            VoteError::Decision(irena_decision::DecisionError::NoSuchChannel { .. })
+            VoteError::Decision(ref inner)
+                if matches!(**inner, irena_decision::DecisionError::NoSuchChannel { .. })
         ),
         "{error}"
     );

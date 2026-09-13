@@ -78,8 +78,12 @@ pub enum VoteError {
     #[error("cannot derive an electorate: {0}")]
     Derivation(bornite_core::CoreError),
     /// The channel could not be resolved.
-    #[error(transparent)]
-    Decision(#[from] irena_decision::DecisionError),
+    ///
+    /// Boxed: a decision error carries the ledger's errors inside it, and carrying
+    /// that inline would make every `Result` in this crate as large as the deepest
+    /// one.
+    #[error("{0}")]
+    Decision(#[source] Box<irena_decision::DecisionError>),
     /// A vote was asked of a channel that decides by one signature.
     #[error("channel {channel} is individual; it decides by one signature, not by vote")]
     NotCollective {
@@ -135,4 +139,10 @@ pub enum VoteError {
     /// The stored evaluation does not match a rerun.
     #[error("the stored result does not match a fresh evaluation")]
     ResultMismatch,
+}
+
+impl From<irena_decision::DecisionError> for VoteError {
+    fn from(error: irena_decision::DecisionError) -> Self {
+        Self::Decision(Box::new(error))
+    }
 }
