@@ -14,6 +14,7 @@ path = "src/main.rs"
 clap.workspace = true
 hex.workspace = true
 irena-core.workspace = true
+irena-decision.workspace = true
 irena-ledger.workspace = true
 irena-meeting.workspace = true
 irena-resolution.workspace = true

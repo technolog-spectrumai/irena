@@ -4,12 +4,12 @@ use crate::{
     Cli, Command, EXIT_FINDING, EXIT_OK, PublishArgs, company_of, emit, height_or_head, open,
     parse_supersedes, read, read_key, render_tx, timestamp_for,
 };
-use irena_core::{NotarisationV1, RecordKindV1};
+use irena_core::{ChannelModeV1, NotarisationV1, RecordKindV1};
+use irena_decision::{actors_of_register, resolve_channel};
 use irena_ledger::{
     InForceV1, LedgerError, RecordRefV1, company_now, genesis_with_company, history, publish,
     reconstruct,
 };
-use irena_vote::derive_electorate;
 use prunella_core::NetworkId;
 use prunella_store::LocalChainStore;
 use serde_json::json;
@@ -59,7 +59,7 @@ pub(crate) fn run(cli: &Cli) -> Result<u8, String> {
         }
         Command::PublishIdentity(args) => publish_kind(cli, args, RecordKindV1::Identity),
         Command::PublishShares(args) => publish_kind(cli, args, RecordKindV1::ShareStructure),
-        Command::PublishRules(args) => publish_kind(cli, args, RecordKindV1::VotingRules),
+        Command::PublishChannels(args) => publish_kind(cli, args, RecordKindV1::DecisionChannels),
         Command::Show { at } => {
             let store = open(&cli.chain)?;
             let at = height_or_head(&store, *at)?;
@@ -82,7 +82,7 @@ pub(crate) fn run(cli: &Cli) -> Result<u8, String> {
                 identity.registered_number.as_deref().unwrap_or("-"),
                 describe_record("identity", &state.identity),
                 describe_record("shares  ", &state.shares),
-                describe_record("rules   ", &state.rules),
+                describe_record("channels", &state.channels),
                 state.applied.len(),
             );
             emit(
@@ -98,7 +98,7 @@ pub(crate) fn run(cli: &Cli) -> Result<u8, String> {
             let state = reconstruct(&store, at).map_err(|e| e.to_string())?;
             let found = &state.shares;
             let register = &found.value;
-            let derived = derive_electorate(register).map_err(|e| e.to_string())?;
+            let actors = actors_of_register(register).map_err(|e| e.to_string())?;
             let mut lines = vec![
                 format!("share register of {} at height {at}", state.company),
                 describe_record("record", found),
@@ -106,17 +106,17 @@ pub(crate) fn run(cli: &Cli) -> Result<u8, String> {
                     "{} holder(s), {} share(s) in issue; one share, one vote; total weight {}; {} can sign",
                     register.len(),
                     register.total_shares(),
-                    derived.total_weight,
-                    derived.signing_holders
+                    actors.total_weight,
+                    actors.signing_actors
                 ),
             ];
-            for holder in &derived.holders {
+            for (actor, holder) in actors.actors.iter().zip(register.holders()) {
                 lines.push(format!(
                     "  {:<24} shares {:>12}  weight {:>12}  {}",
-                    holder.id.as_str(),
+                    actor.id.as_str(),
                     holder.shares,
-                    holder.weight.value(),
-                    if holder.can_sign {
+                    actor.weight.value(),
+                    if actor.can_sign {
                         "can sign"
                     } else {
                         "no key: cannot sign"
@@ -131,16 +131,103 @@ pub(crate) fn run(cli: &Cli) -> Result<u8, String> {
                     "at": at,
                     "record": record_json(found),
                     "total_shares": register.total_shares(),
-                    "total_weight": derived.total_weight,
-                    "signing_holders": derived.signing_holders,
-                    "holders": derived.holders.iter().zip(register.holders()).map(|(d, h)| json!({
-                        "id": d.id,
+                    "total_weight": actors.total_weight,
+                    "signing_holders": actors.signing_actors,
+                    "holders": actors.actors.iter().zip(register.holders()).map(|(a, h)| json!({
+                        "id": a.id,
                         "name": h.name,
-                        "shares": d.shares,
-                        "weight": d.weight,
-                        "key": d.key,
-                        "can_sign": d.can_sign,
+                        "shares": h.shares,
+                        "weight": a.weight,
+                        "key": a.key,
+                        "can_sign": a.can_sign,
                     })).collect::<Vec<_>>(),
+                }),
+            );
+            Ok(EXIT_OK)
+        }
+        Command::Channels { at } => {
+            let store = open(&cli.chain)?;
+            let at = height_or_head(&store, *at)?;
+            let state = reconstruct(&store, at).map_err(|e| e.to_string())?;
+            let found = &state.channels;
+            let mut lines = vec![
+                format!("decision channels of {} at height {at}", state.company),
+                describe_record("record", found),
+                format!("{} channel(s)", found.value.len()),
+            ];
+            let mut channels = Vec::new();
+            for channel in found.value.channels() {
+                let mode = match &channel.mode {
+                    ChannelModeV1::Individual => "individual",
+                    ChannelModeV1::Collective { .. } => "collective",
+                };
+                let source = channel.actors.as_str();
+                match resolve_channel(&state, &channel.id) {
+                    Ok(resolved) => {
+                        lines.push(format!(
+                            "  {:<20} {mode:<10} {source:<14} {} actor(s), total weight {}, {} can sign{}",
+                            channel.id.as_str(),
+                            resolved.actors.len(),
+                            resolved.actors.total_weight,
+                            resolved.actors.signing_actors,
+                            if channel.mode.is_individual() {
+                                "  — decides alone; may amend the channel set only downwards (self-demotion rule)"
+                            } else {
+                                ""
+                            }
+                        ));
+                        for actor in &resolved.actors.actors {
+                            lines.push(format!(
+                                "      {:<24} weight {:>12}  {}",
+                                actor.id.as_str(),
+                                actor.weight.value(),
+                                if actor.can_sign {
+                                    "can sign"
+                                } else {
+                                    "no key: cannot sign"
+                                }
+                            ));
+                        }
+                        if let Some(rules) = resolved.rules() {
+                            lines.push(format!(
+                                "      rules: {}",
+                                serde_json::to_string(rules).unwrap_or_default()
+                            ));
+                        }
+                        channels.push(json!({
+                            "id": channel.id,
+                            "mode": mode,
+                            "source": source,
+                            "resolves": true,
+                            "actors": resolved.actors.actors,
+                            "total_weight": resolved.actors.total_weight,
+                            "signing_actors": resolved.actors.signing_actors,
+                            "rules": resolved.rules(),
+                        }));
+                    }
+                    Err(error) => {
+                        lines.push(format!(
+                            "  {:<20} {mode:<10} {source:<14} DOES NOT RESOLVE: {error}",
+                            channel.id.as_str()
+                        ));
+                        channels.push(json!({
+                            "id": channel.id,
+                            "mode": mode,
+                            "source": source,
+                            "resolves": false,
+                            "error": error.to_string(),
+                        }));
+                    }
+                }
+            }
+            emit(
+                cli.json,
+                &lines.join("\n"),
+                &json!({
+                    "company": state.company,
+                    "at": at,
+                    "record": record_json(found),
+                    "channels": channels,
                 }),
             );
             Ok(EXIT_OK)
@@ -151,7 +238,7 @@ pub(crate) fn run(cli: &Cli) -> Result<u8, String> {
                 .filter(|kind| RecordKindV1::AMENDMENTS.contains(kind))
                 .ok_or_else(|| {
                     format!(
-                        "--kind must be identity, share-structure or voting-rules, not {kind:?}"
+                        "--kind must be identity, share-structure or decision-channels, not {kind:?}"
                     )
                 })?;
             let at = height_or_head(&store, *at)?;
@@ -222,7 +309,7 @@ pub(crate) fn run(cli: &Cli) -> Result<u8, String> {
                 Err(error) => Err(error.to_string()),
             }
         }
-        Command::Vote(_) | Command::Meeting(_) | Command::Resolution(_) => {
+        Command::Vote(_) | Command::Decision(_) | Command::Meeting(_) | Command::Resolution(_) => {
             unreachable!("dispatched in main")
         }
     }

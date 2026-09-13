@@ -1,21 +1,22 @@
 //! The `irena` command line interface.
 //!
 //! Founds a company on a Prunella ledger, amends its identity, share register and
-//! voting rules, and shows what the company is at any height. One company per chain,
-//! so no command but `init` names it. Every command is a thin call into
+//! decision channels, and shows what the company is at any height. One company per
+//! chain, so no command but `init` names it. Every command is a thin call into
 //! `irena-ledger`; the only things this binary adds are file reading, a clock for
 //! block timestamps, and output formatting.
 //!
-//! The `vote` and `meeting` subcommands carry a vote or a meeting through its
-//! lifecycle as a state file, so each step is one invocation; see `vote.rs` and
-//! `meeting.rs`.
+//! The `vote`, `decision`, `meeting` and `resolution` subcommands carry a vote, an
+//! individual decision, a meeting or a resolution through its lifecycle as a state
+//! file, so each step is one invocation.
 //!
 //! Exit codes: `0` success; `1` a finding (a broken amendment chain from
 //! `verify-structure`, a rejected motion from `vote evaluate`, a record that fails
-//! `vote verify`, `meeting verify` or `resolution verify`); `2` invalid input or a
-//! refused operation.
+//! `vote verify`, `decision verify`, `meeting verify` or `resolution verify`); `2`
+//! invalid input or a refused operation.
 
 mod company;
+mod decision;
 mod meeting;
 mod resolution;
 mod vote;
@@ -122,7 +123,7 @@ pub(crate) struct PublishArgs {
 #[derive(Subcommand, Debug)]
 pub(crate) enum Command {
     /// Create a chain whose genesis block founds the company: identity, register and
-    /// rules, in one company-genesis document.
+    /// decision channels, in one company-genesis document.
     Init {
         /// Chain identifier.
         #[arg(long)]
@@ -146,9 +147,10 @@ pub(crate) enum Command {
     PublishIdentity(PublishArgs),
     /// Publish a share-structure record, amending the register.
     PublishShares(PublishArgs),
-    /// Publish a voting-rules record, amending the rules.
-    PublishRules(PublishArgs),
-    /// Show what the company is at a height: identity, register and rules together.
+    /// Publish a decision-channels record, amending who decides and how. The whole
+    /// channel set is replaced at once.
+    PublishChannels(PublishArgs),
+    /// Show what the company is at a height: identity, register and channels together.
     Show {
         /// Reconstruct at this height. Defaults to the head.
         #[arg(long)]
@@ -159,9 +161,15 @@ pub(crate) enum Command {
         #[arg(long)]
         at: Option<u64>,
     },
+    /// Show every decision channel, resolved against the company at a height: its
+    /// mode, its source, and who its actors are. Individual channels are marked.
+    Channels {
+        #[arg(long)]
+        at: Option<u64>,
+    },
     /// List every record that has provided one part, in ledger order.
     History {
-        /// `identity`, `share-structure` or `voting-rules`.
+        /// `identity`, `share-structure` or `decision-channels`.
         #[arg(long)]
         kind: String,
         #[arg(long)]
@@ -172,13 +180,16 @@ pub(crate) enum Command {
         #[arg(long)]
         at: Option<u64>,
     },
-    /// A vote, carried through its lifecycle as a state file.
+    /// A vote of a collective channel, carried through its lifecycle as a state file.
     #[command(subcommand)]
     Vote(vote::VoteCommand),
-    /// A shareholder meeting: an agenda, its votes, and the record of both.
+    /// A decision of an individual channel: one actor signs.
+    #[command(subcommand)]
+    Decision(decision::DecisionCommand),
+    /// A meeting of a collective channel: an agenda, its votes, and the record of both.
     #[command(subcommand)]
     Meeting(meeting::MeetingCommand),
-    /// A resolution: what a passed vote authorised, and the amendment it produced.
+    /// A resolution: what a channel approved, and the amendment it produced.
     #[command(subcommand)]
     Resolution(resolution::ResolutionCommand),
 }
@@ -187,6 +198,7 @@ fn main() -> ExitCode {
     let cli = Cli::parse();
     let outcome = match &cli.command {
         Command::Vote(command) => vote::run(&cli, command),
+        Command::Decision(command) => decision::run(&cli, command),
         Command::Meeting(command) => meeting::run(&cli, command),
         Command::Resolution(command) => resolution::run(&cli, command),
         _ => company::run(&cli),

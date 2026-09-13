@@ -29,10 +29,14 @@ pub(crate) enum VoteCommand {
         #[arg(long)]
         state: PathBuf,
     },
-    /// Freeze the vote against the company as it is at a height.
+    /// Freeze the vote against the company as it is at a height, through a
+    /// collective channel: its actors are the electorate, its rules decide.
     Freeze {
         #[arg(long)]
         state: PathBuf,
+        /// The collective channel to vote through.
+        #[arg(long)]
+        channel: String,
         /// The height to resolve the company at. Defaults to the head.
         #[arg(long)]
         at: Option<u64>,
@@ -114,20 +118,25 @@ pub(crate) fn run(cli: &Cli, command: &VoteCommand) -> Result<u8, String> {
             save(state, &vote)?;
             report(cli, &vote, &format!("drafted vote on {subject:?}"))
         }
-        VoteCommand::Freeze { state, at } => {
+        VoteCommand::Freeze { state, channel, at } => {
             let store = open(&cli.chain)?;
             let mut vote = load(state)?;
+            let channel =
+                irena_core::ChannelIdV1::new(channel).map_err(|e| format!("--channel: {e}"))?;
             let at = crate::height_or_head(&store, *at)?;
-            let snapshot = vote.freeze(&store, at).map_err(|e| e.to_string())?.clone();
+            let snapshot = vote
+                .freeze(&store, at, &channel)
+                .map_err(|e| e.to_string())?
+                .clone();
             save(state, &vote)?;
             report(
                 cli,
                 &vote,
                 &format!(
-                    "frozen at height {at}: {} voter(s), register {}, rules {}\nvote id: {}",
+                    "frozen at height {at} through channel {channel}: {} voter(s), register {}, channels {}\nvote id: {}",
                     snapshot.electorate.len(),
                     snapshot.shares_tx_id,
-                    snapshot.rules_tx_id,
+                    snapshot.channels_tx_id,
                     snapshot.id()
                 ),
             )

@@ -29,6 +29,46 @@ fn register() -> String {
     )
 }
 
+/// The channel set: shareholders (share register, collective, `rules`); board (chair
+/// seed 5 weight 2, dir-a seed 6, dir-b seed 7; collective, simple majority, no
+/// quorum); ceo (chair, individual).
+fn channels(rules: &str) -> String {
+    let key = |seed: u8| prunella_crypto::SigningKey::from_seed([seed; 32]).public_key();
+    format!(
+        r#"<decision-channels>
+  <channel id="shareholders" mode="collective">
+    <actors source="share-register"/>
+    {rules}
+  </channel>
+  <channel id="board" mode="collective">
+    <actors source="roster">
+      <member id="chair" key="{}" name="M. Chen" weight="2"/>
+      <member id="dir-a" key="{}"/>
+      <member id="dir-b" key="{}"/>
+    </actors>
+    <voting-rules version="1.0">
+      <weight type="electorate"/>
+      <exclusions enabled="false"/>
+      <quorum type="none"/>
+      <threshold type="simple-majority" basis="votes-cast"/>
+      <abstentions treatment="exclude"/>
+      <tie treatment="reject"/>
+    </voting-rules>
+  </channel>
+  <channel id="ceo" mode="individual">
+    <actors source="roster">
+      <member id="chair" key="{}" name="M. Chen"/>
+    </actors>
+  </channel>
+</decision-channels>
+"#,
+        key(5),
+        key(6),
+        key(7),
+        key(5)
+    )
+}
+
 /// The whole company, as founded.
 fn genesis() -> String {
     format!(
@@ -36,11 +76,12 @@ fn genesis() -> String {
   <identity name="Acme Industries Ltd" jurisdiction="gb" registered-number="01234567"/>
   {}
   <governance>
-  {RULES}
+  {}
   </governance>
 </company-genesis>
 "#,
-        register()
+        register(),
+        channels(RULES)
     )
 }
 
@@ -101,12 +142,12 @@ impl Cli {
         )
         .expect("write");
         std::fs::write(
-            dir.path().join("rules2.xml"),
-            RULES.replace("reject", "accept"),
+            dir.path().join("channels2.xml"),
+            channels(&RULES.replace("reject", "accept")),
         )
         .expect("write");
         std::fs::write(dir.path().join("k.key"), "09".repeat(32)).expect("key");
-        for seed in 1..=3u8 {
+        for seed in [1u8, 2, 3, 5, 6, 7] {
             std::fs::write(
                 dir.path().join(format!("holder{seed}.key")),
                 format!("{seed:02}").repeat(32),
@@ -203,7 +244,7 @@ fn init_founds_the_whole_company_in_genesis() {
     assert_eq!(state["company"], "acme");
     assert_eq!(state["genesis_height"], 0);
     assert_eq!(state["genesis_tx_id"], genesis_tx);
-    for part in ["identity", "shares", "rules"] {
+    for part in ["identity", "shares", "channels"] {
         assert_eq!(state[part]["height"], 0, "{part}");
         assert_eq!(
             state[part]["tx_id"], genesis_tx,
@@ -220,7 +261,10 @@ fn init_founds_the_whole_company_in_genesis() {
     }
     assert_eq!(state["identity"]["value"]["name"], "Acme Industries Ltd");
     assert_eq!(state["shares"]["value"].as_array().map(Vec::len), Some(3));
-    assert_eq!(state["rules"]["value"]["tie"], "reject");
+    assert_eq!(
+        state["channels"]["value"][2]["mode"]["rules"]["tie"],
+        "reject"
+    );
     assert_eq!(state["applied"].as_array().map(Vec::len), Some(1));
 
     let text = cli.run(&["show"]).ok();
@@ -325,21 +369,24 @@ fn each_part_amends_on_its_own_and_past_heights_keep_their_company() {
         "identity was still the genesis's"
     );
     let rules = cli
-        .amend("publish-rules", "rules2.xml", "rules", "3000")
+        .amend("publish-channels", "channels2.xml", "channels", "3000")
         .ok();
     assert_eq!(rules.json()["record"]["supersedes"], genesis_tx);
 
     let now = cli.run(&["show", "--json"]).ok().json();
     assert_eq!(now["identity"]["value"]["name"], "Acme Industries plc");
     assert_eq!(now["shares"]["value"][2]["id"], "dave");
-    assert_eq!(now["rules"]["value"]["tie"], "accept");
+    assert_eq!(
+        now["channels"]["value"][2]["mode"]["rules"]["tie"],
+        "accept"
+    );
     assert_eq!(now["applied"].as_array().map(Vec::len), Some(4));
 
     // The company at height 1: the new register, the old name and rules.
     let then = cli.run(&["show", "--at", "1", "--json"]).ok().json();
     assert_eq!(then["shares"]["tx_id"], shares_tx);
     assert_eq!(then["identity"]["value"]["name"], "Acme Industries Ltd");
-    assert_eq!(then["rules"]["tx_id"], genesis_tx);
+    assert_eq!(then["channels"]["tx_id"], genesis_tx);
     assert_eq!(then["applied"].as_array().map(Vec::len), Some(2));
     let founded = cli.run(&["shares", "--at", "0", "--json"]).ok().json();
     assert_eq!(founded["holders"][1]["id"], "bob");
@@ -352,10 +399,10 @@ fn each_part_amends_on_its_own_and_past_heights_keep_their_company() {
     assert_eq!(history.as_array().map(Vec::len), Some(2));
     assert_eq!(history[0]["record"]["body"]["kind"], "company-genesis");
     assert_eq!(history[1]["tx_id"], shares_tx);
-    let text = cli.run(&["history", "--kind", "voting-rules"]).ok();
+    let text = cli.run(&["history", "--kind", "decision-channels"]).ok();
     assert!(
         text.out()
-            .contains("2 record(s) have provided voting-rules"),
+            .contains("2 record(s) have provided decision-channels"),
         "{}",
         text.out()
     );
@@ -382,7 +429,7 @@ fn verify_structure_reports_an_intact_company_and_a_break() {
         let store = prunella_store::LocalChainStore::open(&path).expect("open");
         let key = prunella_crypto::SigningKey::from_seed([9; 32]);
         let payload = irena_core::compose_record(
-            irena_core::RecordKindV1::VotingRules,
+            irena_core::RecordKindV1::DecisionChannels,
             &irena_core::CompanyIdV1::new("acme").unwrap(),
             Some(TxId::from_hash(prunella_core::Hash::from_bytes([0x55; 32]))),
             &irena_core::NotarisationV1 {
@@ -393,13 +440,13 @@ fn verify_structure_reports_an_intact_company_and_a_break() {
                 statement: None,
                 source_digest: None,
             },
-            RULES,
+            &channels(RULES),
         )
         .expect("compose");
         let head = store.head().expect("head");
         let parent = store.get_block(head.height).expect("read").expect("block");
         let transaction = key.sign_transaction(TransactionDraft {
-            namespace: Namespace::new("irena.rules.v1").unwrap(),
+            namespace: Namespace::new("irena.channels.v1").unwrap(),
             schema_version: SchemaVersion(1),
             payload: payload.into_bytes(),
             signer: key.public_key(),
@@ -437,11 +484,11 @@ fn verify_structure_reports_an_intact_company_and_a_break() {
 fn every_notary_field_is_checked_and_bad_input_is_refused() {
     let cli = Cli::new();
     cli.founded();
-    let genesis_tx = cli.provider("rules");
+    let genesis_tx = cli.provider("channels");
     let base = [
-        "publish-rules",
+        "publish-channels",
         "--file",
-        "rules2.xml",
+        "channels2.xml",
         "--signing-key",
         "k.key",
         "--supersedes",
@@ -560,7 +607,16 @@ fn a_vote_runs_end_to_end_and_the_freeze_holds_against_a_mid_vote_amendment() {
         .ok();
     assert_eq!(new.json()["status"], "draft");
 
-    let frozen = cli.vote(&["freeze", "--state", "v.state", "--json"]).ok();
+    let frozen = cli
+        .vote(&[
+            "freeze",
+            "--state",
+            "v.state",
+            "--channel",
+            "shareholders",
+            "--json",
+        ])
+        .ok();
     assert_eq!(frozen.json()["status"], "frozen");
     assert_eq!(
         frozen.json()["company"],
@@ -661,7 +717,7 @@ fn a_vote_runs_end_to_end_and_the_freeze_holds_against_a_mid_vote_amendment() {
         verified.out()
     );
     let report = cli.vote(&["verify", "--tx", &tx, "--json"]).ok().json();
-    assert_eq!(report["checks"].as_array().map(Vec::len), Some(9));
+    assert_eq!(report["checks"].as_array().map(Vec::len), Some(10));
     assert!(
         report["checks"]
             .as_array()
@@ -697,7 +753,8 @@ fn a_corrupted_record_fails_verification_by_name() {
         "v.state",
     ])
     .ok();
-    cli.vote(&["freeze", "--state", "v.state"]).ok();
+    cli.vote(&["freeze", "--state", "v.state", "--channel", "shareholders"])
+        .ok();
     cli.vote(&["open", "--state", "v.state"]).ok();
     let alice = cli.ballot("alice", "yes", 1);
     cli.vote(&["cast", "--state", "v.state", "--ballot", &alice])
@@ -814,7 +871,8 @@ fn a_vote_needs_a_frozen_company_and_a_rejected_motion_exits_one() {
     ]);
     assert_eq!(early.code(), 2);
 
-    cli.vote(&["freeze", "--state", "v.state"]).ok();
+    cli.vote(&["freeze", "--state", "v.state", "--channel", "shareholders"])
+        .ok();
     cli.vote(&["open", "--state", "v.state"]).ok();
     let bob = cli.ballot("bob", "no", 2);
     cli.vote(&["cast", "--state", "v.state", "--ballot", &bob])
@@ -853,6 +911,8 @@ impl Cli {
     fn agenda(&self) {
         self.meeting(&[
             "new",
+            "--channel",
+            "shareholders",
             "--title",
             "Annual General Meeting 2026",
             "--scheduled-at",
@@ -1104,6 +1164,8 @@ fn a_meeting_with_no_votes_is_still_a_meeting() {
     cli.founded();
     cli.meeting(&[
         "new",
+        "--channel",
+        "shareholders",
         "--title",
         "Information session",
         "--scheduled-at",
@@ -1169,6 +1231,8 @@ fn meeting_input_is_checked_and_lifecycle_order_is_enforced() {
     // Bad metadata at creation.
     let bad_time = cli.meeting(&[
         "new",
+        "--channel",
+        "shareholders",
         "--title",
         "AGM",
         "--scheduled-at",
@@ -1179,6 +1243,8 @@ fn meeting_input_is_checked_and_lifecycle_order_is_enforced() {
     assert_eq!(bad_time.code(), 2);
     let bad_digest = cli.meeting(&[
         "new",
+        "--channel",
+        "shareholders",
         "--title",
         "AGM",
         "--scheduled-at",
@@ -1192,6 +1258,8 @@ fn meeting_input_is_checked_and_lifecycle_order_is_enforced() {
 
     cli.meeting(&[
         "new",
+        "--channel",
+        "shareholders",
         "--title",
         "AGM",
         "--scheduled-at",
@@ -1311,6 +1379,8 @@ impl Cli {
     fn decide(&self, title: &str, digest: &str, pass: bool, base: u64) -> (String, String) {
         self.meeting(&[
             "new",
+            "--channel",
+            "shareholders",
             "--title",
             "AGM",
             "--scheduled-at",
@@ -1402,6 +1472,8 @@ fn a_passed_vote_becomes_a_resolution_that_changes_the_company() {
     let drafted = cli
         .resolution(&[
             "create",
+            "--channel",
+            "shareholders",
             "--meeting",
             &meeting_tx,
             "--item",
@@ -1504,10 +1576,10 @@ fn a_passed_vote_becomes_a_resolution_that_changes_the_company() {
         .resolution(&["verify", "--execution", &execution_tx, "--json"])
         .ok()
         .json();
-    assert_eq!(json["checks"].as_array().map(Vec::len), Some(9));
+    assert_eq!(json["checks"].as_array().map(Vec::len), Some(10));
     assert_eq!(
         json["resolution"]["checks"].as_array().map(Vec::len),
-        Some(9)
+        Some(10)
     );
     assert!(
         json["checks"]
@@ -1538,15 +1610,17 @@ fn a_passed_vote_becomes_a_resolution_that_changes_the_company() {
 }
 
 #[test]
-fn a_resolution_can_replace_the_voting_rules_and_a_declarative_one_changes_nothing() {
+fn a_resolution_can_replace_the_channel_set_and_a_declarative_one_changes_nothing() {
     let cli = Cli::new();
     cli.founded();
 
     // Voting rules.
-    let digest = cli.digest_of("rules2.xml");
+    let digest = cli.digest_of("channels2.xml");
     let (meeting_tx, vote_tx) = cli.decide("Adopt new rules", &digest, true, 1000);
     cli.resolution(&[
         "create",
+        "--channel",
+        "shareholders",
         "--meeting",
         &meeting_tx,
         "--item",
@@ -1556,9 +1630,9 @@ fn a_resolution_can_replace_the_voting_rules_and_a_declarative_one_changes_nothi
         "--title",
         "Resolution 1: new rules",
         "--target",
-        "voting-rules",
+        "decision-channels",
         "--file",
-        "rules2.xml",
+        "channels2.xml",
         "--state",
         "r.state",
     ])
@@ -1588,9 +1662,9 @@ fn a_resolution_can_replace_the_voting_rules_and_a_declarative_one_changes_nothi
         ])
         .ok();
     let state = cli.run(&["show", "--json"]).ok().json();
-    assert_eq!(state["rules"]["tx_id"], executed.json()["amendment_tx"]);
+    assert_eq!(state["channels"]["tx_id"], executed.json()["amendment_tx"]);
     assert_eq!(
-        state["rules"]["value"]["tie"], "accept",
+        state["channels"]["value"][2]["mode"]["rules"]["tie"], "accept",
         "the amended rules are in force"
     );
     assert!(
@@ -1609,6 +1683,8 @@ fn a_resolution_can_replace_the_voting_rules_and_a_declarative_one_changes_nothi
     let (meeting_tx, vote_tx) = cli.decide("Receive the report", &document, true, 4000);
     cli.resolution(&[
         "create",
+        "--channel",
+        "shareholders",
         "--meeting",
         &meeting_tx,
         "--item",
@@ -1661,7 +1737,7 @@ fn a_resolution_can_replace_the_voting_rules_and_a_declarative_one_changes_nothi
     );
     let after = cli.run(&["show", "--json"]).ok().json();
     assert_eq!(after["shares"]["tx_id"], before["shares"]["tx_id"]);
-    assert_eq!(after["rules"]["tx_id"], before["rules"]["tx_id"]);
+    assert_eq!(after["channels"]["tx_id"], before["channels"]["tx_id"]);
     assert_eq!(after["identity"]["tx_id"], before["identity"]["tx_id"]);
 }
 
@@ -1675,6 +1751,8 @@ fn a_rejected_or_mismatched_vote_authorises_nothing() {
     let (meeting_tx, vote_tx) = cli.decide("Replace the register", &digest, false, 1000);
     cli.resolution(&[
         "create",
+        "--channel",
+        "shareholders",
         "--meeting",
         &meeting_tx,
         "--item",
@@ -1713,6 +1791,8 @@ fn a_rejected_or_mismatched_vote_authorises_nothing() {
     let (meeting_tx, vote_tx) = cli.decide("Replace the register", &digest, true, 3000);
     cli.resolution(&[
         "create",
+        "--channel",
+        "shareholders",
         "--meeting",
         &meeting_tx,
         "--item",
@@ -1752,6 +1832,8 @@ fn a_rejected_or_mismatched_vote_authorises_nothing() {
     let (other_meeting, _) = cli.decide("Something else", &digest, true, 5000);
     cli.resolution(&[
         "create",
+        "--channel",
+        "shareholders",
         "--meeting",
         &other_meeting,
         "--item",
@@ -1798,6 +1880,8 @@ fn a_resolution_whose_base_moved_is_refused_and_input_is_checked() {
     let (meeting_tx, vote_tx) = cli.decide("Replace the register", &digest, true, 1000);
     cli.resolution(&[
         "create",
+        "--channel",
+        "shareholders",
         "--meeting",
         &meeting_tx,
         "--item",
@@ -1852,6 +1936,8 @@ fn a_resolution_whose_base_moved_is_refused_and_input_is_checked() {
     assert_eq!(
         cli.resolution(&[
             "create",
+            "--channel",
+            "shareholders",
             "--meeting",
             "zz",
             "--item",
@@ -1871,6 +1957,8 @@ fn a_resolution_whose_base_moved_is_refused_and_input_is_checked() {
     assert_eq!(
         cli.resolution(&[
             "create",
+            "--channel",
+            "shareholders",
             "--meeting",
             &meeting_tx,
             "--item",
@@ -1888,6 +1976,8 @@ fn a_resolution_whose_base_moved_is_refused_and_input_is_checked() {
     assert_eq!(
         cli.resolution(&[
             "create",
+            "--channel",
+            "shareholders",
             "--meeting",
             &meeting_tx,
             "--item",
@@ -1914,4 +2004,321 @@ fn a_resolution_whose_base_moved_is_refused_and_input_is_checked() {
     // The digest command is a pure function of the file.
     assert_eq!(cli.digest_of("shares2.xml"), digest);
     assert_ne!(cli.digest_of("shares1.xml"), digest);
+}
+
+// ---------------------------------------------------------------------------------
+// Decision channels: resolved, decided through individually, and bounded.
+// ---------------------------------------------------------------------------------
+
+impl Cli {
+    fn decision(&self, args: &[&str]) -> Run {
+        let mut full = vec!["decision"];
+        full.extend_from_slice(args);
+        self.run(&full)
+    }
+    /// Freezes, signs (as the chair, seed 5) and finalises a decision through the
+    /// ceo channel on `digest`; returns the decision transaction.
+    fn decide_alone(&self, subject: &str, digest: &str, timestamp: u64) -> String {
+        self.decision(&[
+            "new",
+            "--subject",
+            subject,
+            "--proposal-digest",
+            digest,
+            "--state",
+            "d.state",
+        ])
+        .ok();
+        let frozen = self
+            .decision(&[
+                "freeze", "--state", "d.state", "--channel", "ceo", "--json",
+            ])
+            .ok();
+        assert_eq!(frozen.json()["snapshot"]["actor"], "chair");
+        assert_eq!(frozen.json()["snapshot"]["channel"], "ceo");
+        self.decision(&["sign", "--state", "d.state", "--signing-key", "holder5.key"])
+            .ok();
+        let finalized = self
+            .decision(&[
+                "finalize",
+                "--state",
+                "d.state",
+                "--signing-key",
+                "k.key",
+                "--timestamp",
+                &timestamp.to_string(),
+                "--json",
+            ])
+            .ok();
+        finalized.json()["finalized"]["tx_id"]
+            .as_str()
+            .expect("tx")
+            .to_owned()
+    }
+}
+
+#[test]
+fn channels_resolve_and_an_individual_decision_becomes_a_resolution() {
+    let cli = Cli::new();
+    cli.founded();
+
+    // Every channel, resolved: the register, a weighted roster, one person.
+    let channels = cli.run(&["channels", "--json"]).ok().json();
+    let ids: Vec<&str> = channels["channels"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(ids, ["board", "ceo", "shareholders"]);
+    assert_eq!(channels["channels"][0]["total_weight"], 4);
+    assert_eq!(channels["channels"][1]["actors"][0]["id"], "chair");
+    assert_eq!(channels["channels"][2]["total_weight"], 1000);
+    assert!(channels["channels"][2]["rules"]["tie"] == "reject");
+    let text = cli.run(&["channels"]).ok();
+    assert!(text.out().contains("decides alone"), "{}", text.out());
+    assert!(text.out().contains("3 channel(s)"), "{}", text.out());
+
+    // The ceo, alone, replaces the share register: decision → resolution → amendment.
+    let digest = cli.digest_of("shares2.xml");
+    let decision_tx = cli.decide_alone("Register bob's transfer to dave", &digest, 1000);
+    let verify = cli.decision(&["verify", "--tx", &decision_tx]).ok();
+    assert!(verify.out().contains("VALID"), "{}", verify.out());
+    assert!(verify.out().contains("SignatureVerifies"), "{}", verify.out());
+
+    cli.resolution(&[
+        "create",
+        "--channel",
+        "ceo",
+        "--decision",
+        &decision_tx,
+        "--title",
+        "Resolution 1: the transfer",
+        "--target",
+        "share-structure",
+        "--file",
+        "shares2.xml",
+        "--state",
+        "r.state",
+    ])
+    .ok();
+    let shown = cli.resolution(&["show", "--state", "r.state"]).ok();
+    assert!(shown.out().contains("ceo (individual)"), "{}", shown.out());
+    cli.with_notary(&[
+        "resolution",
+        "finalize",
+        "--state",
+        "r.state",
+        "--signing-key",
+        "k.key",
+        "--timestamp",
+        "2000",
+    ])
+    .ok();
+    let executed = cli
+        .with_notary(&[
+            "resolution",
+            "execute",
+            "--state",
+            "r.state",
+            "--signing-key",
+            "k.key",
+            "--timestamp",
+            "3000",
+            "--json",
+        ])
+        .ok();
+    let amendment_tx = executed.json()["amendment_tx"].as_str().unwrap().to_owned();
+    let execution_tx = executed.json()["execution_tx"].as_str().unwrap().to_owned();
+    assert_eq!(
+        cli.run(&["show", "--json"]).ok().json()["shares"]["tx_id"],
+        amendment_tx
+    );
+    let report = cli
+        .resolution(&["verify", "--execution", &execution_tx])
+        .ok();
+    assert!(report.out().contains("SelfDemotionHolds"), "{}", report.out());
+    assert!(report.out().contains("not applicable"), "{}", report.out());
+    assert!(report.out().contains("DecisionVerifies"), "{}", report.out());
+
+    // Only the actor can sign; a vote cannot go through an individual channel; a
+    // decision cannot go through a collective one.
+    cli.decision(&[
+        "new",
+        "--subject",
+        "x",
+        "--proposal-digest",
+        &digest,
+        "--state",
+        "d2.state",
+    ])
+    .ok();
+    cli.decision(&["freeze", "--state", "d2.state", "--channel", "ceo"])
+        .ok();
+    let wrong = cli.decision(&["sign", "--state", "d2.state", "--signing-key", "holder1.key"]);
+    assert_eq!(wrong.code(), 2);
+    assert!(wrong.err().contains("not the registered key"), "{}", wrong.err());
+    let collective = cli.decision(&["freeze", "--state", "d2.state", "--channel", "board"]);
+    assert_eq!(collective.code(), 2, "{}", collective.err());
+    cli.vote(&[
+        "new",
+        "--subject",
+        "x",
+        "--proposal-digest",
+        &digest,
+        "--state",
+        "v.state",
+    ])
+    .ok();
+    let individual = cli.vote(&["freeze", "--state", "v.state", "--channel", "ceo"]);
+    assert_eq!(individual.code(), 2);
+    assert!(individual.err().contains("individual"), "{}", individual.err());
+}
+
+#[test]
+fn an_individual_channel_may_only_demote_itself() {
+    let cli = Cli::new();
+    cli.founded();
+
+    // The ceo thins the board it sits on: refused at execution, and the refusal names
+    // the rule.
+    let thinned = channels(RULES)
+        .replace(
+            &format!(
+                "      <member id=\"dir-a\" key=\"{}\"/>\n      <member id=\"dir-b\" key=\"{}\"/>\n",
+                prunella_crypto::SigningKey::from_seed([6; 32]).public_key(),
+                prunella_crypto::SigningKey::from_seed([7; 32]).public_key()
+            ),
+            "",
+        );
+    assert!(!thinned.contains("dir-a"), "fixture edited");
+    std::fs::write(cli.dir.path().join("thinned.xml"), &thinned).unwrap();
+    let digest = cli.digest_of("thinned.xml");
+    let decision_tx = cli.decide_alone("Shrink the board", &digest, 1000);
+    cli.resolution(&[
+        "create",
+        "--channel",
+        "ceo",
+        "--decision",
+        &decision_tx,
+        "--title",
+        "Resolution 1: a smaller board",
+        "--target",
+        "decision-channels",
+        "--file",
+        "thinned.xml",
+        "--state",
+        "r.state",
+    ])
+    .ok();
+    cli.with_notary(&[
+        "resolution",
+        "finalize",
+        "--state",
+        "r.state",
+        "--signing-key",
+        "k.key",
+        "--timestamp",
+        "2000",
+    ])
+    .ok();
+    let refused = cli.with_notary(&[
+        "resolution",
+        "execute",
+        "--state",
+        "r.state",
+        "--signing-key",
+        "k.key",
+        "--timestamp",
+        "3000",
+    ]);
+    assert_eq!(refused.code(), 2);
+    assert!(
+        refused.err().contains("may not carry this amendment alone"),
+        "{}",
+        refused.err()
+    );
+    assert!(refused.err().contains("board"), "{}", refused.err());
+    let head_before = cli.run(&["show", "--json"]).ok().json()["channels"]["tx_id"].clone();
+
+    // The ceo abolishes itself: allowed, and the execution's verification says why.
+    let abolished = {
+        let full = channels(RULES);
+        let start = full.find("  <channel id=\"ceo\"").unwrap();
+        let end = full[start..].find("</channel>\n").unwrap() + start + "</channel>\n".len();
+        format!("{}{}", &full[..start], &full[end..])
+    };
+    assert!(!abolished.contains("\"ceo\""), "fixture edited:\n{abolished}");
+    std::fs::write(cli.dir.path().join("abolished.xml"), &abolished).unwrap();
+    let digest = cli.digest_of("abolished.xml");
+    let decision_tx = cli.decide_alone("Abolish the ceo channel", &digest, 4000);
+    cli.resolution(&[
+        "create",
+        "--channel",
+        "ceo",
+        "--decision",
+        &decision_tx,
+        "--title",
+        "Resolution 2: no more ceo",
+        "--target",
+        "decision-channels",
+        "--file",
+        "abolished.xml",
+        "--state",
+        "r2.state",
+    ])
+    .ok();
+    cli.with_notary(&[
+        "resolution",
+        "finalize",
+        "--state",
+        "r2.state",
+        "--signing-key",
+        "k.key",
+        "--timestamp",
+        "5000",
+    ])
+    .ok();
+    let executed = cli
+        .with_notary(&[
+            "resolution",
+            "execute",
+            "--state",
+            "r2.state",
+            "--signing-key",
+            "k.key",
+            "--timestamp",
+            "6000",
+            "--json",
+        ])
+        .ok();
+    let now = cli.run(&["show", "--json"]).ok().json();
+    assert_ne!(now["channels"]["tx_id"], head_before);
+    assert_eq!(now["channels"]["tx_id"], executed.json()["amendment_tx"]);
+    let listed = cli.run(&["channels"]).ok();
+    assert!(listed.out().contains("2 channel(s)"), "{}", listed.out());
+    assert!(!listed.out().contains("decides alone"), "{}", listed.out());
+    let execution_tx = executed.json()["execution_tx"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let report = cli
+        .resolution(&["verify", "--execution", &execution_tx])
+        .ok();
+    assert!(report.out().contains("gives up ceo"), "{}", report.out());
+
+    // The channel is gone: nothing more can be decided through it.
+    cli.decision(&[
+        "new",
+        "--subject",
+        "x",
+        "--proposal-digest",
+        &digest,
+        "--state",
+        "d3.state",
+    ])
+    .ok();
+    let gone = cli.decision(&["freeze", "--state", "d3.state", "--channel", "ceo"]);
+    assert_eq!(gone.code(), 2);
+    assert!(gone.err().contains("no decision channel ceo"), "{}", gone.err());
 }

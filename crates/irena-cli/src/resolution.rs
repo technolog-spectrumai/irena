@@ -1,4 +1,5 @@
-//! The resolution commands: the step that turns a passed vote into company change.
+//! The resolution commands: the step that turns a channel's approval — a passed vote
+//! or a signed decision — into company change.
 //!
 //! Like a vote or a meeting, a resolution is carried as a **state file**. Two things
 //! reach the chain: the resolution record at `finalize`, and — for an amendment
@@ -22,25 +23,33 @@ pub(crate) enum ResolutionCommand {
     /// This is the digest the meeting's agenda item must carry, so that the vote
     /// commits to exactly the body a resolution will later execute.
     Digest {
-        /// The `<share-structure>` or `<voting-rules>` document.
+        /// The `<share-structure>` or `<decision-channels>` document.
         #[arg(long)]
         file: PathBuf,
     },
-    /// Draft a resolution on a passed vote.
+    /// Draft a resolution on a channel's approval: a passed vote at a meeting of a
+    /// collective channel (`--meeting`, `--item`, `--vote`), or a signed decision of
+    /// an individual channel (`--decision`).
     Create {
+        /// The channel that approved.
+        #[arg(long)]
+        channel: String,
         /// The transaction carrying the meeting's final record.
-        #[arg(long)]
-        meeting: String,
+        #[arg(long, requires_all = ["item", "vote"], conflicts_with = "decision")]
+        meeting: Option<String>,
         /// The agenda item number the resolution rests on.
-        #[arg(long)]
-        item: u32,
+        #[arg(long, requires = "meeting")]
+        item: Option<u32>,
         /// The transaction carrying that item's final vote record.
+        #[arg(long, requires = "meeting")]
+        vote: Option<String>,
+        /// The transaction carrying the final decision record.
         #[arg(long)]
-        vote: String,
+        decision: Option<String>,
         /// The resolution's title.
         #[arg(long)]
         title: String,
-        /// `share-structure` or `voting-rules`, with `--file`. Omit for a declarative
+        /// `share-structure` or `decision-channels`, with `--file`. Omit for a declarative
         /// resolution, which takes `--document-digest`.
         #[arg(long, requires = "file")]
         target: Option<String>,
@@ -109,24 +118,46 @@ pub(crate) fn run(cli: &Cli, command: &ResolutionCommand) -> Result<u8, String> 
             Ok(EXIT_OK)
         }
         ResolutionCommand::Create {
+            channel,
             meeting,
             item,
             vote,
+            decision,
             title,
             target,
             file,
             document_digest,
             state,
         } => {
-            let authority = AuthorityV1 {
-                meeting_tx: TxId::from_hex(meeting).map_err(|e| format!("--meeting: {e}"))?,
-                item_number: *item,
-                vote_tx: TxId::from_hex(vote).map_err(|e| format!("--vote: {e}"))?,
+            let channel = irena_core::ChannelIdV1::new(channel)
+                .map_err(|e| format!("--channel: {e}"))?
+                .as_str()
+                .to_owned();
+            let authority = match (meeting, item, vote, decision) {
+                (Some(meeting), Some(item), Some(vote), None) => AuthorityV1::Collective {
+                    channel,
+                    meeting_tx: TxId::from_hex(meeting).map_err(|e| format!("--meeting: {e}"))?,
+                    item_number: *item,
+                    vote_tx: TxId::from_hex(vote).map_err(|e| format!("--vote: {e}"))?,
+                },
+                (None, None, None, Some(decision)) => AuthorityV1::Individual {
+                    channel,
+                    decision_tx: TxId::from_hex(decision)
+                        .map_err(|e| format!("--decision: {e}"))?,
+                },
+                _ => {
+                    return Err(
+                        "give either --meeting, --item and --vote (a collective channel's vote) or --decision (an individual channel's decision)"
+                            .to_owned(),
+                    );
+                }
             };
             let kind = match (target, file, document_digest) {
                 (Some(target), Some(file), None) => {
                     let target = AmendmentTargetV1::parse(target).ok_or_else(|| {
-                        format!("--target must be share-structure or voting-rules, not {target:?}")
+                        format!(
+                            "--target must be share-structure or decision-channels, not {target:?}"
+                        )
                     })?;
                     ResolutionKindV1::Amendment {
                         target,
@@ -319,10 +350,26 @@ fn report(cli: &Cli, resolution: &ResolutionV1, headline: &str) -> Result<u8, St
     if !resolution.company().is_empty() {
         lines.push(format!("company:    {}", resolution.company()));
     }
-    let authority = resolution.authority();
-    lines.push(format!("meeting:    {}", authority.meeting_tx));
-    lines.push(format!("item:       {}", authority.item_number));
-    lines.push(format!("vote:       {}", authority.vote_tx));
+    match resolution.authority() {
+        AuthorityV1::Collective {
+            channel,
+            meeting_tx,
+            item_number,
+            vote_tx,
+        } => {
+            lines.push(format!("channel:    {channel} (collective)"));
+            lines.push(format!("meeting:    {meeting_tx}"));
+            lines.push(format!("item:       {item_number}"));
+            lines.push(format!("vote:       {vote_tx}"));
+        }
+        AuthorityV1::Individual {
+            channel,
+            decision_tx,
+        } => {
+            lines.push(format!("channel:    {channel} (individual)"));
+            lines.push(format!("decision:   {decision_tx}"));
+        }
+    }
     lines.push(format!(
         "approved:   {}",
         resolution.kind().approved_digest()

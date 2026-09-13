@@ -16,8 +16,12 @@ use std::path::{Path, PathBuf};
 /// One step of a meeting.
 #[derive(clap::Subcommand, Debug)]
 pub(crate) enum MeetingCommand {
-    /// Start a meeting: its title, when it is to be held, and the notice.
+    /// Start a meeting: whose it is, its title, when it is to be held, and the notice.
     New {
+        /// The collective channel this is a meeting of. Every vote item freezes
+        /// against it.
+        #[arg(long)]
+        channel: String,
         /// The meeting's title.
         #[arg(long)]
         title: String,
@@ -125,6 +129,7 @@ pub(crate) enum MeetingCommand {
 pub(crate) fn run(cli: &Cli, command: &MeetingCommand) -> Result<u8, String> {
     match command {
         MeetingCommand::New {
+            channel,
             title,
             scheduled_at,
             notice_digest,
@@ -136,6 +141,7 @@ pub(crate) fn run(cli: &Cli, command: &MeetingCommand) -> Result<u8, String> {
                 .transpose()
                 .map_err(|e| format!("--notice-digest: {e}"))?;
             let metadata = MeetingMetadataV1 {
+                channel: channel.clone(),
                 title: title.clone(),
                 scheduled_at: scheduled_at.clone(),
                 notice_digest,
@@ -438,6 +444,7 @@ fn report(cli: &Cli, meeting: &MeetingV1, headline: &str) -> Result<u8, String> 
         lines.push(headline.to_owned());
     }
     lines.push(format!("status:    {}", meeting.status()));
+    lines.push(format!("channel:   {}", meeting.metadata().channel));
     lines.push(format!("title:     {}", meeting.metadata().title));
     lines.push(format!("scheduled: {}", meeting.metadata().scheduled_at));
     if !meeting.company().is_empty() {
@@ -481,6 +488,7 @@ fn report(cli: &Cli, meeting: &MeetingV1, headline: &str) -> Result<u8, String> 
         &lines.join("\n"),
         &json!({
             "status": meeting.status(),
+            "channel": meeting.metadata().channel,
             "title": meeting.metadata().title,
             "scheduled_at": meeting.metadata().scheduled_at,
             "notice_digest": meeting.metadata().notice_digest,
