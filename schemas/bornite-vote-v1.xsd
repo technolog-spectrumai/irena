@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  A Bornite vote document, version 1: one frozen electorate and the ballots cast.
+  Rules are a separate document, so a rules file can be validated and reused on its own.
+-->
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema" elementFormDefault="qualified"
+           attributeFormDefault="unqualified">
+
+  <xs:include schemaLocation="bornite-electorate-v1.xsd"/>
+
+  <xs:element name="vote">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element name="electorate" type="Electorate"/>
+        <xs:element name="ballots" type="Ballots"/>
+      </xs:sequence>
+      <xs:attribute name="version" type="Version" use="required"/>
+    </xs:complexType>
+  </xs:element>
+
+</xs:schema>

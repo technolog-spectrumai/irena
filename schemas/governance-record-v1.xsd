@@ -1,0 +1,67 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  A governance record, version 1: what the bridge stores as a ledger transaction payload.
+
+  The record wraps EXACTLY the same voting-rules or electorate element a standalone
+  Bornite document contains - the types are included from the Bornite schemas, not
+  redefined. A rules file written for a non-profit is stored on a company's ledger byte
+  for byte unchanged; that reuse is the guarantee that the rules carry no organisational
+  meaning.
+
+  Organisation-specific truth enters only through <notarisation>: an opaque notary id,
+  a free-text statement and the digest of an external document (a share register,
+  minutes, a fleet manifest). The bridge stores and reproduces it. It never parses it.
+-->
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema" elementFormDefault="qualified"
+           attributeFormDefault="unqualified">
+
+  <xs:include schemaLocation="bornite-voting-rules-v1.xsd"/>
+  <xs:include schemaLocation="bornite-electorate-v1.xsd"/>
+
+  <xs:simpleType name="RecordKind">
+    <xs:restriction base="xs:string">
+      <xs:enumeration value="voting-rules"/>
+      <xs:enumeration value="roll"/>
+    </xs:restriction>
+  </xs:simpleType>
+
+  <!-- An opaque label naming what is governed. Never interpreted. -->
+  <xs:simpleType name="Subject">
+    <xs:restriction base="xs:string">
+      <xs:pattern value="[a-z0-9][a-z0-9._\-]{0,63}"/>
+    </xs:restriction>
+  </xs:simpleType>
+
+  <!-- A 32-byte digest as 64 lowercase hex characters. -->
+  <xs:simpleType name="Hex32">
+    <xs:restriction base="xs:string">
+      <xs:pattern value="[0-9a-f]{64}"/>
+    </xs:restriction>
+  </xs:simpleType>
+
+  <xs:element name="governance-record">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element name="notarisation" minOccurs="0" maxOccurs="1">
+          <xs:complexType>
+            <xs:attribute name="notary" type="xs:string" use="required"/>
+            <xs:attribute name="statement" type="xs:string" use="optional"/>
+            <!-- Digest of an external document the notary attests to. Opaque. -->
+            <xs:attribute name="source-digest" type="Hex32" use="optional"/>
+          </xs:complexType>
+        </xs:element>
+        <xs:choice>
+          <xs:element name="voting-rules" type="VotingRules"/>
+          <xs:element name="electorate" type="Electorate"/>
+        </xs:choice>
+      </xs:sequence>
+      <xs:attribute name="version" type="Version" use="required"/>
+      <xs:attribute name="kind" type="RecordKind" use="required"/>
+      <xs:attribute name="subject" type="Subject" use="required"/>
+      <!-- Transaction id of the record this one amends. Must be the record currently in
+           force for the subject; absent on a subject's first record. -->
+      <xs:attribute name="supersedes" type="Hex32" use="optional"/>
+    </xs:complexType>
+  </xs:element>
+
+</xs:schema>

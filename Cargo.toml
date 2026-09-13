@@ -15,6 +15,10 @@ prunella-crypto = { path = "crates/prunella-crypto" }
 prunella-verify = { path = "crates/prunella-verify" }
 prunella-store = { path = "crates/prunella-store" }
 prunella-xml = { path = "crates/prunella-xml" }
+bornite-core = { path = "crates/bornite-core" }
+bornite-rules = { path = "crates/bornite-rules" }
+bornite-eval = { path = "crates/bornite-eval" }
+bornite-xml = { path = "crates/bornite-xml" }
 
 base64 = "0.23"
 blake3 = "1.8"
@@ -38,6 +42,9 @@ missing_docs = "warn"
 
 [workspace.lints.clippy]
 all = { level = "warn", priority = -1 }
+# No crate in this workspace may do floating-point arithmetic: a ledger and a voting
+# engine must produce the same bytes on every machine, and floats do not.
+float_arithmetic = "deny"
 
 [profile.release]
 overflow-checks = true

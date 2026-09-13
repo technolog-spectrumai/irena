@@ -1,0 +1,124 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Bornite voting rules, version 1.
+
+  This element is deliberately free of any organisational concept. It says how to count
+  and what counts as passing, and nothing about who is voting or why. The same document
+  organises a company meeting, a non-profit's membership vote, or a fleet of drones
+  deciding a peaceful deployment. It is defined once, here, and reused unchanged by the
+  standalone rules file and by the ledger record that stores rules on-chain.
+
+  Two constraints XSD 1.0 cannot express are enforced by the reader:
+    - quorum type="absolute" requires weight; type="fraction" requires numerator,
+      denominator and basis; type="none" permits none of them;
+    - threshold type="fraction" requires numerator and denominator; type="simple-majority"
+      permits neither.
+-->
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema" elementFormDefault="qualified"
+           attributeFormDefault="unqualified">
+
+  <xs:include schemaLocation="bornite-common-v1.xsd"/>
+
+  <xs:simpleType name="WeightType">
+    <xs:restriction base="xs:string">
+      <!-- equal: every voter counts 1. electorate: use each voter's declared weight. -->
+      <xs:enumeration value="equal"/>
+      <xs:enumeration value="electorate"/>
+    </xs:restriction>
+  </xs:simpleType>
+
+  <xs:simpleType name="QuorumType">
+    <xs:restriction base="xs:string">
+      <xs:enumeration value="none"/>
+      <xs:enumeration value="absolute"/>
+      <xs:enumeration value="fraction"/>
+    </xs:restriction>
+  </xs:simpleType>
+
+  <xs:simpleType name="QuorumBasis">
+    <xs:restriction base="xs:string">
+      <xs:enumeration value="total-electorate"/>
+      <xs:enumeration value="effective-electorate"/>
+    </xs:restriction>
+  </xs:simpleType>
+
+  <xs:simpleType name="ThresholdType">
+    <xs:restriction base="xs:string">
+      <xs:enumeration value="simple-majority"/>
+      <xs:enumeration value="fraction"/>
+    </xs:restriction>
+  </xs:simpleType>
+
+  <!-- What the YES weight is measured against: the threshold's denominator. -->
+  <xs:simpleType name="ThresholdBasis">
+    <xs:restriction base="xs:string">
+      <xs:enumeration value="votes-cast"/>
+      <xs:enumeration value="effective-electorate"/>
+      <xs:enumeration value="total-electorate"/>
+    </xs:restriction>
+  </xs:simpleType>
+
+  <xs:simpleType name="AbstentionTreatment">
+    <xs:restriction base="xs:string">
+      <!-- exclude: abstentions are left out of a votes-cast denominator.
+           include: abstentions stay in it (and so count against a YES threshold). -->
+      <xs:enumeration value="exclude"/>
+      <xs:enumeration value="include"/>
+    </xs:restriction>
+  </xs:simpleType>
+
+  <xs:simpleType name="TieTreatment">
+    <xs:restriction base="xs:string">
+      <!-- A tie is the threshold met EXACTLY. reject: the vote fails ("more than");
+           accept: the vote passes ("at least"). This is the only boundary rule. -->
+      <xs:enumeration value="reject"/>
+      <xs:enumeration value="accept"/>
+    </xs:restriction>
+  </xs:simpleType>
+
+  <xs:complexType name="VotingRules">
+    <xs:sequence>
+      <xs:element name="weight">
+        <xs:complexType>
+          <xs:attribute name="type" type="WeightType" use="required"/>
+        </xs:complexType>
+      </xs:element>
+      <xs:element name="exclusions">
+        <xs:complexType>
+          <xs:attribute name="enabled" type="xs:boolean" use="required"/>
+        </xs:complexType>
+      </xs:element>
+      <xs:element name="quorum">
+        <xs:complexType>
+          <xs:attribute name="type" type="QuorumType" use="required"/>
+          <xs:attribute name="weight" type="PositiveLong" use="optional"/>
+          <xs:attribute name="numerator" type="xs:unsignedLong" use="optional"/>
+          <xs:attribute name="denominator" type="PositiveLong" use="optional"/>
+          <xs:attribute name="basis" type="QuorumBasis" use="optional"/>
+        </xs:complexType>
+      </xs:element>
+      <xs:element name="threshold">
+        <xs:complexType>
+          <xs:attribute name="type" type="ThresholdType" use="required"/>
+          <xs:attribute name="numerator" type="xs:unsignedLong" use="optional"/>
+          <xs:attribute name="denominator" type="PositiveLong" use="optional"/>
+          <xs:attribute name="basis" type="ThresholdBasis" use="required"/>
+        </xs:complexType>
+      </xs:element>
+      <xs:element name="abstentions">
+        <xs:complexType>
+          <xs:attribute name="treatment" type="AbstentionTreatment" use="required"/>
+        </xs:complexType>
+      </xs:element>
+      <xs:element name="tie">
+        <xs:complexType>
+          <xs:attribute name="treatment" type="TieTreatment" use="required"/>
+        </xs:complexType>
+      </xs:element>
+    </xs:sequence>
+    <xs:attribute name="version" type="Version" use="required"/>
+  </xs:complexType>
+
+  <xs:element name="voting-rules" type="VotingRules"/>
+
+</xs:schema>

@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Bornite electorate and ballots, version 1.
+
+  An electorate is voter ids and integer weights, nothing more. Where a weight comes
+  from - shares, one member one vote, a drone's node count - is not recorded here and
+  not the engine's concern. Defined once and reused by the standalone vote document
+  and by the ledger record that stores a roll on-chain.
+-->
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema" elementFormDefault="qualified"
+           attributeFormDefault="unqualified">
+
+  <xs:include schemaLocation="bornite-common-v1.xsd"/>
+
+  <xs:simpleType name="Choice">
+    <xs:restriction base="xs:string">
+      <xs:enumeration value="yes"/>
+      <xs:enumeration value="no"/>
+      <xs:enumeration value="abstain"/>
+    </xs:restriction>
+  </xs:simpleType>
+
+  <xs:complexType name="Electorate">
+    <xs:sequence>
+      <xs:element name="voter" minOccurs="0" maxOccurs="unbounded">
+        <xs:complexType>
+          <xs:attribute name="id" type="VoterId" use="required"/>
+          <!-- Used when the rules say weight type="electorate". Defaults to 1. -->
+          <xs:attribute name="weight" type="PositiveLong" use="optional" default="1"/>
+          <!-- Whether the rules may exclude this voter. The reason is not recorded. -->
+          <xs:attribute name="excluded" type="xs:boolean" use="optional" default="false"/>
+        </xs:complexType>
+      </xs:element>
+    </xs:sequence>
+  </xs:complexType>
+
+  <xs:complexType name="Ballots">
+    <xs:sequence>
+      <xs:element name="ballot" minOccurs="0" maxOccurs="unbounded">
+        <xs:complexType>
+          <xs:attribute name="voter" type="VoterId" use="required"/>
+          <xs:attribute name="choice" type="Choice" use="required"/>
+        </xs:complexType>
+      </xs:element>
+    </xs:sequence>
+  </xs:complexType>
+
+  <xs:element name="electorate" type="Electorate"/>
+  <xs:element name="ballots" type="Ballots"/>
+
+</xs:schema>

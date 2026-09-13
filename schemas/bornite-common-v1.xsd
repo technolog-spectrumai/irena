@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Types shared by every Bornite document. Included, never used on its own.
+  No target namespace: Bornite documents are deliberately namespace-free so that a rules
+  file written by hand validates exactly as written.
+-->
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema" elementFormDefault="qualified"
+           attributeFormDefault="unqualified">
+
+  <!-- Bornite V1 accepts exactly this version string. -->
+  <xs:simpleType name="Version">
+    <xs:restriction base="xs:string">
+      <xs:enumeration value="1.0"/>
+    </xs:restriction>
+  </xs:simpleType>
+
+  <!-- 1 to 128 bytes of ASCII letters, digits, '.', '_', ':', '+', '@', '-'.
+       Compared byte for byte; never case-folded. -->
+  <xs:simpleType name="VoterId">
+    <xs:restriction base="xs:string">
+      <xs:pattern value="[A-Za-z0-9._:+@\-]{1,128}"/>
+    </xs:restriction>
+  </xs:simpleType>
+
+  <!-- An integer that is at least one. -->
+  <xs:simpleType name="PositiveLong">
+    <xs:restriction base="xs:unsignedLong">
+      <xs:minInclusive value="1"/>
+    </xs:restriction>
+  </xs:simpleType>
+
+</xs:schema>
