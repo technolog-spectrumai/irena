@@ -414,6 +414,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "governance-bridge"
+version = "0.1.0"
+dependencies = [
+ "bornite-core",
+ "bornite-eval",
+ "bornite-rules",
+ "bornite-xml",
+ "prunella-core",
+ "prunella-crypto",
+ "prunella-store",
+ "quick-xml",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+]
+
+[[package]]
 name = "hashbrown"
 version = "0.17.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
