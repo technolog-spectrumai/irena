@@ -1,0 +1,79 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Irena company bodies, version 1.
+
+  Two elements a company puts on its ledger, each carried by an <irena-record>
+  (irena-record-v1.xsd) or read on its own:
+
+    <company-genesis>  who the company is: name, jurisdiction, registration, and the
+                       digest of the incorporation document.
+    <share-structure>  the share register. FLAT SHARES: every share is one vote, so a
+                       holder is a holding and one element carries both. There are no
+                       share classes in version 1; when they arrive they are a new
+                       version of this body, not an attribute added to it.
+
+  The register carries each holder's signing key. That is what lets a vote check that
+  a ballot came from a registered holder: keys are company data, on the chain, amended
+  through the same chain as everything else. A holder without a key owns their shares
+  and counts towards quorum but cannot cast a ballot.
+
+  Constraints XSD 1.0 cannot express are enforced by the reader: holder ids unique,
+  signing keys unique across holders, shares at least one, total shares within u64.
+-->
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema" elementFormDefault="qualified"
+           attributeFormDefault="unqualified">
+
+  <xs:include schemaLocation="bornite-common-v1.xsd"/>
+
+  <!-- A 32-byte digest or Ed25519 public key as 64 lowercase hex characters. -->
+  <xs:simpleType name="Hex32">
+    <xs:restriction base="xs:string">
+      <xs:pattern value="[0-9a-f]{64}"/>
+    </xs:restriction>
+  </xs:simpleType>
+
+  <xs:simpleType name="NonEmptyText">
+    <xs:restriction base="xs:string">
+      <xs:minLength value="1"/>
+    </xs:restriction>
+  </xs:simpleType>
+
+  <xs:complexType name="CompanyGenesis">
+    <xs:sequence>
+      <xs:element name="identity" minOccurs="1" maxOccurs="1">
+        <xs:complexType>
+          <xs:attribute name="name" type="NonEmptyText" use="required"/>
+          <!-- Free text in whatever form the notary uses: gb, us-de, Delaware. -->
+          <xs:attribute name="jurisdiction" type="xs:string" use="optional"/>
+          <xs:attribute name="registered-number" type="xs:string" use="optional"/>
+        </xs:complexType>
+      </xs:element>
+      <xs:element name="incorporation" minOccurs="0" maxOccurs="1">
+        <xs:complexType>
+          <!-- Digest of the certificate of incorporation or equivalent. Opaque. -->
+          <xs:attribute name="document-digest" type="Hex32" use="optional"/>
+        </xs:complexType>
+      </xs:element>
+    </xs:sequence>
+  </xs:complexType>
+
+  <xs:complexType name="ShareStructure">
+    <xs:sequence>
+      <xs:element name="holder" minOccurs="0" maxOccurs="unbounded">
+        <xs:complexType>
+          <!-- Also the holder's Bornite voter id: same grammar, no translation. -->
+          <xs:attribute name="id" type="VoterId" use="required"/>
+          <!-- Ed25519 public key the holder signs ballots with. Absent: cannot vote. -->
+          <xs:attribute name="key" type="Hex32" use="optional"/>
+          <xs:attribute name="name" type="xs:string" use="optional"/>
+          <!-- At least one; the reader refuses zero. -->
+          <xs:attribute name="shares" type="xs:unsignedLong" use="required"/>
+        </xs:complexType>
+      </xs:element>
+    </xs:sequence>
+  </xs:complexType>
+
+  <xs:element name="company-genesis" type="CompanyGenesis"/>
+  <xs:element name="share-structure" type="ShareStructure"/>
+
+</xs:schema>

@@ -484,6 +484,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "irena-core"
+version = "0.1.0"
+dependencies = [
+ "bornite-core",
+ "bornite-rules",
+ "bornite-xml",
+ "prunella-core",
+ "prunella-xml",
+ "quick-xml",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+]
+
+[[package]]
 name = "is_terminal_polyfill"
 version = "1.70.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"

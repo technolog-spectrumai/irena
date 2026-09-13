@@ -1,0 +1,89 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Irena record, version 1.
+
+  The notarised envelope that carries company data on a Prunella ledger. One envelope,
+  one body, three kinds with separate amendment chains:
+
+    kind="company-genesis"  carries <company-genesis>  (irena-company-v1.xsd)
+    kind="share-structure"  carries <share-structure>  (irena-company-v1.xsd)
+    kind="voting-rules"     carries <voting-rules>     (bornite-voting-rules-v1.xsd)
+
+  The <voting-rules> element is Bornite's own, reused unchanged: nothing about a
+  company appears inside it, so the same rules organise anything.
+
+  Every record is put on the ledger by hand, by someone with the authority and the
+  documents to say the company is now like this. <notarisation> records who that was
+  (id, name, address), when they say the change took effect (at), and optionally a
+  statement and the digest of an external document. Irena stores and reproduces all
+  of it and interprets none of it: the ledger's own order is the only order, and the
+  notary's date-time is never used to sequence or resolve anything.
+
+  A record that amends another names the transaction id of the record currently in
+  force for its (company, kind) in supersedes; the first record of a kind has none.
+  The ledger layer refuses anything else as a stale amendment.
+
+  Enforced by the reader, not this schema: the kind attribute must match the element
+  carried; the body's own constraints (see the included schemas).
+-->
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema" elementFormDefault="qualified"
+           attributeFormDefault="unqualified">
+
+  <xs:include schemaLocation="bornite-voting-rules-v1.xsd"/>
+  <xs:include schemaLocation="irena-company-v1.xsd"/>
+
+  <xs:simpleType name="RecordKind">
+    <xs:restriction base="xs:string">
+      <xs:enumeration value="company-genesis"/>
+      <xs:enumeration value="share-structure"/>
+      <xs:enumeration value="voting-rules"/>
+    </xs:restriction>
+  </xs:simpleType>
+
+  <!-- An opaque label naming the company. Compared for equality, never interpreted. -->
+  <xs:simpleType name="CompanyId">
+    <xs:restriction base="xs:string">
+      <xs:pattern value="[a-z0-9][a-z0-9._\-]{0,63}"/>
+    </xs:restriction>
+  </xs:simpleType>
+
+  <!-- RFC 3339 in UTC, seconds precision, exactly this shape. The reader additionally
+       checks the calendar (no 31 April, leap years, no leap seconds). -->
+  <xs:simpleType name="NotaryTime">
+    <xs:restriction base="xs:string">
+      <xs:pattern value="[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z"/>
+    </xs:restriction>
+  </xs:simpleType>
+
+  <xs:element name="irena-record">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element name="notarisation" minOccurs="1" maxOccurs="1">
+          <xs:complexType>
+            <!-- The notary's stable identifier: same grammar as a voter id. -->
+            <xs:attribute name="id" type="VoterId" use="required"/>
+            <xs:attribute name="name" type="NonEmptyText" use="required"/>
+            <xs:attribute name="address" type="xs:string" use="optional"/>
+            <!-- When the notary says the change took effect. Attested, never used to
+                 order anything. -->
+            <xs:attribute name="at" type="NotaryTime" use="required"/>
+            <xs:attribute name="statement" type="xs:string" use="optional"/>
+            <!-- Digest of an external document the notary attests to. Opaque. -->
+            <xs:attribute name="source-digest" type="Hex32" use="optional"/>
+          </xs:complexType>
+        </xs:element>
+        <xs:choice>
+          <xs:element name="company-genesis" type="CompanyGenesis"/>
+          <xs:element name="share-structure" type="ShareStructure"/>
+          <xs:element name="voting-rules" type="VotingRules"/>
+        </xs:choice>
+      </xs:sequence>
+      <xs:attribute name="version" type="xs:string" use="required" fixed="1.0"/>
+      <xs:attribute name="kind" type="RecordKind" use="required"/>
+      <xs:attribute name="company" type="CompanyId" use="required"/>
+      <!-- Transaction id of the record of the same kind this one amends. -->
+      <xs:attribute name="supersedes" type="Hex32" use="optional"/>
+    </xs:complexType>
+  </xs:element>
+
+</xs:schema>
