@@ -192,15 +192,22 @@ fn main() -> ExitCode {
 // Shared helpers.
 // ---------------------------------------------------------------------------------
 
+/// Prints the text or JSON form of a result.
+///
+/// A closed pipe (`irena … | head -1`) is not an error worth a panic: the write
+/// result is ignored rather than unwrapped.
 pub(crate) fn emit(json: bool, text: &str, value: &serde_json::Value) {
-    if json {
-        println!(
+    use std::io::Write as _;
+    let mut stdout = std::io::stdout().lock();
+    let _ = if json {
+        writeln!(
+            stdout,
             "{}",
             serde_json::to_string_pretty(value).unwrap_or_default()
-        );
+        )
     } else {
-        println!("{text}");
-    }
+        writeln!(stdout, "{text}")
+    };
 }
 
 pub(crate) fn open(path: &Path) -> Result<LocalChainStore, String> {
