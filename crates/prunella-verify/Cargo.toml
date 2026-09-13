@@ -1,0 +1,19 @@
+[package]
+name = "prunella-verify"
+description = "Deterministic block rules and structured chain verification for Prunella"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+
+[dependencies]
+prunella-core.workspace = true
+prunella-crypto.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true

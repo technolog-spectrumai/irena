@@ -35,6 +35,7 @@
 mod block;
 mod error;
 mod hash;
+mod head;
 mod keys;
 mod labels;
 mod transaction;
@@ -42,6 +43,7 @@ mod transaction;
 pub use block::{Block, BlockDraft, BlockHeader, GenesisSpec, HEADER_VERSION};
 pub use error::{CoreError, LabelRejection};
 pub use hash::{Hash, TxId};
+pub use head::ChainHead;
 pub use keys::{PUBLIC_KEY_LEN, PublicKey, SIGNATURE_LEN, Signature};
 pub use labels::{BlockHeight, MAX_LABEL_LEN, Namespace, NetworkId, SchemaVersion};
 pub use transaction::{Transaction, TransactionDraft};
