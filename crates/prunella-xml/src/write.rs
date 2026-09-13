@@ -6,6 +6,7 @@
 
 use crate::document::{ChainDocument, DocumentKind, FORMAT_VERSION, XML_NAMESPACE};
 use crate::error::XmlError;
+use crate::payload::PayloadEncoding;
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use quick_xml::Writer;
@@ -120,10 +121,38 @@ fn render_transaction(
     write_event(writer, Event::Start(element))?;
 
     write_binary(writer, "signer", &transaction.signer.to_bytes())?;
-    write_binary(writer, "payload", &transaction.payload)?;
+    write_payload(writer, &transaction.payload)?;
     write_binary(writer, "signature", &transaction.signature.to_bytes())?;
 
     write_event(writer, Event::End(BytesEnd::new("transaction")))
+}
+
+/// Writes a payload as a nested element when it is one, and as base64 otherwise.
+///
+/// A nested payload is written byte for byte: the stored bytes go straight into the
+/// output, unescaped and unindented, so the importer can cut exactly them back out.
+/// An empty payload is an empty element, as in version 1, and carries no encoding.
+fn write_payload(writer: &mut Writer<Vec<u8>>, payload: &[u8]) -> Result<(), XmlError> {
+    if payload.is_empty() {
+        return write_event(writer, Event::Empty(BytesStart::new("payload")));
+    }
+    let encoding = PayloadEncoding::choose(payload);
+    let mut element = BytesStart::new("payload");
+    element.push_attribute(("encoding", encoding.as_str()));
+    write_event(writer, Event::Start(element))?;
+    match encoding {
+        PayloadEncoding::Base64 => {
+            write_event(writer, Event::Text(BytesText::new(&BASE64.encode(payload))))?;
+        }
+        PayloadEncoding::Xml => {
+            // `choose` established the bytes are UTF-8 and one well-formed element.
+            let text = core::str::from_utf8(payload).map_err(|error| {
+                XmlError::Write(format!("nested payload is not UTF-8: {error}"))
+            })?;
+            write_event(writer, Event::Text(BytesText::from_escaped(text)))?;
+        }
+    }
+    write_event(writer, Event::End(BytesEnd::new("payload")))
 }
 
 /// Writes a byte string as base64 text.

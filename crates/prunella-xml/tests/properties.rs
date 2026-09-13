@@ -47,6 +47,40 @@ fn sample_document(directory: &TempDir, count: u64) -> String {
     write_document(&export(&store, &ExportRequest::full()).expect("export")).expect("render")
 }
 
+/// Text that is often, but not always, exactly one well-formed element: the cases a
+/// nested payload must handle and the near-misses that must fall back to base64.
+fn xml_shaped() -> impl Strategy<Value = String> {
+    let name = prop::sample::select(vec!["r", "record", "p:q", "a-b", "x1"]);
+    let inner = prop::collection::vec(
+        prop::sample::select(vec![
+            "<a/>",
+            "<a></a>",
+            "<b x=\"1\">",
+            "</b>",
+            "text",
+            " \n\t ",
+            "&amp;",
+            "&#x41;",
+            "&nope;",
+            "<![CDATA[</payload>]]>",
+            "<!-- c -->",
+            "<?pi?>",
+            "caf\u{e9}",
+            "\r\n",
+            "<",
+            "&",
+        ]),
+        0..6,
+    );
+    let wrap = prop::sample::select(vec!["", " ", "\n", "<?xml version=\"1.0\"?>", "<!-- c -->"]);
+    (name, inner, wrap.clone(), wrap).prop_map(|(name, inner, before, after)| {
+        format!(
+            "{before}<{name} xmlns:p=\"urn:p\">{}</{name}>{after}",
+            inner.concat()
+        )
+    })
+}
+
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(256))]
 
@@ -62,9 +96,11 @@ proptest! {
     fn arbitrary_xml_shaped_input_never_panics(
         parts in prop::collection::vec(
             prop::sample::select(vec![
-                "<prunella-chain", ">", "</prunella-chain>", " xmlns=\"urn:prunella:chain:1\"",
+                "<prunella-chain", ">", "</prunella-chain>", " xmlns=\"urn:prunella:chain:2\"",
+                " xmlns=\"urn:prunella:chain:1\"", " format-version=\"2\"",
                 " format-version=\"1\"", " kind=\"full\"", "<block", "</block>", "<header/>",
                 "<transactions>", "</transactions>", "<transaction", "<payload>", "</payload>",
+                "<payload encoding=\"xml\">", " encoding=\"xml\"", "<r>", "</r>", "<r/>",
                 "&amp;", "<![CDATA[x]]>", "\u{0}", "\u{feff}", "aGk=", " height=\"0\"",
             ]),
             0..40,
@@ -138,6 +174,67 @@ proptest! {
         let planned = plan_import(&target, &document);
         let imported = import(&target, &document);
         prop_assert_eq!(planned.is_ok(), imported.is_ok());
+    }
+
+    /// Any payload — random bytes or XML-shaped text — survives export and import with
+    /// the transaction id, and therefore every byte, intact.
+    #[test]
+    fn every_payload_round_trips_through_a_document(
+        payloads in prop::collection::vec(
+            prop_oneof![
+                prop::collection::vec(any::<u8>(), 0..64),
+                xml_shaped().prop_map(String::into_bytes),
+            ],
+            1..4,
+        ),
+    ) {
+        let directory = TempDir::new().expect("temp dir");
+        let store = LocalChainStore::init_genesis(
+            directory.path().join("s.prunella"),
+            GenesisSpec::new(network()),
+        )
+        .expect("create");
+        let key = SigningKey::from_seed([2; 32]);
+        let mut transactions = Vec::new();
+        for (n, payload) in payloads.iter().enumerate() {
+            transactions.push(key.sign_transaction(TransactionDraft {
+                namespace: Namespace::new("app.demo").expect("valid"),
+                schema_version: SchemaVersion(1),
+                payload: payload.clone(),
+                signer: key.public_key(),
+                nonce: n as u64 + 1,
+            }));
+        }
+        let head = store.head().expect("head");
+        let parent = store.get_block(head.height).expect("read").expect("block");
+        let block = parent
+            .header
+            .child_draft(transactions, 1)
+            .expect("draft")
+            .build()
+            .expect("build");
+        let expected_hash = block.hash();
+        store.append_block(block).expect("append");
+
+        let xml = write_document(&export(&store, &ExportRequest::full()).expect("export"))
+            .expect("render");
+        let document = read_document(&xml).map_err(|e| TestCaseError::fail(e.to_string()))?;
+        let restored = document.blocks.last().expect("the block");
+        prop_assert_eq!(restored.block.hash(), expected_hash);
+        for (transaction, payload) in restored.block.transactions.iter().zip(&payloads) {
+            prop_assert_eq!(&transaction.payload, payload);
+        }
+        // And every nested payload appears verbatim in the text.
+        for payload in &payloads {
+            if let Ok(text) = core::str::from_utf8(payload)
+                && prunella_xml::is_single_element(text)
+            {
+                prop_assert!(
+                    xml.contains(&format!("<payload encoding=\"xml\">{text}</payload>")),
+                    "{text:?} should be nested verbatim in\n{xml}"
+                );
+            }
+        }
     }
 
     /// A declared block count that disagrees with the declared range is refused.

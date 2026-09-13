@@ -19,12 +19,12 @@ pub enum XmlError {
         detail: String,
     },
     /// The document declares a format version this build does not understand.
-    #[error("document format version {found} is not supported (this build reads {supported})")]
+    #[error("document format version {found} is not supported (this build reads {supported:?})")]
     UnsupportedFormatVersion {
         /// The version declared.
         found: u32,
-        /// The version this build reads.
-        supported: u32,
+        /// The versions this build reads.
+        supported: Vec<u32>,
     },
     /// The document belongs to a different chain.
     #[error("document is from network {found} but the chain is {expected}")]

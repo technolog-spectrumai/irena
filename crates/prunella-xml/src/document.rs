@@ -6,11 +6,31 @@
 
 use prunella_core::{Block, BlockHeight, Hash, Namespace, NetworkId};
 
-/// The XML namespace of format version 1.
-pub const XML_NAMESPACE: &str = "urn:prunella:chain:1";
+/// The XML namespace of format version 2, the version this build writes.
+pub const XML_NAMESPACE: &str = "urn:prunella:chain:2";
 
-/// The document format version this build writes and reads.
-pub const FORMAT_VERSION: u32 = 1;
+/// The XML namespace of format version 1, which this build still reads.
+pub const XML_NAMESPACE_V1: &str = "urn:prunella:chain:1";
+
+/// The document format version this build writes.
+///
+/// Version 2 differs from version 1 in one way: a `<payload>` may carry its bytes as a
+/// nested XML element (`encoding="xml"`) instead of base64. Everything else, and every
+/// hash, is unchanged.
+pub const FORMAT_VERSION: u32 = 2;
+
+/// The document format versions this build reads, ascending.
+pub const SUPPORTED_FORMAT_VERSIONS: [u32; 2] = [1, 2];
+
+/// The XML namespace a format version uses, or `None` if the version is not read.
+#[must_use]
+pub const fn namespace_for_version(version: u32) -> Option<&'static str> {
+    match version {
+        1 => Some(XML_NAMESPACE_V1),
+        2 => Some(XML_NAMESPACE),
+        _ => None,
+    }
+}
 
 /// What a document claims to be.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -1,7 +1,9 @@
 # XML format
 
 Prunella exports and imports chains as XML. The schema is published as
-[`schemas/prunella-chain-v1.xsd`](../schemas/prunella-chain-v1.xsd).
+[`schemas/prunella-chain-v2.xsd`](../schemas/prunella-chain-v2.xsd);
+[`prunella-chain-v1.xsd`](../schemas/prunella-chain-v1.xsd) describes version 1
+documents, which this build still reads.
 
 ## XML is transport, never authority
 
@@ -13,21 +15,26 @@ order, escaping and line wrapping cannot change a single hash.
 
 ## Versioning
 
-* XML namespace: `urn:prunella:chain:1`
-* `format-version="1"`
+| Version | Namespace | Written | Read |
+|---|---|---|---|
+| 1 | `urn:prunella:chain:1` | no | yes |
+| 2 | `urn:prunella:chain:2` | **yes** | yes |
 
-The namespace and the `format-version` attribute move together. A document declaring an
-unknown `format-version` is refused outright rather than read on a best-effort basis: a
-backup that silently ignores the parts it does not recognise is not a backup.
+The namespace and the `format-version` attribute move together, and a document whose
+namespace does not match its declared version is malformed. A document declaring a
+`format-version` this build does not read is refused outright rather than read on a
+best-effort basis: a backup that silently ignores the parts it does not recognise is not
+a backup.
 
-A future version 2 would use `urn:prunella:chain:2`, so a version 1 reader rejects it at
-the namespace check and never has to guess.
+Version 2 differs from version 1 in exactly one place: the `<payload>` element may
+carry its bytes as a nested XML element instead of base64 (below). Every hash, id,
+signature and rule is unchanged; PROTOCOL_V1 is not touched by the transport version.
 
 ## Document shape
 
 ```xml
 <?xml version="1.0" encoding="UTF-8"?>
-<prunella-chain xmlns="urn:prunella:chain:1" format-version="1" kind="full"
+<prunella-chain xmlns="urn:prunella:chain:2" format-version="2" kind="full"
                 network-id="demo"
                 genesis-hash="d8ca680db344eb8be3587b7a92a6b0afae47923eb2e854513d9b7c7d81203463"
                 range-start="0" range-end="3" block-count="4"
@@ -42,7 +49,7 @@ the namespace check and never has to guess.
                    id="b62ac27081b4c1bc59fce99b60579448de1d550b575dedd7af95c2d25fb9853a"
                    namespace="app.demo" schema-version="1" nonce="1">
         <signer>mTU7PUOCjIeOUbCgu+6xG/RBc36/L6R4Xwc6z63sYFQ=</signer>
-        <payload>SGVsbG8=</payload>
+        <payload encoding="base64">SGVsbG8=</payload>
         <signature>q38M+Z+2McEbZBPHQV2mww…</signature>
       </transaction>
     </transactions>
@@ -51,13 +58,58 @@ the namespace check and never has to guess.
 ```
 
 * Hashes and ids: exactly 64 lowercase hex characters.
-* Keys, signatures and payloads: `xs:base64Binary`. Whitespace inside base64 content is
-  stripped before decoding, as XSD permits, so the document can be indented for reading
-  without changing a single payload byte.
+* Keys and signatures: `xs:base64Binary`. Whitespace inside base64 content is stripped
+  before decoding, as XSD permits, so the document can be indented for reading without
+  changing a single byte.
+* Payloads: base64 by default, or nested XML — see the next section.
 * An empty byte string is written as an empty element (`<payload/>`), so "no payload"
   and "payload of zero bytes" never depend on whitespace handling.
 * `exported-at-millis` is the producer's clock. It is informational: never hashed, never
   verified, never interpreted.
+
+## Nested payloads
+
+A payload is opaque bytes and the chain commits to exactly those bytes. Base64 is
+always correct and always unreadable. Since version 2, a payload that *is* an XML
+element travels as that element, so an application's records are legible inside the
+block that holds them:
+
+```xml
+<payload encoding="xml"><irena-record version="1.0" kind="share-structure" company="acme">…</irena-record></payload>
+<payload encoding="base64">SGVsbG8=</payload>
+```
+
+`encoding` defaults to `base64` when absent. In a version 1 document the attribute does
+not exist, and one appearing there is refused as an unknown attribute.
+
+**Prunella still never interprets a payload.** What makes nesting safe is that neither
+side ever re-serialises the element:
+
+* The **exporter** decides by the bytes alone (`PayloadEncoding::choose`), so two
+  exporters of one chain write one document. A payload is nested if and only if it is
+  valid UTF-8 and consists of exactly one well-formed element with nothing before or
+  after it — no whitespace, no declaration, no comment beside it. It is then written
+  straight into the output, unescaped and unindented.
+* The **importer** does not rebuild the element from parse events, because a parser
+  normalises line endings, attribute quoting and entity spelling and the chain
+  committed to the original bytes. It uses the parser only to find where the element
+  starts and ends, and takes the exact slice of the source text between those points
+  as the payload. Whitespace between the payload tags and the element is dropped, so a
+  reformatted document still yields the same bytes; anything else beside the element
+  (text, a comment, a second element) is refused as ambiguous. The slice is re-checked
+  to be one well-formed element, and the transaction id then commits to it as it does
+  to every payload, so a nested payload that was edited in any way — reflowed,
+  requoted, respelled — is caught as `InvalidBlocks` exactly like a tampered base64
+  one.
+
+Everything that cannot survive that trip goes as base64: an empty payload, binary,
+prose, a document with an XML declaration, XML with surrounding whitespace, an
+undeclared entity, a second element. The nested element is the application's, in
+whatever namespace it chooses or none. It inherits nothing from the chain document
+and is not validated against the chain schema (`processContents="skip"`).
+
+`MAX_BINARY_FIELD_CHARS` bounds a nested payload's source length exactly as it bounds a
+base64 one.
 
 ## Kinds
 
@@ -112,7 +164,8 @@ prints a warning saying so.
 | Input exceeds the byte limit (default 1 GiB) | `TooLarge` |
 | Declared or carried blocks exceed 16,000,000 | `TooManyBlocks` |
 | A block carries more than 4,000,000 transactions | `TooManyTransactions` |
-| One base64 element exceeds 96 MiB of characters | `FieldTooLarge` |
+| One base64 or nested-payload element exceeds 96 MiB of characters | `FieldTooLarge` |
+| A nested payload holds anything but one element and whitespace, or an unknown `encoding` | `Malformed` |
 | `block-count` disagrees with the declared height range | `Malformed` |
 
 Note which error catches which tampering. Rewriting a header changes the block hash and
@@ -143,8 +196,9 @@ what they are willing to read.
 
 Rust has no mature XSD validator, so the importer implements the equivalent structural
 checks in code and the XSD is the published contract for other tooling. The two are kept
-honest by a test that validates full, range and projection exports with `xmllint` where
-it is installed, and skips cleanly where it is not.
+honest by tests that validate full, range, projection and nested-payload exports, and a
+version 1 document, with `xmllint` where it is installed, and skip cleanly where it is
+not.
 
 The schema constrains shape and lexical form only. It cannot establish that a document
 is a valid chain — hashes, ids, signatures, linkage and ordering are verified by

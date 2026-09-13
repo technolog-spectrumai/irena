@@ -10,9 +10,11 @@
 //! declares are kept only so a mismatch can be reported.
 
 use crate::document::{
-    ChainDocument, DocumentBlock, DocumentKind, FORMAT_VERSION, Projection, XML_NAMESPACE,
+    ChainDocument, DocumentBlock, DocumentKind, Projection, SUPPORTED_FORMAT_VERSIONS,
+    XML_NAMESPACE, XML_NAMESPACE_V1, namespace_for_version,
 };
 use crate::error::XmlError;
+use crate::payload::{PayloadEncoding, is_single_element};
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use prunella_core::{
@@ -77,12 +79,24 @@ pub fn read_document_with_limit(xml: &str, max_bytes: u64) -> Result<ChainDocume
     }
     Parser {
         reader: NsReader::from_str(xml),
+        source: xml,
+        namespace: None,
+        format_version: None,
+        root_namespace: None,
     }
     .document()
 }
 
 struct Parser<'a> {
     reader: NsReader<&'a [u8]>,
+    /// The whole input, so a nested payload can be cut out of it byte for byte.
+    source: &'a str,
+    /// The document's namespace once the root element has been seen.
+    namespace: Option<&'static str>,
+    /// The declared format version once the root element has been seen.
+    format_version: Option<u32>,
+    /// The namespace the root element resolved to, checked once the version is known.
+    root_namespace: Option<String>,
 }
 
 impl<'a> Parser<'a> {
@@ -103,6 +117,17 @@ impl<'a> Parser<'a> {
         self.expect_name(&root, "prunella-chain")?;
 
         let mut document = self.root_attributes(&root)?;
+        let namespace = namespace_for_version(document.format_version)
+            .ok_or_else(|| self.malformed("unreachable: version accepted without a namespace"))?;
+        if self.root_namespace.as_deref() != Some(namespace) {
+            return Err(self.malformed(format!(
+                "a format-version {} document must be in the {namespace} namespace, found {}",
+                document.format_version,
+                self.root_namespace.as_deref().unwrap_or("no namespace")
+            )));
+        }
+        self.namespace = Some(namespace);
+        self.format_version = Some(document.format_version);
         let mut previous: Option<BlockHeight> = None;
 
         loop {
@@ -197,9 +222,9 @@ impl<'a> Parser<'a> {
         for (name, value) in self.attributes(element)? {
             match name.as_str() {
                 "xmlns" => {
-                    if value != XML_NAMESPACE {
+                    if value != XML_NAMESPACE && value != XML_NAMESPACE_V1 {
                         return Err(self.malformed(format!(
-                            "document namespace is {value:?}, expected {XML_NAMESPACE:?}"
+                            "document namespace is {value:?}, expected {XML_NAMESPACE:?} or {XML_NAMESPACE_V1:?}"
                         )));
                     }
                 }
@@ -220,10 +245,10 @@ impl<'a> Parser<'a> {
         }
 
         let format_version = self.require(format_version, "prunella-chain", "format-version")?;
-        if format_version != FORMAT_VERSION {
+        if !SUPPORTED_FORMAT_VERSIONS.contains(&format_version) {
             return Err(XmlError::UnsupportedFormatVersion {
                 found: format_version,
-                supported: FORMAT_VERSION,
+                supported: SUPPORTED_FORMAT_VERSIONS.to_vec(),
             });
         }
 
@@ -446,21 +471,43 @@ impl<'a> Parser<'a> {
             match self.event()? {
                 Event::Text(_) | Event::Comment(_) => {}
                 Event::Empty(child) => match self.child_name(&child)? {
-                    "signer" => signer = Some(PublicKey::from_bytes(self.fixed(&[])?)),
-                    "payload" => payload = Some(Vec::new()),
-                    "signature" => signature = Some(Signature::from_bytes(self.fixed(&[])?)),
+                    "signer" => {
+                        self.no_attributes(&child, "signer")?;
+                        signer = Some(PublicKey::from_bytes(self.fixed(&[])?));
+                    }
+                    "payload" => {
+                        if self.payload_encoding(&child)? == PayloadEncoding::Xml {
+                            return Err(self.malformed(
+                                "an xml-encoded payload cannot be empty: it must hold one element",
+                            ));
+                        }
+                        payload = Some(Vec::new());
+                    }
+                    "signature" => {
+                        self.no_attributes(&child, "signature")?;
+                        signature = Some(Signature::from_bytes(self.fixed(&[])?));
+                    }
                     other => return Err(self.unknown_element("transaction", other)),
                 },
-                Event::Start(child) => {
-                    let name = self.child_name(&child)?.to_owned();
-                    let bytes = self.binary_text(&name)?;
-                    match name.as_str() {
-                        "signer" => signer = Some(PublicKey::from_bytes(self.fixed(&bytes)?)),
-                        "payload" => payload = Some(bytes),
-                        "signature" => signature = Some(Signature::from_bytes(self.fixed(&bytes)?)),
-                        other => return Err(self.unknown_element("transaction", other)),
+                Event::Start(child) => match self.child_name(&child)? {
+                    "signer" => {
+                        self.no_attributes(&child, "signer")?;
+                        let bytes = self.binary_text("signer")?;
+                        signer = Some(PublicKey::from_bytes(self.fixed(&bytes)?));
                     }
-                }
+                    "payload" => {
+                        payload = Some(match self.payload_encoding(&child)? {
+                            PayloadEncoding::Base64 => self.binary_text("payload")?,
+                            PayloadEncoding::Xml => self.nested_payload()?,
+                        });
+                    }
+                    "signature" => {
+                        self.no_attributes(&child, "signature")?;
+                        let bytes = self.binary_text("signature")?;
+                        signature = Some(Signature::from_bytes(self.fixed(&bytes)?));
+                    }
+                    other => return Err(self.unknown_element("transaction", other)),
+                },
                 Event::End(_) => break,
                 other => return Err(self.malformed(format!("unexpected {}", describe(&other)))),
             }
@@ -475,6 +522,141 @@ impl<'a> Parser<'a> {
             nonce: self.require(nonce, "transaction", "nonce")?,
             signature: signature.ok_or_else(|| self.missing_element("transaction", "signature"))?,
         })
+    }
+
+    /// The `encoding` attribute of a payload element, defaulting to base64.
+    ///
+    /// Version 1 documents have no such attribute; one appearing there is an unknown
+    /// attribute, as it was to a version 1 reader.
+    fn payload_encoding(&self, element: &BytesStart<'_>) -> Result<PayloadEncoding, XmlError> {
+        let mut encoding = None;
+        for (name, value) in self.attributes(element)? {
+            match name.as_str() {
+                "encoding" if self.format_version != Some(1) => {
+                    encoding = Some(PayloadEncoding::parse(&value).ok_or_else(|| {
+                        self.malformed(format!("unknown payload encoding {value:?}"))
+                    })?);
+                }
+                other => return Err(self.unknown_attribute("payload", other)),
+            }
+        }
+        Ok(encoding.unwrap_or(PayloadEncoding::Base64))
+    }
+
+    fn no_attributes(&self, element: &BytesStart<'_>, name: &str) -> Result<(), XmlError> {
+        if let Some((attribute, _)) = self.attributes(element)?.into_iter().next() {
+            return Err(self.unknown_attribute(name, &attribute));
+        }
+        Ok(())
+    }
+
+    /// Reads a nested payload: the exact source bytes of the one element inside
+    /// `<payload encoding="xml">`, and consumes the payload's end tag.
+    ///
+    /// Nothing is rebuilt from parse events, because a parser normalises line endings,
+    /// attribute quoting and entity spelling and the chain committed to the original
+    /// bytes. The reader is used only to find where the element starts and ends; the
+    /// payload is the slice of the input between those positions. The nested element
+    /// is not required to be in the document's namespace, or in any namespace: it is
+    /// the application's, and Prunella does not look inside it.
+    ///
+    /// Whitespace between the payload tags and the element is permitted and dropped,
+    /// so a reformatted document still yields the same bytes. Anything else beside the
+    /// element — text, a comment, a second element — is refused: the payload would be
+    /// ambiguous.
+    fn nested_payload(&mut self) -> Result<Vec<u8>, XmlError> {
+        let mut element: Option<(usize, usize)> = None;
+        let mut depth = 0usize;
+        let mut start = 0usize;
+        loop {
+            let before = self.position()?;
+            let event = self.raw_event()?;
+            match event {
+                Event::Start(_) => {
+                    if depth == 0 {
+                        if element.is_some() {
+                            return Err(self.malformed(
+                                "an xml-encoded payload must hold exactly one element, found a second",
+                            ));
+                        }
+                        start = before;
+                    }
+                    depth += 1;
+                }
+                Event::Empty(_) => {
+                    if depth == 0 {
+                        if element.is_some() {
+                            return Err(self.malformed(
+                                "an xml-encoded payload must hold exactly one element, found a second",
+                            ));
+                        }
+                        element = Some((before, self.position()?));
+                    }
+                }
+                Event::End(_) => {
+                    if depth == 0 {
+                        // The payload's own end tag.
+                        break;
+                    }
+                    depth -= 1;
+                    if depth == 0 {
+                        element = Some((start, self.position()?));
+                    }
+                }
+                Event::Text(text) if depth == 0 => {
+                    if !text
+                        .xml10_content()
+                        .trim_matches(|c: char| c.is_ascii_whitespace())
+                        .is_empty()
+                    {
+                        return Err(self.malformed(
+                            "an xml-encoded payload may hold only one element and whitespace, found text",
+                        ));
+                    }
+                }
+                Event::Text(_)
+                | Event::CData(_)
+                | Event::Comment(_)
+                | Event::GeneralRef(_)
+                | Event::PI(_)
+                    if depth > 0 => {}
+                Event::Eof => return Err(self.malformed("document ends inside a payload")),
+                other => {
+                    return Err(self.malformed(format!(
+                        "an xml-encoded payload may hold only one element, found {}",
+                        describe(&other)
+                    )));
+                }
+            }
+            if let Some((_, end)) = element
+                && end.saturating_sub(start) > MAX_BINARY_FIELD_CHARS
+            {
+                return Err(XmlError::FieldTooLarge {
+                    element: "payload".to_owned(),
+                    found: end - start,
+                    limit: MAX_BINARY_FIELD_CHARS,
+                });
+            }
+        }
+        let (from, to) = element.ok_or_else(|| {
+            self.malformed("an xml-encoded payload must hold exactly one element, found none")
+        })?;
+        let bytes = self
+            .source
+            .get(from..to)
+            .ok_or_else(|| self.malformed("payload element positions fall outside the input"))?;
+        if !is_single_element(bytes) {
+            return Err(self.malformed(
+                "the bytes cut out for an xml-encoded payload are not one well-formed element",
+            ));
+        }
+        Ok(bytes.as_bytes().to_vec())
+    }
+
+    /// The reader's byte offset into the input.
+    fn position(&self) -> Result<usize, XmlError> {
+        usize::try_from(self.reader.buffer_position())
+            .map_err(|_| self.malformed("input position does not fit in memory"))
     }
 
     /// Reads the base64 text of an element and consumes its end tag.
@@ -520,21 +702,42 @@ impl<'a> Parser<'a> {
         Ok(element.local_name().into_inner())
     }
 
+    /// Reads one event without any namespace check, for the inside of a nested payload.
+    fn raw_event(&mut self) -> Result<Event<'a>, XmlError> {
+        match self.reader.read_resolved_event() {
+            Ok((_, event)) => Ok(event),
+            Err(error) => Err(self.malformed(error.to_string())),
+        }
+    }
+
+    /// Reads one event of the document proper, requiring every element to be in the
+    /// document's namespace.
+    ///
+    /// Until the root element has been read the namespace is unknown; the root's own
+    /// namespace is recorded and checked against its declared version afterwards.
     fn event(&mut self) -> Result<Event<'a>, XmlError> {
         let outcome = self.reader.read_resolved_event();
         let (namespace, event) = match outcome {
             Ok(pair) => pair,
             Err(error) => return Err(self.malformed(error.to_string())),
         };
-        match (&event, namespace) {
-            (Event::Start(_) | Event::Empty(_) | Event::End(_), ResolveResult::Bound(bound))
-                if bound.as_ref() == XML_NAMESPACE => {}
-            (Event::Start(_) | Event::Empty(_) | Event::End(_), _) => {
-                return Err(self.malformed(format!(
-                    "every element must be in the {XML_NAMESPACE} namespace"
-                )));
+        if !matches!(event, Event::Start(_) | Event::Empty(_) | Event::End(_)) {
+            return Ok(event);
+        }
+        let bound = match &namespace {
+            ResolveResult::Bound(bound) => Some(bound.as_ref()),
+            _ => None,
+        };
+        match self.namespace {
+            None => {
+                self.root_namespace = bound.map(ToOwned::to_owned);
             }
-            _ => {}
+            Some(expected) if bound == Some(expected) => {}
+            Some(expected) => {
+                return Err(
+                    self.malformed(format!("every element must be in the {expected} namespace"))
+                );
+            }
         }
         Ok(event)
     }

@@ -32,23 +32,39 @@
 //! document stopped making sense. [`plan_import`] runs every one of those checks and
 //! writes nothing.
 //!
-//! The document schema is published as `schemas/prunella-chain-v1.xsd`. The parser
-//! implements the equivalent structural checks in code, because Rust has no mature XSD
-//! validator; the schema is the contract for other tooling.
+//! # Nested payloads
+//!
+//! Format version 2 carries a payload that is exactly one well-formed XML element as
+//! that element, verbatim (`<payload encoding="xml">`), so an application's records
+//! are readable inside the block that holds them. Prunella still never interprets
+//! them: the exporter writes the stored bytes through unchanged, and the importer cuts
+//! the element's exact source bytes back out rather than re-serialising anything, so
+//! the transaction id commits to the same bytes on both sides. Any payload that could
+//! not survive that — empty, binary, prose, or XML with anything around its one
+//! element — travels as base64, as every payload did in version 1. The choice is a
+//! pure function of the bytes ([`PayloadEncoding::choose`]).
+//!
+//! The document schema is published as `schemas/prunella-chain-v2.xsd` (and
+//! `prunella-chain-v1.xsd` for version 1 documents, which this build still reads). The
+//! parser implements the equivalent structural checks in code, because Rust has no
+//! mature XSD validator; the schema is the contract for other tooling.
 
 mod document;
 mod error;
 mod export;
 mod import;
+mod payload;
 mod read;
 mod write;
 
 pub use document::{
-    ChainDocument, DocumentBlock, DocumentKind, FORMAT_VERSION, Projection, XML_NAMESPACE,
+    ChainDocument, DocumentBlock, DocumentKind, FORMAT_VERSION, Projection,
+    SUPPORTED_FORMAT_VERSIONS, XML_NAMESPACE, XML_NAMESPACE_V1, namespace_for_version,
 };
 pub use error::XmlError;
 pub use export::{ExportRequest, export};
 pub use import::{ImportPlan, import, plan_import, restore};
+pub use payload::{PayloadEncoding, is_single_element};
 pub use read::{
     DEFAULT_MAX_DOCUMENT_BYTES, MAX_BINARY_FIELD_CHARS, MAX_BLOCKS, MAX_TRANSACTIONS_PER_BLOCK,
     read_document, read_document_with_limit,

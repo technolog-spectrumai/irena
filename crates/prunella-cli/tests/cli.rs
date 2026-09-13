@@ -755,7 +755,10 @@ fn a_tampered_document_is_refused_and_leaves_the_chain_alone() {
     let xml = std::fs::read_to_string(cli.path("full.xml")).expect("read");
     std::fs::write(
         cli.path("bad.xml"),
-        xml.replace("<payload>SGVsbG8=</payload>", "<payload>dGFtcGVy</payload>"),
+        xml.replace(
+            "<payload encoding=\"base64\">SGVsbG8=</payload>",
+            "<payload encoding=\"base64\">dGFtcGVy</payload>",
+        ),
     )
     .expect("write");
 
