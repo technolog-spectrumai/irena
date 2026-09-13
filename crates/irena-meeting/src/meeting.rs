@@ -2,7 +2,7 @@
 
 use crate::error::MeetingError;
 use borsh::{BorshDeserialize, BorshSerialize};
-use irena_core::NotaryTimeV1;
+use irena_core::{ChannelIdV1, NotaryTimeV1};
 use prunella_core::{Hash, TxId};
 
 /// Identifies a meeting: the transaction that convened it.
@@ -75,9 +75,15 @@ impl core::fmt::Display for MeetingStatusV1 {
     }
 }
 
-/// What a meeting is about, apart from its agenda.
+/// What a meeting is about, apart from its agenda: whose meeting it is, what it is
+/// called, and when.
 #[derive(BorshSerialize, BorshDeserialize, Clone, Debug, PartialEq, Eq, serde::Serialize)]
 pub struct MeetingMetadataV1 {
+    /// The decision channel this is a meeting of. A meeting is a meeting *of* one
+    /// collective channel — the shareholders, the board, a committee — and every vote
+    /// item freezes against that channel. A board meeting and a shareholders' meeting
+    /// are the same code with a different id here.
+    pub channel: String,
     /// The meeting's title. Non-empty, opaque.
     pub title: String,
     /// When the meeting is scheduled to be held, in the canonical notary form. Attested
@@ -88,12 +94,24 @@ pub struct MeetingMetadataV1 {
 }
 
 impl MeetingMetadataV1 {
-    /// Validates the title and the time.
+    /// The channel id, validated.
+    ///
+    /// # Errors
+    ///
+    /// [`MeetingError::InvalidAgenda`] if the label is not a channel id.
+    pub fn channel(&self) -> Result<ChannelIdV1, MeetingError> {
+        ChannelIdV1::new(self.channel.clone()).map_err(|error| MeetingError::InvalidAgenda {
+            detail: format!("channel: {error}"),
+        })
+    }
+
+    /// Validates the channel id, the title and the time.
     ///
     /// # Errors
     ///
     /// [`MeetingError::InvalidAgenda`] naming what is wrong.
     pub fn validate(&self) -> Result<(), MeetingError> {
+        self.channel()?;
         if self.title.trim().is_empty() {
             return Err(MeetingError::InvalidAgenda {
                 detail: "the meeting title must not be empty".to_owned(),
@@ -277,6 +295,7 @@ mod tests {
     #[test]
     fn metadata_is_checked() {
         let good = MeetingMetadataV1 {
+            channel: "shareholders".to_owned(),
             title: "AGM".to_owned(),
             scheduled_at: "2026-06-01T10:00:00Z".to_owned(),
             notice_digest: None,
@@ -284,6 +303,9 @@ mod tests {
         assert!(good.validate().is_ok());
         let mut bad = good.clone();
         bad.title = " ".to_owned();
+        assert!(bad.validate().is_err());
+        let mut bad = good.clone();
+        bad.channel = "Shareholders".to_owned();
         assert!(bad.validate().is_err());
         let mut bad = good;
         bad.scheduled_at = "tomorrow".to_owned();

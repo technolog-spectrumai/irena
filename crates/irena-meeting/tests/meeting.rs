@@ -6,8 +6,8 @@ use irena_core::{CompanyIdV1, NotarisationV1, NotaryIdV1, NotaryTimeV1, RecordKi
 use irena_ledger::{company_now, genesis_with_company, publish};
 use irena_meeting::{
     AgendaBodyV1, MeetingCheckNameV1, MeetingError, MeetingFinalRecordV1, MeetingIdV1,
-    MeetingStatusV1, MeetingVerificationV1, ShareholderMeetingV1, compose_final,
-    read_meeting_record, verify_meeting,
+    MeetingStatusV1, MeetingV1, MeetingVerificationV1, compose_final, read_meeting_record,
+    verify_meeting,
 };
 use irena_vote::{BallotChoiceV1, SignedBallotV1, VoteError};
 use prunella_core::{
@@ -77,8 +77,47 @@ fn register_amended() -> String {
 
 fn genesis_xml() -> String {
     format!(
-        "<company-genesis><identity name=\"Acme Industries Ltd\"/>{}<governance>{RULES}</governance></company-genesis>",
-        register()
+        "<company-genesis><identity name=\"Acme Industries Ltd\"/>{}<governance>{}</governance></company-genesis>",
+        register(),
+        channels(RULES)
+    )
+}
+
+/// The channel set: shareholders (share register, collective, `rules`); board (chair
+/// key 5 weight 2, dir-a key 6, dir-b key 7; collective, simple majority, no quorum);
+/// ceo (chair, individual).
+fn channels(rules: &str) -> String {
+    format!(
+        r#"<decision-channels>
+  <channel id="shareholders" mode="collective">
+    <actors source="share-register"/>
+    {rules}
+  </channel>
+  <channel id="board" mode="collective">
+    <actors source="roster">
+      <member id="chair" key="{}" weight="2"/>
+      <member id="dir-a" key="{}"/>
+      <member id="dir-b" key="{}"/>
+    </actors>
+    <voting-rules version="1.0">
+      <weight type="electorate"/>
+      <exclusions enabled="false"/>
+      <quorum type="none"/>
+      <threshold type="simple-majority" basis="votes-cast"/>
+      <abstentions treatment="exclude"/>
+      <tie treatment="reject"/>
+    </voting-rules>
+  </channel>
+  <channel id="ceo" mode="individual">
+    <actors source="roster">
+      <member id="chair" key="{}"/>
+    </actors>
+  </channel>
+</decision-channels>"#,
+        key(5).public_key(),
+        key(6).public_key(),
+        key(7).public_key(),
+        key(5).public_key()
     )
 }
 
@@ -104,6 +143,7 @@ fn founded() -> Chain {
 
 fn metadata() -> irena_meeting::MeetingMetadataV1 {
     irena_meeting::MeetingMetadataV1 {
+        channel: "shareholders".to_owned(),
         title: "Annual General Meeting 2026".to_owned(),
         scheduled_at: "2026-06-01T10:00:00Z".to_owned(),
         notice_digest: Some(Hash::from_bytes([0xa0; 32])),
@@ -115,8 +155,8 @@ fn digest(byte: u8) -> Hash {
 }
 
 /// A meeting with one informational item and two vote items.
-fn drafted() -> ShareholderMeetingV1 {
-    let mut meeting = ShareholderMeetingV1::draft(metadata());
+fn drafted() -> MeetingV1 {
+    let mut meeting = MeetingV1::draft(metadata());
     meeting
         .add_item(
             "Report of the directors",
@@ -145,7 +185,7 @@ fn drafted() -> ShareholderMeetingV1 {
 }
 
 fn ballot(
-    meeting: &ShareholderMeetingV1,
+    meeting: &MeetingV1,
     item: u32,
     seed: u8,
     id: &str,
@@ -156,7 +196,7 @@ fn ballot(
 }
 
 /// Runs the whole meeting: convened, opened, both votes cast, closed, finalised.
-fn held(chain: &Chain) -> (ShareholderMeetingV1, irena_meeting::MeetingFinalizedV1) {
+fn held(chain: &Chain) -> (MeetingV1, irena_meeting::MeetingFinalizedV1) {
     // Block timestamps never go backwards, so a second meeting on the same chain
     // starts after the first one's last block.
     let head = chain.store.head().expect("head");
@@ -391,7 +431,7 @@ fn every_invalid_transition_is_reported_with_both_ends() {
 fn an_agenda_must_be_an_agenda_and_a_meeting_needs_a_company() {
     let chain = founded();
     // No items.
-    let mut empty = ShareholderMeetingV1::draft(metadata());
+    let mut empty = MeetingV1::draft(metadata());
     assert!(matches!(
         empty.convene(&chain.store, &key(9), &notary("2026-05-01T09:00:00Z"), 1000),
         Err(MeetingError::InvalidAgenda { .. })
@@ -406,7 +446,8 @@ fn an_agenda_must_be_an_agenda_and_a_meeting_needs_a_company() {
         Err(MeetingError::InvalidAgenda { .. })
     ));
     // Bad metadata.
-    let mut bad = ShareholderMeetingV1::draft(irena_meeting::MeetingMetadataV1 {
+    let mut bad = MeetingV1::draft(irena_meeting::MeetingMetadataV1 {
+        channel: "shareholders".to_owned(),
         title: "AGM".to_owned(),
         scheduled_at: "next Tuesday".to_owned(),
         notice_digest: None,
@@ -504,9 +545,8 @@ fn ballots_reach_the_right_item_and_nothing_else() {
 fn the_meeting_state_round_trips_through_canonical_bytes_between_steps() {
     use prunella_canonical::Canonical;
     let chain = founded();
-    let reload = |m: &ShareholderMeetingV1| {
-        ShareholderMeetingV1::from_canonical_bytes(&m.canonical_bytes()).expect("decode")
-    };
+    let reload =
+        |m: &MeetingV1| MeetingV1::from_canonical_bytes(&m.canonical_bytes()).expect("decode");
     let mut meeting = drafted();
     assert_eq!(reload(&meeting), meeting);
     meeting
@@ -603,18 +643,18 @@ fn company_changes_after_the_freeze_reach_no_vote_in_the_meeting() {
         "verification resolves at the frozen height: {report:#?}"
     );
 
-    // And the rules may move too: a later meeting sees the new company.
+    // And the channel set may move too: a later meeting sees the new company.
     let current = company_now(&chain.store)
         .unwrap()
-        .provider_of(RecordKindV1::VotingRules);
+        .provider_of(RecordKindV1::DecisionChannels);
     publish(
         &chain.store,
         &key(9),
-        RecordKindV1::VotingRules,
-        &RULES.replace(
+        RecordKindV1::DecisionChannels,
+        &channels(&RULES.replace(
             "simple-majority\" basis=\"votes-cast",
             "fraction\" numerator=\"2\" denominator=\"3\" basis=\"votes-cast",
-        ),
+        )),
         Some(current),
         &notary("2026-07-01T10:00:00Z"),
         3000,
@@ -1100,4 +1140,202 @@ fn meeting_records_are_read_strictly() {
     assert_eq!(json["company"], "acme");
     assert_eq!(json["notarisation"]["id"], "notary-07");
     assert_eq!(json["body"]["kind"], "final");
+}
+
+// ---------------------------------------------------------------------------------
+// Meetings of other channels: the same code with a different id.
+// ---------------------------------------------------------------------------------
+
+#[test]
+fn a_board_meeting_is_the_same_meeting_of_another_channel() {
+    let chain = founded();
+    let mut meeting = MeetingV1::draft(irena_meeting::MeetingMetadataV1 {
+        channel: "board".to_owned(),
+        title: "Board meeting, March".to_owned(),
+        scheduled_at: "2026-03-10T09:00:00Z".to_owned(),
+        notice_digest: None,
+    });
+    meeting
+        .add_item(
+            "Approve the budget",
+            AgendaBodyV1::Vote {
+                proposal_digest: digest(0x44),
+            },
+        )
+        .unwrap();
+    meeting
+        .convene(&chain.store, &key(9), &notary("2026-03-01T09:00:00Z"), 1000)
+        .expect("convene");
+    meeting.open(&chain.store).expect("open");
+    let snapshot = meeting.vote(1).unwrap().snapshot().unwrap().clone();
+    assert_eq!(snapshot.channel, "board");
+    let ids: Vec<&str> = snapshot.electorate.iter().map(|e| e.id.as_str()).collect();
+    assert_eq!(
+        ids,
+        ["chair", "dir-a", "dir-b"],
+        "the roster, not the register"
+    );
+
+    // A shareholder's ballot is refused: alice is not on the board.
+    let alice = SignedBallotV1::sign(
+        &key(1),
+        meeting.vote(1).unwrap().id().unwrap(),
+        &voter("alice"),
+        BallotChoiceV1::Yes,
+    );
+    assert!(meeting.cast(1, alice).is_err());
+    meeting
+        .cast(1, ballot(&meeting, 1, 5, "chair", BallotChoiceV1::Yes))
+        .expect("chair");
+    meeting
+        .cast(1, ballot(&meeting, 1, 6, "dir-a", BallotChoiceV1::No))
+        .expect("dir-a");
+    meeting.close(&chain.store).expect("close");
+    assert!(
+        meeting.vote(1).unwrap().evaluation().unwrap().accepted(),
+        "the chair's weight 2 carries it 2–1"
+    );
+    let finalized = meeting
+        .finalize(&chain.store, &key(9), &notary("2026-03-10T12:00:00Z"), 2000)
+        .expect("finalize");
+    let report = verify_meeting(&chain.store, &finalized.tx_id).expect("verify");
+    assert!(report.is_valid(), "{report:#?}");
+    assert_eq!(finalized.record.metadata.channel, "board");
+
+    // The convening record names the channel, readably.
+    let convening = chain
+        .store
+        .get_transaction(&finalized.record.meeting_id.tx_id())
+        .unwrap()
+        .unwrap();
+    let text = String::from_utf8(convening.transaction.payload).unwrap();
+    assert!(text.contains("<meeting channel=\"board\""), "{text}");
+}
+
+#[test]
+fn a_meeting_of_an_individual_channel_cannot_open() {
+    let chain = founded();
+    let mut meeting = MeetingV1::draft(irena_meeting::MeetingMetadataV1 {
+        channel: "ceo".to_owned(),
+        title: "Not a meeting".to_owned(),
+        scheduled_at: "2026-03-10T09:00:00Z".to_owned(),
+        notice_digest: None,
+    });
+    meeting
+        .add_item(
+            "Something",
+            AgendaBodyV1::Vote {
+                proposal_digest: digest(0x44),
+            },
+        )
+        .unwrap();
+    meeting
+        .convene(&chain.store, &key(9), &notary("2026-03-01T09:00:00Z"), 1000)
+        .expect("convening is a record like any other");
+    let error = meeting
+        .open(&chain.store)
+        .expect_err("one person holds no vote");
+    assert!(
+        matches!(
+            error,
+            MeetingError::Vote {
+                number: 1,
+                source: irena_vote::VoteError::NotCollective { .. }
+            }
+        ),
+        "{error}"
+    );
+
+    // A channel that does not exist is refused when the meeting is convened.
+    let mut bad = MeetingV1::draft(irena_meeting::MeetingMetadataV1 {
+        channel: "Board".to_owned(),
+        title: "x".to_owned(),
+        scheduled_at: "2026-03-10T09:00:00Z".to_owned(),
+        notice_digest: None,
+    });
+    bad.add_item(
+        "x",
+        AgendaBodyV1::Vote {
+            proposal_digest: digest(0x44),
+        },
+    )
+    .unwrap();
+    let error = bad
+        .convene(&chain.store, &key(9), &notary("2026-03-01T09:00:00Z"), 3000)
+        .expect_err("not a channel id");
+    assert!(
+        matches!(error, MeetingError::InvalidAgenda { .. }),
+        "{error}"
+    );
+}
+
+#[test]
+fn a_vote_from_another_channel_is_caught_by_the_belongs_check() {
+    let chain = founded();
+    let (_, finalized) = held(&chain);
+    let good = finalized.record.clone();
+
+    // The same agenda, held by the board; its item 2 vote is real and valid.
+    let mut board = drafted();
+    // `drafted` is a shareholders' meeting; retarget it before convening.
+    let metadata = irena_meeting::MeetingMetadataV1 {
+        channel: "board".to_owned(),
+        ..metadata()
+    };
+    board = {
+        let mut retargeted = MeetingV1::draft(metadata);
+        for item in board.items() {
+            retargeted
+                .add_item(item.title.clone(), item.body.clone())
+                .unwrap();
+        }
+        retargeted
+    };
+    let head = chain.store.head().unwrap();
+    let base = chain
+        .store
+        .get_block(head.height)
+        .unwrap()
+        .unwrap()
+        .header
+        .timestamp_millis
+        + 1000;
+    board
+        .convene(&chain.store, &key(9), &notary("2026-05-01T09:00:00Z"), base)
+        .unwrap();
+    board.open(&chain.store).unwrap();
+    board
+        .cast(2, ballot(&board, 2, 5, "chair", BallotChoiceV1::Yes))
+        .unwrap();
+    board
+        .cast(3, ballot(&board, 3, 5, "chair", BallotChoiceV1::No))
+        .unwrap();
+    board.close(&chain.store).unwrap();
+    let board_final = board
+        .finalize(
+            &chain.store,
+            &key(9),
+            &notary("2026-06-01T12:00:00Z"),
+            base + 1000,
+        )
+        .unwrap();
+
+    // The board's vote put under the shareholders' item: subject and digest agree,
+    // the vote verifies on its own, and only the channel gives it away.
+    let mut swapped = good;
+    swapped.items[1].vote_tx_id = board_final.record.items[1].vote_tx_id;
+    swapped.items[1].outcome = board_final.record.items[1].outcome.clone();
+    let report = verify_meeting(&chain.store, &republish(&chain, &swapped)).expect("verify");
+    assert!(!report.is_valid());
+    assert!(
+        failures(&report).contains(&MeetingCheckNameV1::VotesBelong),
+        "{report:#?}"
+    );
+    let detail = &report
+        .checks
+        .iter()
+        .find(|c| c.name == MeetingCheckNameV1::VotesBelong)
+        .unwrap()
+        .detail;
+    assert!(detail.contains("channel board"), "{detail}");
 }

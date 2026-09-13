@@ -28,7 +28,7 @@ pub struct MeetingFinalizedV1 {
     pub record: MeetingFinalRecordV1,
 }
 
-/// A shareholder meeting from draft to final record.
+/// A meeting of one collective decision channel, from draft to final record.
 ///
 /// A runtime state machine, like a vote: every operation checks the status first and
 /// refuses with [`MeetingError::InvalidTransition`] naming both ends. The whole state
@@ -39,7 +39,7 @@ pub struct MeetingFinalizedV1 {
 /// opening, casting a ballot and closing are local: a meeting's UI state is not the
 /// company's business.
 #[derive(BorshSerialize, BorshDeserialize, Clone, Debug, PartialEq, Eq, serde::Serialize)]
-pub struct ShareholderMeetingV1 {
+pub struct MeetingV1 {
     status: MeetingStatusV1,
     company: String,
     metadata: MeetingMetadataV1,
@@ -51,10 +51,11 @@ pub struct ShareholderMeetingV1 {
     finalized: Option<(TxId, BlockHeight)>,
 }
 
-impl Canonical for ShareholderMeetingV1 {}
+impl Canonical for MeetingV1 {}
 
-impl ShareholderMeetingV1 {
-    /// Starts a meeting: what it is called, when it is to be held, and the notice.
+impl MeetingV1 {
+    /// Starts a meeting: whose it is (the channel), what it is called, when it is to
+    /// be held, and the notice.
     ///
     /// The company is the chain's — one company per chain — and is filled in when the
     /// meeting is convened.
@@ -84,7 +85,7 @@ impl ShareholderMeetingV1 {
         &self.company
     }
 
-    /// Title, time and notice.
+    /// Channel, title, time and notice.
     #[must_use]
     pub const fn metadata(&self) -> &MeetingMetadataV1 {
         &self.metadata
@@ -219,7 +220,8 @@ impl ShareholderMeetingV1 {
         Ok(MeetingIdV1::from_tx(tx_id))
     }
 
-    /// Opens the meeting: creates and freezes a vote for every vote item.
+    /// Opens the meeting: creates and freezes a vote for every vote item, through the
+    /// meeting's channel.
     ///
     /// Each vote freezes the company **on its own** at the current head — its own
     /// snapshot, its own electorate, its own id — so a later amendment reaches none of
@@ -230,9 +232,11 @@ impl ShareholderMeetingV1 {
     /// # Errors
     ///
     /// [`MeetingError::InvalidTransition`] unless convened; [`MeetingError::Vote`]
-    /// naming the item whose vote could not be frozen.
+    /// naming the item whose vote could not be frozen — including because the channel
+    /// is individual, or no longer exists at the head.
     pub fn open(&mut self, store: &LocalChainStore) -> Result<BlockHeight, MeetingError> {
         self.expect_status(MeetingStatusV1::Convened, "open")?;
+        let channel = self.metadata.channel()?;
         let at = store.head()?.height;
         let mut votes = Vec::new();
         for item in self.items.iter().filter(|item| item.body.is_vote()) {
@@ -240,7 +244,7 @@ impl ShareholderMeetingV1 {
                 unreachable!("filtered")
             };
             let mut vote = VoteV1::draft(self.subject_of(item), proposal_digest);
-            vote.freeze(store, at)
+            vote.freeze(store, at, &channel)
                 .map_err(|source| MeetingError::Vote {
                     number: item.number,
                     source,

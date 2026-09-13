@@ -4,7 +4,7 @@
 use bornite_core::VoterIdV1;
 use irena_core::{CompanyIdV1, NotarisationV1, NotaryIdV1, NotaryTimeV1, RecordKindV1};
 use irena_ledger::{company_now, genesis_with_company, publish, reconstruct};
-use irena_meeting::{AgendaBodyV1, MeetingMetadataV1, ShareholderMeetingV1};
+use irena_meeting::{AgendaBodyV1, MeetingMetadataV1, MeetingV1};
 use irena_resolution::{
     AmendmentTargetV1, AuthorityV1, ExecutionVerificationV1, ResolutionError, ResolutionIdV1,
     ResolutionKindV1, ResolutionStatusV1, ResolutionV1, ResolutionVerificationV1,
@@ -134,7 +134,7 @@ struct Held {
 /// Holds a meeting whose items are exactly `items` (title, digest, pass), and returns
 /// where it landed. Item numbers are 1-based in the order given.
 fn hold(chain: &Chain, items: &[(&str, Hash, bool)]) -> Held {
-    let mut meeting = ShareholderMeetingV1::draft(MeetingMetadataV1 {
+    let mut meeting = MeetingV1::draft(MeetingMetadataV1 {
         title: "Annual General Meeting 2026".to_owned(),
         scheduled_at: "2026-06-01T10:00:00Z".to_owned(),
         notice_digest: None,

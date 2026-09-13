@@ -32,8 +32,8 @@ pub enum MeetingCheckNameV1 {
     /// Every vote item names a transaction that `irena-vote` verifies.
     VotesVerify,
     /// Every referenced vote is the one this item, this company and this meeting
-    /// called for: right subject, right proposal digest, frozen at the opening
-    /// height, finalised before the meeting was.
+    /// called for: through the meeting's channel, right subject, right proposal
+    /// digest, frozen at the opening height, finalised before the meeting was.
     VotesBelong,
     /// Every informational item's digest is present, and no item carries a vote
     /// reference it should not.
@@ -253,6 +253,12 @@ pub fn verify_meeting(
                     if snapshot.company != company {
                         wrong.push(format!("company {}", snapshot.company));
                     }
+                    if snapshot.channel != metadata.channel {
+                        wrong.push(format!(
+                            "channel {}, the meeting is of {}",
+                            snapshot.channel, metadata.channel
+                        ));
+                    }
                     if snapshot.subject != expected_subject {
                         wrong.push(format!("subject {:?}", snapshot.subject));
                     }
@@ -446,9 +452,15 @@ fn describe_agenda_difference(convened: &AgendaV1, found: Option<&AgendaV1>) -> 
 
 fn describe_metadata(convened: &MeetingMetadataV1, found: &MeetingMetadataV1) -> String {
     if convened == found {
-        return format!("{:?}, scheduled {}", found.title, found.scheduled_at);
+        return format!(
+            "{:?} of channel {}, scheduled {}",
+            found.title, found.channel, found.scheduled_at
+        );
     }
     let mut differences = Vec::new();
+    if convened.channel != found.channel {
+        differences.push(format!("channel {} vs {}", convened.channel, found.channel));
+    }
     if convened.title != found.title {
         differences.push(format!("title {:?} vs {:?}", convened.title, found.title));
     }

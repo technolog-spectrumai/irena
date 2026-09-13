@@ -46,7 +46,7 @@ pub struct FinalItemV1 {
 pub struct MeetingFinalRecordV1 {
     /// The meeting: its convening transaction.
     pub meeting_id: MeetingIdV1,
-    /// Title, time, notice — repeated from the convening so the record is
+    /// Channel, title, time, notice — repeated from the convening so the record is
     /// self-contained; verification checks they agree.
     pub metadata: MeetingMetadataV1,
     /// The height every vote item was frozen at.
@@ -72,7 +72,7 @@ impl MeetingFinalRecordV1 {
 pub enum MeetingRecordBodyV1 {
     /// The meeting was convened with this agenda.
     Convened {
-        /// Title, time, notice.
+        /// Channel, title, time, notice.
         metadata: MeetingMetadataV1,
         /// What was put before the shareholders.
         agenda: AgendaV1,
@@ -191,7 +191,8 @@ pub fn compose_final(
 
 fn metadata_attributes(metadata: &MeetingMetadataV1) -> String {
     let mut text = format!(
-        " title=\"{}\" scheduled-at=\"{}\"",
+        " channel=\"{}\" title=\"{}\" scheduled-at=\"{}\"",
+        escape_attribute(&metadata.channel),
         escape_attribute(&metadata.title),
         metadata.scheduled_at
     );
@@ -396,6 +397,7 @@ fn read_meeting(
 ) -> Result<MeetingBody, MeetingError> {
     let mut issues = Vec::new();
     let mut attributes = Attributes::of(reader, "meeting", start).map_err(IrenaError::from)?;
+    let channel = require(&mut attributes, "channel", &mut issues);
     let title = require(&mut attributes, "title", &mut issues);
     let scheduled_at = require(&mut attributes, "scheduled-at", &mut issues);
     let notice = attributes.take("notice-digest");
@@ -460,6 +462,21 @@ fn read_meeting(
             "must not be empty".to_owned(),
         ));
     }
+    if let Some(channel) = &channel
+        && let Err(error) = irena_core::ChannelIdV1::new(channel.clone())
+    {
+        for issue in error.issues() {
+            issues.push(match issue {
+                IssueV1::InvalidValue { value, reason, .. } => IssueV1::InvalidValue {
+                    element: "meeting",
+                    attribute: "channel",
+                    value: value.clone(),
+                    reason: reason.clone(),
+                },
+                other => other.clone(),
+            });
+        }
+    }
     let opened_at_height = opened_at.and_then(|text| match text.parse::<u64>() {
         Ok(height) if text.bytes().all(|b| b.is_ascii_digit()) => Some(BlockHeight(height)),
         _ => {
@@ -522,6 +539,7 @@ fn read_meeting(
     }
     Ok((
         MeetingMetadataV1 {
+            channel: channel.expect("checked"),
             title: title.expect("checked"),
             scheduled_at: scheduled_at.expect("checked"),
             notice_digest,

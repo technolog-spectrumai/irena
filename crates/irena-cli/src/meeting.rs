@@ -6,7 +6,7 @@
 
 use crate::{Cli, EXIT_FINDING, EXIT_OK, NotaryArgs, emit, open, read_key, timestamp_for};
 use bornite_core::VoterIdV1;
-use irena_meeting::{AgendaBodyV1, MeetingMetadataV1, ShareholderMeetingV1, verify_meeting};
+use irena_meeting::{AgendaBodyV1, MeetingMetadataV1, MeetingV1, verify_meeting};
 use irena_vote::{BallotChoiceV1, SignedBallotV1};
 use prunella_canonical::Canonical;
 use prunella_core::{Hash, TxId};
@@ -141,7 +141,7 @@ pub(crate) fn run(cli: &Cli, command: &MeetingCommand) -> Result<u8, String> {
                 notice_digest,
             };
             metadata.validate().map_err(|e| e.to_string())?;
-            let meeting = ShareholderMeetingV1::draft(metadata);
+            let meeting = MeetingV1::draft(metadata);
             save(state, &meeting)?;
             report(cli, &meeting, &format!("drafted the meeting {title:?}"))
         }
@@ -420,19 +420,19 @@ pub(crate) fn run(cli: &Cli, command: &MeetingCommand) -> Result<u8, String> {
     }
 }
 
-fn load(path: &Path) -> Result<ShareholderMeetingV1, String> {
+fn load(path: &Path) -> Result<MeetingV1, String> {
     let bytes =
         std::fs::read(path).map_err(|e| format!("could not read {}: {e}", path.display()))?;
-    ShareholderMeetingV1::from_canonical_bytes(&bytes)
+    MeetingV1::from_canonical_bytes(&bytes)
         .map_err(|e| format!("{} is not a meeting: {e}", path.display()))
 }
 
-fn save(path: &Path, meeting: &ShareholderMeetingV1) -> Result<(), String> {
+fn save(path: &Path, meeting: &MeetingV1) -> Result<(), String> {
     std::fs::write(path, meeting.canonical_bytes())
         .map_err(|e| format!("could not write {}: {e}", path.display()))
 }
 
-fn report(cli: &Cli, meeting: &ShareholderMeetingV1, headline: &str) -> Result<u8, String> {
+fn report(cli: &Cli, meeting: &MeetingV1, headline: &str) -> Result<u8, String> {
     let mut lines = Vec::new();
     if !headline.is_empty() {
         lines.push(headline.to_owned());
