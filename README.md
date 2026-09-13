@@ -1,3 +1,63 @@
+# Irena
+
+Three independent engines in one workspace, each of which knows nothing about the
+others' purpose:
+
+| Engine | What it is | What it does not know |
+|---|---|---|
+| **Prunella** | An immutable, organisation-agnostic ledger | What any payload means |
+| **Bornite** | A deterministic voting engine | Who is voting, or why |
+| **The governance bridge** | The only place both exist | What a subject or a notarised document refers to |
+
+```
+prunella-*  ←── governance-bridge ──→  bornite-*
+```
+
+Neither arrow points the other way. No Prunella crate mentions Bornite; no Bornite
+crate mentions Prunella; a test greps every source file to make sure. The bridge stores
+Bornite's voting rules and electorate rolls on a Prunella ledger, records every
+amendment, and resolves what was in force at any height so a vote can be evaluated
+against ledger truth.
+
+## The rule that shapes the whole design
+
+**The voting rules must be enough to organise a vote with no organisation behind them
+at all.** The same `<voting-rules>` document organises a company AGM, a non-profit's
+membership vote, or — in future — a fleet of drones deciding a peaceful transport
+deployment democratically. So:
+
+* The rules document says how to count and what passing means — weights, exclusions,
+  quorum, threshold, abstentions, ties — and **nothing** about who is voting or why.
+* The electorate is voter ids and integer weights. Where a weight comes from — shares,
+  one member one vote, a drone's node count — is not recorded anywhere in the engine.
+* One schema defines the `voting-rules` element, and the standalone file and the
+  on-ledger record both include it. A rules file written for one purpose is stored on a
+  ledger for another **byte for byte unchanged**.
+* Organisation-specific truth — a company's share structure, a non-profit's minutes,
+  a swarm's fleet manifest — reaches the ledger only through a **notarisation**: a
+  notary id and the digest of an external document, entered manually. The bridge
+  stores it and never parses it. Every change to rules or roll is a new ledger record
+  that names the one it amends, so the full history is on the chain.
+
+| Document | Covers |
+|---|---|
+| [BORNITE_V1.md](BORNITE_V1.md) | **Normative.** The frozen voting types, rules grammar and evaluation algorithm |
+| [GOVERNANCE_BRIDGE.md](GOVERNANCE_BRIDGE.md) | Records, notarisation, amendment and resolution, the boundary |
+| [docs/bornite-cli.md](docs/bornite-cli.md) | The `bornite` binary |
+| [docs/governance-cli.md](docs/governance-cli.md) | The `governance` binary |
+
+```console
+$ prunella keygen --out k.key
+$ governance --chain gov.chain init --network swarm --subject swarm-alpha \
+      --rules rules.xml --signing-key k.key            # rules live in the genesis block
+$ governance --chain gov.chain publish-roll --subject swarm-alpha \
+      --roll roll.xml --signing-key k.key
+$ governance --chain gov.chain evaluate --subject swarm-alpha --ballots ballots.xml
+$ bornite evaluate --rules rules.xml --vote vote.xml   # the same rules, no ledger at all
+```
+
+---
+
 # Prunella
 
 A standalone, organization-agnostic blockchain and immutable ledger, in Rust.
@@ -102,6 +162,38 @@ prunella-canonical  →  prunella-core  →  prunella-crypto  →  prunella-veri
 | [`prunella-xml`](crates/prunella-xml) | Versioned XML transport |
 | [`prunella-cli`](crates/prunella-cli) | The `prunella` binary |
 | [`prunella-conformance`](crates/prunella-conformance) | Golden vectors and an independent encoder that freeze V1 |
+
+# Bornite
+
+A standalone deterministic voting engine. Frozen electorate + rules + ballots → the
+same auditable result on every machine.
+
+* No floating point (`clippy::float_arithmetic` is denied across the workspace).
+  Fractions are exact numerator/denominator pairs; every comparison is a `u128`
+  cross-multiplication that provably cannot overflow.
+* No hash-map iteration, no clock, no randomness, no locale, no dependence on input
+  order — each ruled out by construction and by a test.
+* The tie rule is the boundary rule: the threshold comparison is always strict, and a
+  result landing exactly on it is decided by `<tie treatment="reject|accept"/>`.
+* Contradictions between rules and electorate are refused with every issue reported
+  together, never resolved by picking a side.
+
+| Crate | Responsibility |
+|---|---|
+| [`bornite-core`](crates/bornite-core) | Versioned types, exact fractions, checked weight arithmetic |
+| [`bornite-rules`](crates/bornite-rules) | `VotingRulesV1`, rule-versus-electorate validation |
+| [`bornite-eval`](crates/bornite-eval) | The fixed-order algorithm and `VoteEvaluationV1` |
+| [`bornite-xml`](crates/bornite-xml) | Strict readers for `<voting-rules>` and `<vote>` documents |
+| [`bornite-cli`](crates/bornite-cli) | The `bornite` binary |
+
+# The governance bridge
+
+| Crate | Responsibility |
+|---|---|
+| [`governance-bridge`](crates/governance-bridge) | Records on the ledger, amendment chains, resolution at a height, evaluation against ledger truth |
+| [`governance-cli`](crates/governance-cli) | The `governance` binary |
+
+Schemas for all three live under [`schemas/`](schemas/).
 
 ## Documentation
 
