@@ -14,7 +14,7 @@ which know nothing about the third:
 |---|---|---|
 | **Prunella** | An immutable, organisation-agnostic ledger | What any payload means |
 | **Bornite** | A deterministic voting engine | Who is voting, or why |
-| **Irena** | The company — genesis, share register, voting rules — notarised on the ledger; its votes, frozen, signed, counted, recorded, verifiable; the shareholder meetings that group them; and the resolutions that turn a passed vote into company change | Whether the register names the real owners |
+| **Irena** | The company — genesis, share register, **decision channels** — notarised on the ledger; its votes and signed decisions, frozen, counted, recorded, verifiable; the meetings that group votes; and the resolutions that turn a channel's approval into company change | Whether the register names the real owners, or whether the configured channels are the ones the law recognises |
 
 Irena imports both engines directly. Neither imports Irena; no Prunella crate mentions
 Bornite and no Bornite crate mentions Prunella; a test greps every engine source file
@@ -35,17 +35,84 @@ deployment democratically. So:
 * One schema defines the `voting-rules` element, and the standalone file and the
   on-ledger record both include it. A rules file written for one purpose is stored on a
   ledger for another **byte for byte unchanged**.
-* Company truth — the share register, the founding identity — reaches the ledger only
-  through a **notarised record**: who attested to it (id, name, address), when they say
+* Company truth — the share register, the founding identity, **who may decide and
+  how** — reaches the ledger only through a **notarised record**: who attested to it (id, name, address), when they say
   the change took effect, and optionally the digest of an external document, entered
   by hand. Every change is a new record that names the one it amends, so the full
   history is on the chain, and Prunella's XML export shows each record **nested and
   readable inside its block**.
 
+## Decision channels
+
+Who may decide, and how, is company data — not code. A **decision channel** has an id,
+an **actor source** and a **mode**:
+
+```text
+channel      := id + actor source + mode
+actor source := share-register | roster (members listed inline)
+mode         := individual | collective(<voting-rules>)
+```
+
+```xml
+<decision-channels>
+  <channel id="shareholders" mode="collective">      <!-- the holders vote, weight = shares -->
+    <actors source="share-register"/>
+    <voting-rules version="1.0">…</voting-rules>
+  </channel>
+  <channel id="board" mode="collective">             <!-- three directors vote, weighted -->
+    <actors source="roster">
+      <member id="chen"   key="ca93…" weight="2"/>
+      <member id="okafor" key="6e7a…"/>
+      <member id="vance"/>                            <!-- no key: counts, cannot sign -->
+    </actors>
+    <voting-rules version="1.0">…</voting-rules>
+  </channel>
+  <channel id="ceo" mode="individual">               <!-- one director signs -->
+    <actors source="roster">
+      <member id="chen" key="ca93…"/>
+    </actors>
+  </channel>
+</decision-channels>
+```
+
+`shareholders`, `board` and `ceo` are labels a notary chose. Irena knows four words —
+`share-register`, `roster`, `individual`, `collective` — and no organ, office or legal
+system. The same code runs every configuration:
+
+| Configuration | What Irena does | Looks like |
+|---|---|---|
+| `share-register` + `collective` | resolves the holders, weight = shares, runs a vote under the nested rules | a shareholders' meeting |
+| `roster` + `collective` | resolves the members at their declared weights, runs a vote under the nested rules | a board, a committee |
+| `roster` + `individual` | resolves to exactly one member, who signs a decision | a sole executive |
+| `share-register` + `individual` | resolves to the one holder, who signs | a single-member company |
+
+A channel is resolved at a height, like everything else: a vote or a decision freezes
+the company, resolves the channel *as the company then stood*, and pins the register and
+the channel set by transaction id. A resolution then names the channel and the exact
+record it decided through — a meeting item and vote, or a signed decision — and the
+rest of the loop (proposal digest, stale-base rule, amendment, execution record,
+verification) is one code path whichever it was. The channel set is itself a company
+part, amended through the same notarised `supersedes` mechanism as the register, so
+*who decides* has a history on the chain like everything else.
+
+One person rewriting who decides is held to the **self-demotion rule**: a channel-set
+amendment executed on an individual decision must leave its signer with no seat they
+did not already hold, and every seat they keep unchanged. A sole director may abolish
+their own channel or hand the company to a collective; they may not add themselves
+anywhere or thin out a board they sit on. Irena refuses at execution and any reader
+re-checks it from the chain. What it does *not* do, stated plainly: stop an individual
+channel from rewriting a channel its actor is not part of — that is a configuration
+hazard the notary attests to, and `irena channels` marks every individual channel.
+
+Real, validated documents for each configuration are under
+[examples/](examples/README.md); the [governance.md](governance.md) walk-through runs
+all three on one chain.
+
 | Document | Covers |
 |---|---|
-| [governance.md](governance.md) | **Start here.** How a company decides and how the chain proves it, in plain language, walked through a real seven-block example |
-| [IRENA_V1.md](IRENA_V1.md) | The company model, the record envelope, notarisation, amendment and reconstruction, the vote lifecycle, shareholder meetings, resolutions, and the road ahead |
+| [governance.md](governance.md) | **Start here.** How a company decides and how the chain proves it, in plain language, walked through a real chain: a shareholders' vote, a sole executive's decisions — one of them refused — and a board vote |
+| [examples/](examples/README.md) | Real, schema-validated documents: a three-channel genesis, a single-member company, a weighted committee, and the two channel-set amendments the walk-through executes and refuses |
+| [IRENA_V1.md](IRENA_V1.md) | The company model, decision channels, the record envelope, notarisation, amendment and reconstruction, votes, individual decisions, meetings, resolutions, and the road ahead |
 | [BORNITE_V1.md](BORNITE_V1.md) | **Normative.** The frozen voting types, rules grammar and evaluation algorithm |
 | [PROTOCOL_V1.md](PROTOCOL_V1.md) | **Normative.** The frozen ledger wire protocol |
 | [docs/irena-cli.md](docs/irena-cli.md) | The `irena` binary |
@@ -57,7 +124,7 @@ $ prunella keygen --out k.key
 $ irena --chain acme.chain init --network acme-net --company acme \
       --genesis company.xml --signing-key k.key \
       --notary-id notary-07 --notary-name "Jane Roe" --notary-at 2026-03-01T09:30:00Z
-$ irena --chain acme.chain show                     # identity, register, rules at the head
+$ irena --chain acme.chain channels                 # every channel, resolved at the head
 $ irena --chain acme.chain publish-shares --file shares-v2.xml --signing-key k.key \
       --supersedes <tx that provides the register> --notary-id notary-07 \
       --notary-name "Jane Roe" --notary-at 2026-04-01T10:00:00Z
@@ -92,18 +159,19 @@ $ irena --chain acme.chain resolution create --meeting cd54… --item 1 --vote 8
       --title "Buy out carol" --target share-structure --file new-register.xml --state r.state
 $ irena --chain acme.chain resolution finalize --state r.state --signing-key k.key …
 $ irena --chain acme.chain resolution execute --state r.state --signing-key k.key …
-$ irena --chain acme.chain resolution verify --execution c2ca…   # vote → amendment
+$ irena --chain acme.chain resolution verify --execution 8b1c…   # decision → amendment
 
 $ bornite evaluate --rules rules.xml --vote vote.xml     # the same rules, no ledger at all
 ```
 
 | Crate | Responsibility |
 |---|---|
-| [`irena-core`](crates/irena-core) | The company model — a genesis that is the whole company (identity, flat share register with signing keys, nested voting rules), notarisation, the record envelope — and its strict XML |
+| [`irena-core`](crates/irena-core) | The company model — a genesis that is the whole company (identity, flat share register with signing keys, the decision channel set with nested voting rules), notarisation, the record envelope — and its strict XML |
 | [`irena-ledger`](crates/irena-ledger) | Prunella integration: found, amend, and **reconstruct** the company at any height from the genesis and the amendments in chain order |
-| [`irena-vote`](crates/irena-vote) | Electorate derivation, the vote lifecycle, signed ballots, the final record and its verification from the chain alone |
-| [`irena-meeting`](crates/irena-meeting) | Shareholder meetings: an agenda of informational and vote items, convened and finalised on the ledger, every vote frozen on its own |
-| [`irena-resolution`](crates/irena-resolution) | The governance-closing loop: a passed vote becomes a formal resolution, and an amendment resolution authorises exactly one company amendment |
+| [`irena-decision`](crates/irena-decision) | A channel resolved against the company into actors, weights and keys; and the individual decision — one actor signs — recorded and verified like a vote |
+| [`irena-vote`](crates/irena-vote) | The collective decision: the vote lifecycle through a channel, signed ballots, the final record and its verification from the chain alone |
+| [`irena-meeting`](crates/irena-meeting) | Meetings of a collective channel: an agenda of informational and vote items, convened and finalised on the ledger, every vote frozen on its own |
+| [`irena-resolution`](crates/irena-resolution) | The governance-closing loop: a channel's approval — a passed vote or a signed decision — becomes a formal resolution, and an amendment resolution authorises exactly one company amendment, bounded by the self-demotion rule |
 | [`irena-cli`](crates/irena-cli) | The `irena` binary |
 
 ## Decisions
@@ -124,7 +192,14 @@ before they are re-argued.
 | **Flat shares: one share, one vote** | `weight = shares` in one function; a keyless holder counts towards quorum but cannot sign | Share classes are a new `<share-structure>` body version and one extra factor in that function |
 | **Signing keys live in the share register** | No key table anywhere else; keys are amended like any company data | Stage 4 identities can add key rotation as an `identity`-like part without touching votes |
 | **Notarisation required on every record** — id, name, optional address, `at` in canonical UTC | Real-world authority enters in one place; `at` is attested metadata and never orders anything | Stage 4 can bind notary ids to keys; a notarisation could carry more attestations without changing the envelope |
-| **Bornite's `<voting-rules>` nested unchanged** | The same rules bytes mean the same rules in a file, a genesis or an amendment; Bornite never sees a company | Board rules (stage 3) are another `<voting-rules>` under another part |
+| **Bornite's `<voting-rules>` nested unchanged, once per collective channel** | The same rules bytes mean the same rules in a file, a genesis or an amendment; Bornite never sees a company; a board's rules and the shareholders' sit side by side in one channel set | — |
+| **Decision channels: `id + actor source + mode`, no organ types** | `shareholders`, `board`, `ceo` are configurations; Irena knows `share-register`, `roster`, `individual`, `collective` and no legal system; a test runs all three through the same `execute`. Cost: nothing says *what* a channel may decide | Scoped channels — a `scope` attribute checked at `execute` — are the next step, deliberately short of a permissions language; more sources are one `match` arm each |
+| **Clean break: `<governance>` holds `<decision-channels>`, never a bare `<voting-rules>`** | No implicit `shareholders` channel hardcoded in Rust; old genesis documents stop parsing (Irena's format is not frozen; only PROTOCOL_V1 and BORNITE_V1 are) | — |
+| **The channel set is a company part, replaced whole** | One provider per part, reconstruction unchanged, the register's own supersession mechanism; changing one channel rewrites the set | Per-channel supersession if whole-set rewrites prove costly |
+| **Individual = the source resolves to exactly one actor** | No `actor=` selector, no notion of an office; a `ceo` is a roster of one, a single-member company its own register; rotation is a channel-set amendment. Cost: validity depends on state, so a `share-register` individual channel stops resolving the day a second holder is admitted — reported, never guessed | — |
+| **Individual decisions are their own chain record** | `irena.decision.v1`, verified independently like a vote; a resolution names a channel and one transaction whichever the mode, and everything after the authority check is one code path (`ApprovalV1`) | — |
+| **A meeting is a meeting of one channel** | A board meeting and a shareholders' meeting are the same code with a different id; `VotesBelong` catches a vote from another channel; per-item channels are not built | Per-item channels if a mixed meeting is ever wanted |
+| **Self-demotion, not a policy engine** | Two set comparisons — no new seat, no changed seat — refused at `execute` and re-checked by `SelfDemotionHolds`; a sole director may abolish themselves, never promote themselves. Gap, documented: an individual channel may rewrite a channel its actor is not part of, and collective amendments are unrestricted | Widen the rule if the gap matters; scoped channels close most of it |
 | **Records pinned by transaction id, never by height or time** | A vote snapshot pins the exact bytes it was decided against; amendments after the freeze cannot reach it | — |
 | **Vote state as a canonical Borsh file; ballots as files** | Every lifecycle step is one command; a holder signs on their own machine | Stage 5 UI drives the same `VoteV1` in memory; a meeting holds several |
 | **A meeting is a container, not a company part** | Meeting records carry no `supersedes` and reconstruction ignores their namespace, so no meeting can silently change the company | Turning a passed motion into an amendment is stage 2, and adds a record kind rather than changing this one |
@@ -134,27 +209,31 @@ before they are re-argued.
 | **Only convening and finalisation reach the chain** | The formal facts are on the ledger; drafting, casting and counting stay local, so a UI cannot fill the chain with noise | Intermediate attestations (a quorum roll call) would be new record kinds |
 | **`VotesVerify` and `VotesBelong` are separate checks** | A real, valid vote from another meeting passes the first and fails the second — a forgery a per-vote check cannot see | — |
 | **Votes never change the company; resolutions only describe authority** | Four record kinds in a row (meeting, vote, resolution, execution) and the amendment is still the one record that changes reconstructed state; reconstruction ignores all four namespaces | A future kind of authority (a board decision) plugs in at the resolution step without touching amendments |
-| **The proposal digest is the digest of the amendment body** | Shareholders vote on the register or the rules themselves, so what is executed is provably what was approved — no document can drift from what it authorises | A proposal envelope wrapping prose *and* body would let the voted document read better while binding the same bytes |
+| **The proposal digest is the digest of the amendment body** | The actors decide on the register or the channel set themselves, so what is executed is provably what was approved — no document can drift from what it authorises | A proposal envelope wrapping prose *and* body would let the voted document read better while binding the same bytes |
 | **A resolution carries the body, not just its digest** | The chain is self-contained: an auditor reads what was decided without any external file | — |
-| **Execution refuses a stale base** | A resolution passed against a company that has since changed cannot land on one the voters never saw; the second of two competing resolutions must be re-voted | Per-part judgement already softens it (a rules resolution survives a register change); a rebase-and-reconfirm step could soften it further |
+| **Execution refuses a stale base** | A resolution passed against a company that has since changed cannot land on one the voters never saw; the second of two competing resolutions must be re-voted | Per-part judgement already softens it (a channel-set resolution survives a register change); a rebase-and-reconfirm step could soften it further |
 | **The execution record is the only link from amendment to authority** | The company record format is untouched, so every existing amendment stays valid and readable | An optional `authority` attribute on the amendment envelope would make the link visible from the amendment's side too |
-| **No authorisation roles in V1** | Any key may publish a resolution; the notarisation is the only authority, exactly as for company records | Stage 4 adds who may sign what, checked at reconstruction |
-| **Ballots are not secret and live in the final record** | A record is verifiable from the chain alone, nine named checks | Secret ballots would need a different commitment scheme and are explicitly out of scope |
+| **No authorisation roles in V1 beyond the channels** | Any key may publish a resolution; the channel decides whether it verifies, and the notarisation is the only authority on who the channels are, exactly as for company records | Stage 4 adds who may sign which *record transaction*, checked at reconstruction |
+| **Ballots are not secret and live in the final record** | A record is verifiable from the chain alone, ten named checks | Secret ballots would need a different commitment scheme and are explicitly out of scope |
 | **Final vote record as canonical Borsh, not XML** | Byte-exact re-encoding is one of the verification checks; the export shows it as base64 | An XML rendering for readers is a projection that can be added without changing what is verified |
 | **Strict readers, issues collected and sorted** | Unknown elements refused; a document with three problems is fixed in one round | — |
 | **Breaks reported, never repaired** | Anything written around Irena stops reconstruction at that exact transaction | — |
 
 ## Road ahead
 
-Planned, in order — see [IRENA_V1.md §10](IRENA_V1.md):
+Planned, in order — see [IRENA_V1.md §11](IRENA_V1.md):
 
 1. ~~shareholder meetings and votes using Bornite~~ — **done**, see
-   [IRENA_V1.md §8](IRENA_V1.md);
-2. ~~resolutions and the company-state changes they cause~~ — **done**, see
    [IRENA_V1.md §9](IRENA_V1.md);
-3. board membership, meetings and decisions;
+2. ~~resolutions and the company-state changes they cause~~ — **done**, see
+   [IRENA_V1.md §10](IRENA_V1.md);
+3. ~~board membership, meetings and decisions~~ — **done without a board type**: a
+   board is a collective channel over a roster, see [IRENA_V1.md §1.3](IRENA_V1.md);
 4. identities and authorisation;
 5. Placidia coordination and UI.
+
+Next to the channels, recorded rather than built: scoped channels, per-channel
+supersession, more actor sources, a wider self-demotion rule.
 
 Also deliberately absent: share classes (the company has flat shares), secret ballots,
 delegation, proxies, networking, consensus.
