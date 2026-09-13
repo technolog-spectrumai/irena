@@ -17,14 +17,39 @@ const GENESIS: &str = r#"<company-genesis>
     <holder id="carol" shares="200"/>
   </share-structure>
   <governance>
-    <voting-rules version="1.0">
-      <weight type="electorate"/>
-      <exclusions enabled="true"/>
-      <quorum type="fraction" numerator="1" denominator="2" basis="total-electorate"/>
-      <threshold type="simple-majority" basis="votes-cast"/>
-      <abstentions treatment="exclude"/>
-      <tie treatment="reject"/>
-    </voting-rules>
+    <decision-channels>
+      <channel id="shareholders" mode="collective">
+        <actors source="share-register"/>
+        <voting-rules version="1.0">
+          <weight type="electorate"/>
+          <exclusions enabled="true"/>
+          <quorum type="fraction" numerator="1" denominator="2" basis="total-electorate"/>
+          <threshold type="simple-majority" basis="votes-cast"/>
+          <abstentions treatment="exclude"/>
+          <tie treatment="reject"/>
+        </voting-rules>
+      </channel>
+      <channel id="board" mode="collective">
+        <actors source="roster">
+          <member id="chen" key="c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1" name="M. Chen" weight="2"/>
+          <member id="okafor" key="c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2"/>
+          <member id="vance"/>
+        </actors>
+        <voting-rules version="1.0">
+          <weight type="electorate"/>
+          <exclusions enabled="false"/>
+          <quorum type="none"/>
+          <threshold type="simple-majority" basis="votes-cast"/>
+          <abstentions treatment="exclude"/>
+          <tie treatment="reject"/>
+        </voting-rules>
+      </channel>
+      <channel id="ceo" mode="individual">
+        <actors source="roster">
+          <member id="chen" key="c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1"/>
+        </actors>
+      </channel>
+    </decision-channels>
   </governance>
 </company-genesis>"#;
 
@@ -46,6 +71,29 @@ const RULES: &str = r#"<voting-rules version="1.0">
   <tie treatment="reject"/>
 </voting-rules>"#;
 
+const CHANNELS: &str = r#"<decision-channels>
+  <channel id="shareholders" mode="collective">
+    <actors source="share-register"/>
+    <voting-rules version="1.0">
+      <weight type="electorate"/>
+      <exclusions enabled="true"/>
+      <quorum type="fraction" numerator="1" denominator="2" basis="total-electorate"/>
+      <threshold type="simple-majority" basis="votes-cast"/>
+      <abstentions treatment="exclude"/>
+      <tie treatment="reject"/>
+    </voting-rules>
+  </channel>
+  <channel id="ceo" mode="individual">
+    <actors source="roster">
+      <member id="chen" key="c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1" name="M. Chen"/>
+    </actors>
+  </channel>
+</decision-channels>"#;
+
+fn shareholders() -> irena_core::ChannelIdV1 {
+    irena_core::ChannelIdV1::new("shareholders").expect("channel id")
+}
+
 fn company() -> CompanyIdV1 {
     CompanyIdV1::new("acme").expect("company")
 }
@@ -66,7 +114,7 @@ fn bodies() -> [(RecordKindV1, &'static str); 4] {
         (RecordKindV1::CompanyGenesis, GENESIS),
         (RecordKindV1::Identity, IDENTITY),
         (RecordKindV1::ShareStructure, SHARES),
-        (RecordKindV1::VotingRules, RULES),
+        (RecordKindV1::DecisionChannels, CHANNELS),
     ]
 }
 
@@ -157,10 +205,39 @@ fn the_genesis_is_the_whole_company() {
     assert_eq!(genesis.shares.total_shares(), 1000);
     // The nested rules are exactly what Bornite reads from a standalone file.
     let standalone = bornite_xml::read_rules_document(RULES).expect("rules");
-    assert_eq!(genesis.rules, standalone);
+    assert_eq!(genesis.channels.len(), 3);
+    let shareholders = genesis.channels.get(&shareholders()).expect("channel");
+    assert_eq!(
+        shareholders.actors,
+        irena_core::ActorSourceV1::ShareRegister
+    );
+    assert_eq!(shareholders.mode.rules(), Some(&standalone));
+    let board = genesis
+        .channels
+        .get(&irena_core::ChannelIdV1::new("board").unwrap())
+        .expect("board");
+    let irena_core::ActorSourceV1::Roster(roster) = &board.actors else {
+        panic!("board is a roster");
+    };
+    let weights: Vec<(&str, u64, bool)> = roster
+        .members()
+        .iter()
+        .map(|m| (m.id.as_str(), m.weight, m.key.is_some()))
+        .collect();
+    assert_eq!(
+        weights,
+        [("chen", 2, true), ("okafor", 1, true), ("vance", 1, false)],
+        "weight defaults to 1; a member without a key is listed"
+    );
+    let ceo = genesis
+        .channels
+        .get(&irena_core::ChannelIdV1::new("ceo").unwrap())
+        .expect("ceo");
+    assert!(ceo.mode.is_individual());
+    assert!(ceo.mode.rules().is_none());
 
     let minimal = read_company_genesis_document(
-        r#"<company-genesis><identity name="X"/><share-structure/><governance><voting-rules version="1.0"><weight type="equal"/><exclusions enabled="false"/><quorum type="none"/><threshold type="simple-majority" basis="votes-cast"/><abstentions treatment="exclude"/><tie treatment="reject"/></voting-rules></governance></company-genesis>"#,
+        r#"<company-genesis><identity name="X"/><share-structure/><governance><decision-channels><channel id="all" mode="collective"><actors source="share-register"/><voting-rules version="1.0"><weight type="equal"/><exclusions enabled="false"/><quorum type="none"/><threshold type="simple-majority" basis="votes-cast"/><abstentions treatment="exclude"/><tie treatment="reject"/></voting-rules></channel></decision-channels></governance></company-genesis>"#,
     )
     .expect("minimal");
     assert_eq!(minimal.incorporation_digest, None);
@@ -176,11 +253,11 @@ fn notarisation_special_characters_survive() {
     notarisation.address = Some("1 <Main> & \"Side\"".to_owned());
     notarisation.statement = Some("said \"yes\" & <no>".to_owned());
     let xml = compose_record(
-        RecordKindV1::VotingRules,
+        RecordKindV1::DecisionChannels,
         &company(),
         None,
         &notarisation,
-        RULES,
+        CHANNELS,
     )
     .expect("compose");
     assert_eq!(read_record(&xml).expect("read").notarisation, notarisation);
@@ -189,11 +266,11 @@ fn notarisation_special_characters_survive() {
 #[test]
 fn a_notarisation_is_required_and_every_field_is_checked() {
     let good = compose_record(
-        RecordKindV1::VotingRules,
+        RecordKindV1::DecisionChannels,
         &company(),
         None,
         &notary(),
-        RULES,
+        CHANNELS,
     )
     .expect("compose");
 
@@ -498,7 +575,7 @@ fn genesis_problems_are_reported_together() {
             )),
             IssueV1::MissingElement {
                 parent: "governance",
-                element: "voting-rules",
+                element: "decision-channels",
             },
         ),
         (
@@ -569,20 +646,20 @@ fn genesis_problems_are_reported_together() {
 #[test]
 fn the_kind_must_match_the_body_and_the_envelope_is_strict() {
     let good = compose_record(
-        RecordKindV1::VotingRules,
+        RecordKindV1::DecisionChannels,
         &company(),
         None,
         &notary(),
-        RULES,
+        CHANNELS,
     )
     .expect("compose");
 
-    let mismatched = good.replace("kind=\"voting-rules\"", "kind=\"share-structure\"");
+    let mismatched = good.replace("kind=\"decision-channels\"", "kind=\"share-structure\"");
     assert!(matches!(
         read_record(&mismatched),
         Err(IrenaError::KindMismatch {
             declared: RecordKindV1::ShareStructure,
-            carried: RecordKindV1::VotingRules
+            carried: RecordKindV1::DecisionChannels
         })
     ));
 
@@ -593,7 +670,7 @@ fn the_kind_must_match_the_body_and_the_envelope_is_strict() {
     for (label, xml) in [
         (
             "unknown kind",
-            good.replace("kind=\"voting-rules\"", "kind=\"roll\""),
+            good.replace("kind=\"decision-channels\"", "kind=\"roll\""),
         ),
         (
             "unknown attribute",
@@ -605,7 +682,7 @@ fn the_kind_must_match_the_body_and_the_envelope_is_strict() {
         ),
         (
             "two bodies",
-            good.replace("</irena-record>", &format!("{RULES}</irena-record>")),
+            good.replace("</irena-record>", &format!("{CHANNELS}</irena-record>")),
         ),
         (
             "wrong root",
@@ -643,8 +720,8 @@ fn the_kind_must_match_the_body_and_the_envelope_is_strict() {
         "{error}"
     );
     let error = read_record(&good.replace(
-        "kind=\"voting-rules\"",
-        "kind=\"voting-rules\" supersedes=\"nope\"",
+        "kind=\"decision-channels\"",
+        "kind=\"decision-channels\" supersedes=\"nope\"",
     ))
     .expect_err("bad supersedes");
     assert!(
@@ -668,13 +745,13 @@ fn composing_refuses_a_body_of_the_wrong_kind_or_an_invalid_notarisation() {
             &company(),
             None,
             &notary(),
-            RULES
+            CHANNELS
         )
         .is_err()
     );
     assert!(
         compose_record(
-            RecordKindV1::VotingRules,
+            RecordKindV1::DecisionChannels,
             &company(),
             None,
             &notary(),
@@ -684,8 +761,14 @@ fn composing_refuses_a_body_of_the_wrong_kind_or_an_invalid_notarisation() {
     );
     let mut blank = notary();
     blank.name = String::new();
-    let error = compose_record(RecordKindV1::VotingRules, &company(), None, &blank, RULES)
-        .expect_err("blank notary name");
+    let error = compose_record(
+        RecordKindV1::DecisionChannels,
+        &company(),
+        None,
+        &blank,
+        CHANNELS,
+    )
+    .expect_err("blank notary name");
     assert!(
         matches!(
             error.issues(),
@@ -697,9 +780,9 @@ fn composing_refuses_a_body_of_the_wrong_kind_or_an_invalid_notarisation() {
         "{error}"
     );
     // A declaration on the body is stripped; the element is embedded.
-    let declared = format!("<?xml version=\"1.0\"?>\n{RULES}\n");
+    let declared = format!("<?xml version=\"1.0\"?>\n{CHANNELS}\n");
     let xml = compose_record(
-        RecordKindV1::VotingRules,
+        RecordKindV1::DecisionChannels,
         &company(),
         None,
         &notary(),
@@ -707,7 +790,7 @@ fn composing_refuses_a_body_of_the_wrong_kind_or_an_invalid_notarisation() {
     )
     .expect("ok");
     assert!(!xml.contains("<?xml"));
-    assert!(xml.contains(RULES));
+    assert!(xml.contains(CHANNELS));
     // The wrong body for a kind, in both directions.
     assert!(compose_record(RecordKindV1::Identity, &company(), None, &notary(), GENESIS).is_err());
     assert!(
@@ -790,6 +873,20 @@ fn composed_records_and_bodies_validate_against_the_published_schemas() {
         "<share-structure/>",
     );
     check("rules-body", "bornite-voting-rules-v1.xsd", RULES);
+    check("channels-body", "irena-company-v1.xsd", CHANNELS);
+    for example in examples() {
+        let xml = std::fs::read_to_string(&example).expect("read example");
+        let schema = if xml.contains("<irena-record") {
+            "irena-record-v1.xsd"
+        } else {
+            "irena-company-v1.xsd"
+        };
+        check(
+            &example.file_name().unwrap().to_string_lossy(),
+            schema,
+            &xml,
+        );
+    }
 
     // A minimal notarisation, without the optional attributes, also validates.
     let minimal = NotarisationV1 {
@@ -800,7 +897,214 @@ fn composed_records_and_bodies_validate_against_the_published_schemas() {
         statement: None,
         source_digest: None,
     };
-    let xml = compose_record(RecordKindV1::VotingRules, &company(), None, &minimal, RULES)
-        .expect("compose");
+    let xml = compose_record(
+        RecordKindV1::DecisionChannels,
+        &company(),
+        None,
+        &minimal,
+        CHANNELS,
+    )
+    .expect("compose");
     check("minimal-notarisation", "irena-record-v1.xsd", &xml);
+}
+
+/// Every XML file under `examples/` at the repository root.
+fn examples() -> Vec<std::path::PathBuf> {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples");
+    let mut files: Vec<_> = std::fs::read_dir(&dir)
+        .unwrap_or_else(|e| panic!("{}: {e}", dir.display()))
+        .map(|entry| entry.expect("entry").path())
+        .filter(|path| path.extension().is_some_and(|ext| ext == "xml"))
+        .collect();
+    files.sort();
+    assert!(!files.is_empty(), "no examples found");
+    files
+}
+
+#[test]
+fn every_example_document_parses() {
+    for example in examples() {
+        let xml = std::fs::read_to_string(&example).expect("read example");
+        let name = example.file_name().unwrap().to_string_lossy().into_owned();
+        let result = if xml.contains("<irena-record") {
+            read_record(&xml).map(|_| ())
+        } else if xml.contains("<company-genesis") {
+            read_company_genesis_document(&xml).map(|_| ())
+        } else if xml.contains("<decision-channels") {
+            irena_core::read_decision_channels_document(&xml).map(|_| ())
+        } else if xml.contains("<share-structure") {
+            read_share_structure_document(&xml).map(|_| ())
+        } else {
+            panic!("{name}: unknown example document");
+        };
+        result.unwrap_or_else(|e| panic!("{name}: {e}"));
+    }
+}
+
+#[test]
+fn channel_problems_are_reported_together() {
+    let rules = RULES;
+    let wrap = |channels: &str| format!("<decision-channels>{channels}</decision-channels>");
+    let read = irena_core::read_decision_channels_document;
+    let chen = irena_core::ChannelIdV1::new("c").unwrap();
+    for (label, xml, expect) in [
+        (
+            "individual with rules",
+            wrap(&format!(
+                r#"<channel id="c" mode="individual"><actors source="roster"><member id="x"/></actors>{rules}</channel>"#
+            )),
+            IssueV1::UnexpectedElement {
+                channel: chen.clone(),
+                mode: "individual",
+                element: "voting-rules",
+            },
+        ),
+        (
+            "collective without rules",
+            wrap(
+                r#"<channel id="c" mode="collective"><actors source="share-register"/></channel>"#,
+            ),
+            IssueV1::MissingElement {
+                parent: "channel",
+                element: "voting-rules",
+            },
+        ),
+        (
+            "no actors",
+            wrap(&format!(
+                r#"<channel id="c" mode="collective">{rules}</channel>"#
+            )),
+            IssueV1::MissingElement {
+                parent: "channel",
+                element: "actors",
+            },
+        ),
+        (
+            "empty channel",
+            wrap(r#"<channel id="c" mode="individual"/>"#),
+            IssueV1::MissingElement {
+                parent: "channel",
+                element: "actors",
+            },
+        ),
+        (
+            "unknown mode",
+            wrap(r#"<channel id="c" mode="consensus"><actors source="share-register"/></channel>"#),
+            IssueV1::InvalidValue {
+                element: "channel",
+                attribute: "mode",
+                value: "consensus".to_owned(),
+                reason: "must be individual or collective".to_owned(),
+            },
+        ),
+        (
+            "unknown source",
+            wrap(r#"<channel id="c" mode="individual"><actors source="registry"/></channel>"#),
+            IssueV1::InvalidValue {
+                element: "actors",
+                attribute: "source",
+                value: "registry".to_owned(),
+                reason: "must be share-register or roster".to_owned(),
+            },
+        ),
+        (
+            "members under the share register",
+            wrap(
+                r#"<channel id="c" mode="individual"><actors source="share-register"><member id="x"/></actors></channel>"#,
+            ),
+            IssueV1::UnexpectedElement {
+                channel: chen.clone(),
+                mode: "share-register",
+                element: "member",
+            },
+        ),
+        (
+            "empty roster",
+            wrap(r#"<channel id="c" mode="individual"><actors source="roster"/></channel>"#),
+            IssueV1::EmptyRoster {
+                channel: chen.clone(),
+            },
+        ),
+        (
+            "zero weight",
+            wrap(
+                r#"<channel id="c" mode="individual"><actors source="roster"><member id="x" weight="0"/></actors></channel>"#,
+            ),
+            IssueV1::ZeroWeight {
+                channel: chen.clone(),
+                id: bornite_core::VoterIdV1::new("x").unwrap(),
+            },
+        ),
+        (
+            "duplicate member",
+            wrap(
+                r#"<channel id="c" mode="individual"><actors source="roster"><member id="x"/><member id="x"/></actors></channel>"#,
+            ),
+            IssueV1::DuplicateMember {
+                channel: chen.clone(),
+                id: bornite_core::VoterIdV1::new("x").unwrap(),
+            },
+        ),
+        (
+            "duplicate channel",
+            wrap(
+                r#"<channel id="c" mode="individual"><actors source="roster"><member id="x"/></actors></channel><channel id="c" mode="individual"><actors source="roster"><member id="y"/></actors></channel>"#,
+            ),
+            IssueV1::DuplicateChannel { id: chen.clone() },
+        ),
+        (
+            "bad channel id",
+            wrap(
+                r#"<channel id="Board" mode="individual"><actors source="roster"><member id="x"/></actors></channel>"#,
+            ),
+            IssueV1::InvalidValue {
+                element: "channel",
+                attribute: "id",
+                value: "Board".to_owned(),
+                reason: "must start with a lowercase letter or digit".to_owned(),
+            },
+        ),
+        ("no channels", wrap(""), IssueV1::NoChannels),
+        (
+            "no channels, empty element",
+            "<decision-channels/>".to_owned(),
+            IssueV1::NoChannels,
+        ),
+    ] {
+        let error = read(&xml).expect_err(label);
+        assert!(error.issues().contains(&expect), "{label}: {error}");
+    }
+    // Two channels each wrong: both reported.
+    let error = read(&wrap(
+        r#"<channel id="a" mode="individual"><actors source="roster"/></channel><channel id="b" mode="collective"><actors source="share-register"/></channel>"#,
+    ))
+    .expect_err("two problems");
+    assert_eq!(error.issues().len(), 2, "{error}");
+    // Structure is refused where it is found.
+    for (label, xml) in [
+        (
+            "unknown child of channel",
+            wrap(
+                r#"<channel id="c" mode="individual"><actors source="share-register"/><scope/></channel>"#,
+            ),
+        ),
+        (
+            "unknown child of actors",
+            wrap(
+                r#"<channel id="c" mode="individual"><actors source="roster"><holder id="x"/></actors></channel>"#,
+            ),
+        ),
+        ("unknown child of the set", wrap("<rule/>")),
+        (
+            "unknown attribute",
+            wrap(
+                r#"<channel id="c" mode="individual" legal="director"><actors source="share-register"/></channel>"#,
+            ),
+        ),
+    ] {
+        assert!(
+            matches!(read(&xml), Err(IrenaError::Malformed { .. })),
+            "{label}"
+        );
+    }
 }

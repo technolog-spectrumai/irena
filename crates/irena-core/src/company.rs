@@ -115,8 +115,8 @@ impl IdentityV1 {
 
 /// The founding record: the whole company as it starts.
 ///
-/// One document founds a company — who it is, who holds its shares, and how it
-/// decides. Everything a later record can amend is here first, so the state at any
+/// One document founds a company — who it is, who holds its shares, and who decides
+/// how. Everything a later record can amend is here first, so the state at any
 /// height is this document plus the amendments up to that height, and nothing else.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
 pub struct CompanyGenesisV1 {
@@ -128,8 +128,9 @@ pub struct CompanyGenesisV1 {
     pub incorporation_digest: Option<Hash>,
     /// The initial share register.
     pub shares: crate::shares::ShareStructureV1,
-    /// The initial governance configuration: Bornite's voting rules, unchanged.
-    pub rules: bornite_rules::VotingRulesV1,
+    /// The initial governance configuration: every channel the company decides
+    /// through, each with its actor source and mode.
+    pub channels: crate::channel::DecisionChannelsV1,
 }
 
 #[cfg(test)]

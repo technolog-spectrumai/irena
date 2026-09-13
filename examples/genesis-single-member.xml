@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  A single-member company. Its one channel takes its actors from the share register
+  and decides in individual mode: the source resolves to exactly one holder, so the
+  sole member signs decisions alone. No "sole director" type is involved.
+
+  The day a second holder is admitted, this channel stops resolving (two actors in
+  individual mode) until the channel set is amended - Irena reports it, never guesses.
+-->
+<company-genesis>
+  <identity name="Ada Lovelace Consulting Ltd" jurisdiction="gb" registered-number="07654321"/>
+  <share-structure>
+    <holder id="ada" key="ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c" name="Ada Lovelace" shares="1"/>
+  </share-structure>
+  <governance>
+    <decision-channels>
+      <channel id="owner" mode="individual">
+        <actors source="share-register"/>
+      </channel>
+    </decision-channels>
+  </governance>
+</company-genesis>

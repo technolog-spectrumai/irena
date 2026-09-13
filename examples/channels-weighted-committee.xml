@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  A channel set with a weighted committee beside the shareholders. The committee is
+  a roster with unequal weights and a two-thirds threshold: the mode/source split
+  covers it with no committee type in Rust. Because the channel set is replaced whole,
+  an amendment lists every channel that should exist afterwards.
+-->
+<decision-channels>
+  <channel id="shareholders" mode="collective">
+        <!-- Every holder of the register in force when a decision is frozen; one share,
+             one vote. Bornite's rules, unchanged. -->
+        <actors source="share-register"/>
+        <voting-rules version="1.0">
+          <weight type="electorate"/>
+          <exclusions enabled="true"/>
+          <quorum type="fraction" numerator="1" denominator="2" basis="total-electorate"/>
+          <threshold type="simple-majority" basis="votes-cast"/>
+          <abstentions treatment="exclude"/>
+          <tie treatment="reject"/>
+        </voting-rules>
+      </channel>
+  <channel id="audit-committee" mode="collective">
+    <actors source="roster">
+      <member id="okafor" key="6e7a1cdd29b0b78fd13af4c5598feff4ef2a97166e3ca6f2e4fbfccd80505bf1" name="A. Okafor" weight="3"/>
+      <member id="vance" key="8a875fff1eb38451577acd5afee405456568dd7c89e090863a0557bc7af49f17" name="R. Vance" weight="2"/>
+      <member id="quinn" key="1398f62c6d1a457c51ba6a4b5f3dbd2f69fca93216218dc8997e416bd17d93ca" name="S. Quinn" weight="1"/>
+    </actors>
+    <voting-rules version="1.0">
+      <weight type="electorate"/>
+      <exclusions enabled="false"/>
+      <quorum type="fraction" numerator="2" denominator="3" basis="total-electorate"/>
+      <threshold type="fraction" numerator="2" denominator="3" basis="votes-cast"/>
+      <abstentions treatment="exclude"/>
+      <tie treatment="reject"/>
+    </voting-rules>
+  </channel>
+</decision-channels>

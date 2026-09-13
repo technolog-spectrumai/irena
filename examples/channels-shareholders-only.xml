@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  The minimum channel set: one collective channel over the share register. This is
+  the classic shareholders' vote, expressed as a configuration rather than built in.
+  A <decision-channels> body is published on its own as an amendment (kind
+  "decision-channels", superseding the record currently providing the channel set)
+  or nested under <governance> in a genesis.
+-->
+<decision-channels>
+  <channel id="shareholders" mode="collective">
+        <!-- Every holder of the register in force when a decision is frozen; one share,
+             one vote. Bornite's rules, unchanged. -->
+        <actors source="share-register"/>
+        <voting-rules version="1.0">
+          <weight type="electorate"/>
+          <exclusions enabled="true"/>
+          <quorum type="fraction" numerator="1" denominator="2" basis="total-electorate"/>
+          <threshold type="simple-majority" basis="votes-cast"/>
+          <abstentions treatment="exclude"/>
+          <tie treatment="reject"/>
+        </voting-rules>
+      </channel>
+</decision-channels>

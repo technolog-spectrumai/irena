@@ -8,20 +8,25 @@
 //! # What is here
 //!
 //! * [`CompanyGenesisV1`] — the whole company as founded: its [`IdentityV1`], its
-//!   initial [`ShareStructureV1`] and its initial governance, Bornite's
-//!   `VotingRulesV1` reused **unchanged**. One document founds a company.
+//!   initial [`ShareStructureV1`] and its initial [`DecisionChannelsV1`]. One document
+//!   founds a company.
+//! * [`DecisionChannelV1`] — who may decide and how: an actor source (the share
+//!   register, or a roster listed inline) and a mode (one actor signs, or the actors
+//!   form a Bornite electorate under nested `<voting-rules>` reused **unchanged**).
+//!   `shareholders`, `board`, `ceo` are configurations, never types.
 //! * [`ShareStructureV1`] — who holds how many shares, and the signing key each holder
 //!   votes with. **Flat shares**: every share is one vote. Share classes are a later
 //!   version of this body, not an attribute bolted onto it.
 //! * [`IrenaRecordV1`] — the notarised envelope that puts the genesis, or an amendment
-//!   to one part of it (identity, register, rules), on the ledger: which company, which
-//!   record it amends, and who attested to it and when.
+//!   to one part of it (identity, register, channels), on the ledger: which company,
+//!   which record it amends, and who attested to it and when.
 //!
 //! # What is deliberately not here
 //!
 //! No ledger access, no voting, no meetings. This crate is data and its validation.
-//! `irena-ledger` puts records on a chain and resolves what is in force; `irena-vote`
-//! turns a share structure into a Bornite electorate and runs a vote.
+//! `irena-ledger` puts records on a chain and resolves what is in force;
+//! `irena-decision` resolves a channel into actors; `irena-vote` runs a collective
+//! decision as a vote.
 //!
 //! # Validation
 //!
@@ -30,6 +35,7 @@
 //! [`IrenaError::Invalid`]. The published schemas under `schemas/irena-*.xsd` are the
 //! contract for other tooling; the readers enforce the same rules in code.
 
+mod channel;
 mod company;
 mod error;
 mod notarisation;
@@ -38,6 +44,10 @@ mod shares;
 mod xml;
 
 pub use bornite_rules::VotingRulesV1;
+pub use channel::{
+    ActorSourceV1, ChannelIdV1, ChannelModeV1, DecisionChannelV1, DecisionChannelsV1,
+    MAX_CHANNEL_ID_LEN, MAX_CHANNELS, MAX_MEMBERS, MemberV1, RosterV1,
+};
 pub use company::{CompanyGenesisV1, CompanyIdV1, IdentityV1};
 pub use error::{IrenaError, IssueV1};
 pub use notarisation::{NotarisationV1, NotaryIdV1, NotaryTimeV1};
@@ -47,7 +57,7 @@ pub use record::{
 pub use shares::{HolderV1, MAX_HOLDERS, ShareStructureV1};
 pub use xml::{
     DEFAULT_MAX_DOCUMENT_BYTES, compose_record, escape_attribute, normalise_body,
-    read_company_genesis_document, read_identity_document, read_notarisation, read_record,
-    read_record_with_limit, read_share_structure_document, read_voting_rules_document,
+    read_company_genesis_document, read_decision_channels_document, read_identity_document,
+    read_notarisation, read_record, read_record_with_limit, read_share_structure_document,
     write_notarisation,
 };

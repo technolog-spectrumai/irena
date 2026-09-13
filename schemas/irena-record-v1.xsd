@@ -7,13 +7,13 @@
   every later record amends exactly one part and names the record that currently
   provides that part (supersedes):
 
-    kind="company-genesis"  carries <company-genesis>  (irena-company-v1.xsd), once
-    kind="identity"         carries <identity>         (irena-company-v1.xsd)
-    kind="share-structure"  carries <share-structure>  (irena-company-v1.xsd)
-    kind="voting-rules"     carries <voting-rules>     (bornite-voting-rules-v1.xsd)
+    kind="company-genesis"    carries <company-genesis>    (irena-company-v1.xsd), once
+    kind="identity"           carries <identity>           (irena-company-v1.xsd)
+    kind="share-structure"    carries <share-structure>    (irena-company-v1.xsd)
+    kind="decision-channels"  carries <decision-channels>  (irena-company-v1.xsd)
 
-  The <voting-rules> element is Bornite's own, reused unchanged: nothing about a
-  company appears inside it, so the same rules organise anything.
+  A collective channel nests Bornite's own <voting-rules> element, reused unchanged:
+  nothing about a company appears inside it, so the same rules organise anything.
 
   Every record is put on the ledger by hand, by someone with the authority and the
   documents to say the company is now like this. <notarisation> records who that was
@@ -40,7 +40,7 @@
       <xs:enumeration value="company-genesis"/>
       <xs:enumeration value="identity"/>
       <xs:enumeration value="share-structure"/>
-      <xs:enumeration value="voting-rules"/>
+      <xs:enumeration value="decision-channels"/>
     </xs:restriction>
   </xs:simpleType>
 
@@ -80,7 +80,7 @@
           <xs:element name="company-genesis" type="CompanyGenesis"/>
           <xs:element name="identity" type="Identity"/>
           <xs:element name="share-structure" type="ShareStructure"/>
-          <xs:element name="voting-rules" type="VotingRules"/>
+          <xs:element name="decision-channels" type="DecisionChannels"/>
         </xs:choice>
       </xs:sequence>
       <xs:attribute name="version" type="xs:string" use="required" fixed="1.0"/>

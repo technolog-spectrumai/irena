@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  A channel-set amendment the "ceo" channel of genesis-three-channels.xml MAY execute
+  by its own individual decision: it abolishes itself and leaves everything else as
+  it was. Under the self-demotion rule the sole actor (chen) holds no seat afterwards
+  that they did not hold before (board, unchanged), so their reach did not grow.
+-->
+<decision-channels>
+  <channel id="shareholders" mode="collective">
+        <!-- Every holder of the register in force when a decision is frozen; one share,
+             one vote. Bornite's rules, unchanged. -->
+        <actors source="share-register"/>
+        <voting-rules version="1.0">
+          <weight type="electorate"/>
+          <exclusions enabled="true"/>
+          <quorum type="fraction" numerator="1" denominator="2" basis="total-electorate"/>
+          <threshold type="simple-majority" basis="votes-cast"/>
+          <abstentions treatment="exclude"/>
+          <tie treatment="reject"/>
+        </voting-rules>
+      </channel>
+  <channel id="board" mode="collective">
+        <!-- A roster listed inline. The chair carries weight 2; weight defaults to 1.
+             Vance has registered no key: counted in the electorate, unable to sign. -->
+        <actors source="roster">
+          <member id="chen" key="ca93ac1705187071d67b83c7ff0efe8108e8ec4530575d7726879333dbdabe7c" name="M. Chen" weight="2"/>
+          <member id="okafor" key="6e7a1cdd29b0b78fd13af4c5598feff4ef2a97166e3ca6f2e4fbfccd80505bf1" name="A. Okafor"/>
+          <member id="vance" name="R. Vance"/>
+        </actors>
+        <voting-rules version="1.0">
+          <weight type="electorate"/>
+          <exclusions enabled="false"/>
+          <quorum type="none"/>
+          <threshold type="simple-majority" basis="votes-cast"/>
+          <abstentions treatment="exclude"/>
+          <tie treatment="reject"/>
+        </voting-rules>
+      </channel>
+</decision-channels>

@@ -2,14 +2,14 @@
 //!
 //! One envelope, one body. The first record of a company is its genesis, which carries
 //! everything; every later record amends exactly one part — identity, share register
-//! or voting rules — and names the record that currently provides that part. The
+//! or decision channels — and names the record that currently provides that part. The
 //! company at any height is the genesis plus the amendments up to there, applied in
 //! chain order (`irena-ledger`).
 
+use crate::channel::DecisionChannelsV1;
 use crate::company::{CompanyGenesisV1, CompanyIdV1, IdentityV1};
 use crate::notarisation::NotarisationV1;
 use crate::shares::ShareStructureV1;
-use bornite_rules::VotingRulesV1;
 use prunella_core::TxId;
 
 /// The only record version this build reads and writes.
@@ -28,8 +28,8 @@ pub enum RecordKindV1 {
     Identity,
     /// A `<share-structure>` element: amends the register.
     ShareStructure,
-    /// A `<voting-rules>` element, Bornite's unchanged: amends the rules.
-    VotingRules,
+    /// A `<decision-channels>` element: amends who decides, and how.
+    DecisionChannels,
 }
 
 impl RecordKindV1 {
@@ -38,11 +38,12 @@ impl RecordKindV1 {
         Self::CompanyGenesis,
         Self::Identity,
         Self::ShareStructure,
-        Self::VotingRules,
+        Self::DecisionChannels,
     ];
 
     /// The kinds that amend one part of a founded company.
-    pub const AMENDMENTS: [Self; 3] = [Self::Identity, Self::ShareStructure, Self::VotingRules];
+    pub const AMENDMENTS: [Self; 3] =
+        [Self::Identity, Self::ShareStructure, Self::DecisionChannels];
 
     /// The attribute text.
     #[must_use]
@@ -51,7 +52,7 @@ impl RecordKindV1 {
             Self::CompanyGenesis => "company-genesis",
             Self::Identity => "identity",
             Self::ShareStructure => "share-structure",
-            Self::VotingRules => "voting-rules",
+            Self::DecisionChannels => "decision-channels",
         }
     }
 
@@ -67,7 +68,7 @@ impl RecordKindV1 {
         match self {
             Self::CompanyGenesis | Self::Identity => "irena.company.v1",
             Self::ShareStructure => "irena.shares.v1",
-            Self::VotingRules => "irena.rules.v1",
+            Self::DecisionChannels => "irena.channels.v1",
         }
     }
 
@@ -94,8 +95,8 @@ pub enum RecordBodyV1 {
     Identity(IdentityV1),
     /// An amended share register.
     ShareStructure(ShareStructureV1),
-    /// Amended voting rules.
-    VotingRules(VotingRulesV1),
+    /// An amended channel set.
+    DecisionChannels(DecisionChannelsV1),
 }
 
 impl RecordBodyV1 {
@@ -106,7 +107,7 @@ impl RecordBodyV1 {
             Self::CompanyGenesis(_) => RecordKindV1::CompanyGenesis,
             Self::Identity(_) => RecordKindV1::Identity,
             Self::ShareStructure(_) => RecordKindV1::ShareStructure,
-            Self::VotingRules(_) => RecordKindV1::VotingRules,
+            Self::DecisionChannels(_) => RecordKindV1::DecisionChannels,
         }
     }
 }

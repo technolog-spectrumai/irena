@@ -1,11 +1,15 @@
 //! Reading and composing Irena record documents.
 //!
-//! Reading a `<voting-rules>` body delegates to `bornite-xml`'s own parser, so the
+//! Reading a channel's `<voting-rules>` delegates to `bornite-xml`'s own parser, so the
 //! rules bytes on the ledger are read by exactly the code that reads a standalone
 //! rules file. The company bodies are parsed here with the same reader helpers and the
 //! same strictness. Composing embeds the caller's body element **verbatim**: Irena
 //! does not re-serialise a document a notary signed off on.
 
+use crate::channel::{
+    ActorSourceV1, ChannelIdV1, ChannelModeV1, DecisionChannelV1, DecisionChannelsV1, MAX_CHANNELS,
+    MAX_MEMBERS, MemberV1, RosterV1,
+};
 use crate::company::{CompanyGenesisV1, CompanyIdV1, IdentityV1};
 use crate::error::{IrenaError, IssueV1};
 use crate::notarisation::{NotarisationV1, NotaryIdV1, NotaryTimeV1};
@@ -62,7 +66,7 @@ pub fn read_record_with_limit(xml: &str, max_bytes: u64) -> Result<IrenaRecordV1
         malformed_at(
             &reader,
             format!(
-                "unknown record kind {kind:?}; expected company-genesis, identity, share-structure or voting-rules"
+                "unknown record kind {kind:?}; expected company-genesis, identity, share-structure or decision-channels"
             ),
         )
     })?;
@@ -139,14 +143,12 @@ pub fn read_record_with_limit(xml: &str, max_bytes: u64) -> Result<IrenaRecordV1
                     is_empty,
                 )?));
             }
-            "voting-rules" => {
+            "decision-channels" => {
                 refuse_second_body(&reader, body.is_some())?;
-                if is_empty {
-                    return Err(malformed_at(&reader, "<voting-rules> must have content"));
-                }
-                body = Some(RecordBodyV1::VotingRules(parse_voting_rules(
+                body = Some(RecordBodyV1::DecisionChannels(parse_decision_channels(
                     &mut reader,
                     &child,
+                    is_empty,
                 )?));
             }
             other => {
@@ -265,20 +267,43 @@ pub fn read_share_structure_document(xml: &str) -> Result<ShareStructureV1, Iren
     Ok(structure)
 }
 
-/// Reads a standalone `<voting-rules>` document: Bornite's reader, Irena's error type.
+/// Reads a standalone `<decision-channels>` document.
 ///
 /// # Errors
 ///
-/// Returns [`IrenaError`] for anything Bornite refuses.
-pub fn read_voting_rules_document(xml: &str) -> Result<bornite_rules::VotingRulesV1, IrenaError> {
+/// Returns [`IrenaError`] for anything that is not a valid channel set.
+pub fn read_decision_channels_document(xml: &str) -> Result<DecisionChannelsV1, IrenaError> {
     check_size(xml, DEFAULT_MAX_DOCUMENT_BYTES)?;
-    Ok(bornite_xml::read_rules_document(xml)?)
+    let mut reader = open(xml);
+    let root = loop {
+        match next_event(&mut reader)? {
+            Event::Decl(_) | Event::Comment(_) | Event::Text(_) | Event::PI(_) => {}
+            Event::Start(root) if root.name().as_ref() == "decision-channels" => {
+                break (root, false);
+            }
+            Event::Empty(root) if root.name().as_ref() == "decision-channels" => {
+                break (root, true);
+            }
+            other => {
+                return Err(malformed_at(
+                    &reader,
+                    format!(
+                        "expected a <decision-channels> root, found {}",
+                        describe(&other)
+                    ),
+                ));
+            }
+        }
+    };
+    let channels = parse_decision_channels(&mut reader, &root.0, root.1)?;
+    expect_eof(&mut reader)?;
+    Ok(channels)
 }
 
 /// Composes a record document around a body element supplied as text.
 ///
-/// `body` must be a standalone `<company-genesis>`, `<share-structure>` or
-/// `<voting-rules>` element matching `kind`. A leading XML declaration and surrounding
+/// `body` must be a standalone `<company-genesis>`, `<identity>`, `<share-structure>`
+/// or `<decision-channels>` element matching `kind`. A leading XML declaration and surrounding
 /// whitespace are removed; the element itself is embedded **byte for byte**. The
 /// composed document is read back before it is returned, so what the ledger receives
 /// is known to parse to exactly what was asked for.
@@ -312,8 +337,8 @@ pub fn compose_record(
         RecordKindV1::ShareStructure => {
             read_share_structure_document(element)?;
         }
-        RecordKindV1::VotingRules => {
-            read_voting_rules_document(element)?;
+        RecordKindV1::DecisionChannels => {
+            read_decision_channels_document(element)?;
         }
     }
 
@@ -463,7 +488,7 @@ fn parse_identity(
 /// Parses the body of a `<company-genesis>` element whose start tag has been read.
 ///
 /// The genesis is the whole company: `<identity>`, an optional `<incorporation>`,
-/// the `<share-structure>` and `<governance>` wrapping Bornite's `<voting-rules>`.
+/// the `<share-structure>` and `<governance>` wrapping `<decision-channels>`.
 fn parse_company_genesis(
     reader: &mut XmlReader<'_>,
     start: &BytesStart<'_>,
@@ -473,7 +498,7 @@ fn parse_company_genesis(
     let mut identity: Option<IdentityV1> = None;
     let mut incorporation: Option<Option<Hash>> = None;
     let mut shares: Option<ShareStructureV1> = None;
-    let mut rules: Option<bornite_rules::VotingRulesV1> = None;
+    let mut channels: Option<DecisionChannelsV1> = None;
     // Presence is tracked apart from the parsed value: an element that was there but
     // invalid is reported for what is wrong with it, not also as missing.
     let (mut shares_seen, mut governance_seen) = (false, false);
@@ -550,11 +575,11 @@ fn parse_company_genesis(
                 if is_empty {
                     return Err(malformed_at(
                         reader,
-                        "<governance> must hold <voting-rules>",
+                        "<governance> must hold <decision-channels>",
                     ));
                 }
                 match parse_governance(reader) {
-                    Ok(parsed) => rules = Some(parsed),
+                    Ok(parsed) => channels = Some(parsed),
                     Err(IrenaError::Invalid { issues: found }) => issues.extend(found),
                     Err(other) => return Err(other),
                 }
@@ -587,29 +612,33 @@ fn parse_company_genesis(
         identity: identity.expect("checked"),
         incorporation_digest: incorporation.flatten(),
         shares: shares.expect("checked"),
-        rules: rules.expect("checked"),
+        channels: channels.expect("checked"),
     })
 }
 
-/// Parses the inside of `<governance>`: exactly one `<voting-rules>`, Bornite's.
-fn parse_governance(
-    reader: &mut XmlReader<'_>,
-) -> Result<bornite_rules::VotingRulesV1, IrenaError> {
-    let mut rules = None;
+/// Parses the inside of `<governance>`: exactly one `<decision-channels>`.
+fn parse_governance(reader: &mut XmlReader<'_>) -> Result<DecisionChannelsV1, IrenaError> {
+    let mut channels = None;
     loop {
         match next_event(reader)? {
             Event::Text(_) | Event::Comment(_) => {}
-            Event::Start(child) if child.name().as_ref() == "voting-rules" => {
-                if rules.is_some() {
+            Event::Start(child) if child.name().as_ref() == "decision-channels" => {
+                if channels.is_some() {
                     return Err(IrenaError::invalid(vec![IssueV1::RepeatedElement {
                         parent: "governance",
-                        element: "voting-rules",
+                        element: "decision-channels",
                     }]));
                 }
-                rules = Some(parse_voting_rules(reader, &child)?);
+                channels = Some(parse_decision_channels(reader, &child, false)?);
             }
-            Event::Empty(child) if child.name().as_ref() == "voting-rules" => {
-                return Err(malformed_at(reader, "<voting-rules> must have content"));
+            Event::Empty(child) if child.name().as_ref() == "decision-channels" => {
+                if channels.is_some() {
+                    return Err(IrenaError::invalid(vec![IssueV1::RepeatedElement {
+                        parent: "governance",
+                        element: "decision-channels",
+                    }]));
+                }
+                channels = Some(parse_decision_channels(reader, &child, true)?);
             }
             Event::End(_) => break,
             other => {
@@ -620,11 +649,353 @@ fn parse_governance(
             }
         }
     }
-    rules.ok_or_else(|| {
+    channels.ok_or_else(|| {
         IrenaError::invalid(vec![IssueV1::MissingElement {
             parent: "governance",
-            element: "voting-rules",
+            element: "decision-channels",
         }])
+    })
+}
+
+/// Parses the body of a `<decision-channels>` element whose start tag has been read.
+///
+/// `is_empty` says the start tag was `<decision-channels/>`, which is a valid document
+/// that the type then refuses as a company with no channel.
+fn parse_decision_channels(
+    reader: &mut XmlReader<'_>,
+    start: &BytesStart<'_>,
+    is_empty: bool,
+) -> Result<DecisionChannelsV1, IrenaError> {
+    Attributes::of(reader, "decision-channels", start)?.finish(reader)?;
+    let mut issues = Vec::new();
+    let mut channels = Vec::new();
+
+    if !is_empty {
+        loop {
+            let event = next_event(reader)?;
+            let (child, child_is_empty) = match event {
+                Event::Text(_) | Event::Comment(_) => continue,
+                Event::Empty(child) => (child, true),
+                Event::Start(child) => (child, false),
+                Event::End(_) => break,
+                other => {
+                    return Err(malformed_at(
+                        reader,
+                        format!("unexpected {} in <decision-channels>", describe(&other)),
+                    ));
+                }
+            };
+            let name = child.name().as_ref().to_owned();
+            if name != "channel" {
+                return Err(malformed_at(
+                    reader,
+                    format!("<decision-channels> has an unknown child <{name}>"),
+                ));
+            }
+            if channels.len() >= MAX_CHANNELS {
+                return Err(IrenaError::invalid(vec![IssueV1::TooManyChannels {
+                    limit: MAX_CHANNELS,
+                }]));
+            }
+            match parse_channel(reader, &child, child_is_empty) {
+                Ok(channel) => channels.push(channel),
+                Err(IrenaError::Invalid { issues: found }) => issues.extend(found),
+                Err(other) => return Err(other),
+            }
+        }
+    }
+
+    if !issues.is_empty() {
+        return Err(IrenaError::invalid(issues));
+    }
+    DecisionChannelsV1::new(channels)
+}
+
+/// Parses one `<channel>`: its id and mode from the attributes, then `<actors>` and,
+/// for a collective channel, Bornite's `<voting-rules>`.
+fn parse_channel(
+    reader: &mut XmlReader<'_>,
+    start: &BytesStart<'_>,
+    is_empty: bool,
+) -> Result<DecisionChannelV1, IrenaError> {
+    let mut issues = Vec::new();
+    let mut attributes = Attributes::of(reader, "channel", start)?;
+    let id = require(&mut attributes, "id", &mut issues);
+    let mode = require(&mut attributes, "mode", &mut issues);
+    attributes.finish(reader)?;
+    let id = id.and_then(|text| collect(ChannelIdV1::new(text), &mut issues));
+    // Without an id nothing below can name the channel in an issue, and the document
+    // has to be fixed there first anyway; the element is still consumed so the reader
+    // stays in step with the document.
+    let Some(id) = id else {
+        if !is_empty {
+            skip_element(reader)?;
+        }
+        return Err(IrenaError::invalid(issues));
+    };
+    let individual = match mode.as_deref() {
+        Some("individual") => Some(true),
+        Some("collective") => Some(false),
+        Some(other) => {
+            issues.push(IssueV1::InvalidValue {
+                element: "channel",
+                attribute: "mode",
+                value: other.to_owned(),
+                reason: "must be individual or collective".to_owned(),
+            });
+            None
+        }
+        None => None,
+    };
+    if is_empty {
+        issues.push(IssueV1::MissingElement {
+            parent: "channel",
+            element: "actors",
+        });
+        return Err(IrenaError::invalid(issues));
+    }
+
+    let mut actors: Option<ActorSourceV1> = None;
+    let mut rules: Option<bornite_rules::VotingRulesV1> = None;
+    // Presence is tracked apart from the parsed value: rules that were there but
+    // invalid are reported for what is wrong with them, not also as missing.
+    let (mut actors_seen, mut rules_seen) = (false, false);
+    loop {
+        let event = next_event(reader)?;
+        let (child, child_is_empty) = match event {
+            Event::Text(_) | Event::Comment(_) => continue,
+            Event::Empty(child) => (child, true),
+            Event::Start(child) => (child, false),
+            Event::End(_) => break,
+            other => {
+                return Err(malformed_at(
+                    reader,
+                    format!("unexpected {} in <channel>", describe(&other)),
+                ));
+            }
+        };
+        let name = child.name().as_ref().to_owned();
+        match name.as_str() {
+            "actors" => {
+                if actors_seen {
+                    issues.push(IssueV1::RepeatedElement {
+                        parent: "channel",
+                        element: "actors",
+                    });
+                }
+                actors_seen = true;
+                match parse_actors(reader, &child, child_is_empty, &id) {
+                    Ok(parsed) => actors = Some(parsed),
+                    Err(IrenaError::Invalid { issues: found }) => issues.extend(found),
+                    Err(other) => return Err(other),
+                }
+            }
+            "voting-rules" => {
+                if rules_seen {
+                    issues.push(IssueV1::RepeatedElement {
+                        parent: "channel",
+                        element: "voting-rules",
+                    });
+                }
+                rules_seen = true;
+                if child_is_empty {
+                    return Err(malformed_at(reader, "<voting-rules> must have content"));
+                }
+                match parse_voting_rules(reader, &child) {
+                    Ok(parsed) => rules = Some(parsed),
+                    Err(bornite_xml::XmlError::Invalid { issues: found }) => {
+                        issues.extend(found.into_iter().map(IssueV1::Xml));
+                    }
+                    Err(other) => return Err(other.into()),
+                }
+            }
+            other => {
+                return Err(malformed_at(
+                    reader,
+                    format!("<channel> has an unknown child <{other}>"),
+                ));
+            }
+        }
+    }
+
+    if !actors_seen {
+        issues.push(IssueV1::MissingElement {
+            parent: "channel",
+            element: "actors",
+        });
+    }
+    let mode = match (individual, rules_seen, rules) {
+        (Some(true), false, _) => Some(ChannelModeV1::Individual),
+        (Some(true), true, _) => {
+            issues.push(IssueV1::UnexpectedElement {
+                channel: id.clone(),
+                mode: "individual",
+                element: "voting-rules",
+            });
+            None
+        }
+        (Some(false), _, Some(rules)) => Some(ChannelModeV1::Collective { rules }),
+        (Some(false), false, None) => {
+            issues.push(IssueV1::MissingElement {
+                parent: "channel",
+                element: "voting-rules",
+            });
+            None
+        }
+        (Some(false), true, None) | (None, _, _) => None,
+    };
+    if !issues.is_empty() {
+        return Err(IrenaError::invalid(issues));
+    }
+    Ok(DecisionChannelV1 {
+        id,
+        actors: actors.expect("no issues"),
+        mode: mode.expect("no issues"),
+    })
+}
+
+/// Parses `<actors source="…">`: empty for the share register, a list of `<member>`
+/// elements for a roster.
+fn parse_actors(
+    reader: &mut XmlReader<'_>,
+    start: &BytesStart<'_>,
+    is_empty: bool,
+    channel: &ChannelIdV1,
+) -> Result<ActorSourceV1, IrenaError> {
+    let mut issues = Vec::new();
+    let mut attributes = Attributes::of(reader, "actors", start)?;
+    let source = require(&mut attributes, "source", &mut issues);
+    attributes.finish(reader)?;
+    let roster = match source.as_deref() {
+        Some("share-register") => false,
+        Some("roster") => true,
+        Some(other) => {
+            issues.push(IssueV1::InvalidValue {
+                element: "actors",
+                attribute: "source",
+                value: other.to_owned(),
+                reason: "must be share-register or roster".to_owned(),
+            });
+            false
+        }
+        None => false,
+    };
+
+    let mut members = Vec::new();
+    if !is_empty {
+        loop {
+            let event = next_event(reader)?;
+            let (child, child_is_empty) = match event {
+                Event::Text(_) | Event::Comment(_) => continue,
+                Event::Empty(child) => (child, true),
+                Event::Start(child) => (child, false),
+                Event::End(_) => break,
+                other => {
+                    return Err(malformed_at(
+                        reader,
+                        format!("unexpected {} in <actors>", describe(&other)),
+                    ));
+                }
+            };
+            let name = child.name().as_ref().to_owned();
+            if name != "member" {
+                return Err(malformed_at(
+                    reader,
+                    format!("<actors> has an unknown child <{name}>"),
+                ));
+            }
+            if members.len() >= MAX_MEMBERS {
+                return Err(IrenaError::invalid(vec![IssueV1::TooManyMembers {
+                    channel: channel.clone(),
+                    limit: MAX_MEMBERS,
+                }]));
+            }
+            if let Some(member) = parse_member(reader, &child, &mut issues)? {
+                members.push(member);
+            }
+            if !child_is_empty {
+                expect_empty(reader, "member")?;
+            }
+        }
+    }
+    if !roster && !members.is_empty() {
+        issues.push(IssueV1::UnexpectedElement {
+            channel: channel.clone(),
+            mode: "share-register",
+            element: "member",
+        });
+    }
+    if !issues.is_empty() {
+        return Err(IrenaError::invalid(issues));
+    }
+    if roster {
+        Ok(ActorSourceV1::Roster(RosterV1::new(channel, members)?))
+    } else {
+        Ok(ActorSourceV1::ShareRegister)
+    }
+}
+
+fn parse_member(
+    reader: &XmlReader<'_>,
+    child: &BytesStart<'_>,
+    issues: &mut Vec<IssueV1>,
+) -> Result<Option<MemberV1>, IrenaError> {
+    let mut attributes = Attributes::of(reader, "member", child)?;
+    let id = require(&mut attributes, "id", issues);
+    let key = attributes.take("key");
+    let name = attributes.take("name");
+    let weight = attributes.take("weight");
+    attributes.finish(reader)?;
+
+    let id = id.and_then(|text| {
+        collect(
+            VoterIdV1::new(text.clone()).map_err(|error| {
+                IrenaError::invalid(vec![IssueV1::InvalidValue {
+                    element: "member",
+                    attribute: "id",
+                    value: text,
+                    reason: error.to_string(),
+                }])
+            }),
+            issues,
+        )
+    });
+    let key = match key {
+        None => None,
+        Some(text) => collect(
+            PublicKey::from_hex(&text).map_err(|error| {
+                IrenaError::invalid(vec![IssueV1::InvalidValue {
+                    element: "member",
+                    attribute: "key",
+                    value: text.clone(),
+                    reason: error.to_string(),
+                }])
+            }),
+            issues,
+        ),
+    };
+    let weight = match weight {
+        None => Some(1),
+        Some(text) => collect(
+            parse_u64(&text).ok_or_else(|| {
+                IrenaError::invalid(vec![IssueV1::InvalidValue {
+                    element: "member",
+                    attribute: "weight",
+                    value: text.clone(),
+                    reason: "must be a decimal integer from 0 to 18446744073709551615".to_owned(),
+                }])
+            }),
+            issues,
+        ),
+    };
+    Ok(match (id, weight) {
+        (Some(id), Some(weight)) => Some(MemberV1 {
+            id,
+            key,
+            name,
+            weight,
+        }),
+        _ => None,
     })
 }
 
@@ -789,6 +1160,23 @@ fn parse_u64(text: &str) -> Option<u64> {
         return None;
     }
     text.parse().ok()
+}
+
+/// Consumes events up to and including the end tag of the element whose start tag has
+/// just been read, so a refused element leaves the reader at the next sibling.
+fn skip_element(reader: &mut XmlReader<'_>) -> Result<(), IrenaError> {
+    let mut depth = 1usize;
+    while depth > 0 {
+        match next_event(reader)? {
+            Event::Start(_) => depth += 1,
+            Event::End(_) => depth -= 1,
+            Event::Eof => {
+                return Err(malformed_at(reader, "unexpected end of document"));
+            }
+            _ => {}
+        }
+    }
+    Ok(())
 }
 
 fn refuse_second_body(reader: &XmlReader<'_>, seen: bool) -> Result<(), IrenaError> {

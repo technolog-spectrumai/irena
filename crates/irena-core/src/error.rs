@@ -85,6 +85,79 @@ pub enum IssueV1 {
         /// The limit.
         limit: usize,
     },
+    /// A company declares no decision channel.
+    #[error("the company declares no decision channel; nothing could ever decide anything")]
+    NoChannels,
+    /// Two channels share an id.
+    #[error("channel {id} is declared more than once")]
+    DuplicateChannel {
+        /// The repeated id.
+        id: crate::ChannelIdV1,
+    },
+    /// A channel set lists more channels than the reader accepts.
+    #[error("the channel set lists more than {limit} channels")]
+    TooManyChannels {
+        /// The limit.
+        limit: usize,
+    },
+    /// A roster lists nobody.
+    #[error("channel {channel} has an empty roster; a channel with no actors cannot decide")]
+    EmptyRoster {
+        /// The channel.
+        channel: crate::ChannelIdV1,
+    },
+    /// Two members of one roster share an id.
+    #[error("channel {channel} lists member {id} more than once")]
+    DuplicateMember {
+        /// The channel.
+        channel: crate::ChannelIdV1,
+        /// The repeated id.
+        id: VoterIdV1,
+    },
+    /// Two members of one roster share a signing key.
+    #[error("channel {channel}: members {first} and {second} declare the same signing key")]
+    DuplicateMemberKey {
+        /// The channel.
+        channel: crate::ChannelIdV1,
+        /// The member listed first, in id order.
+        first: VoterIdV1,
+        /// The other.
+        second: VoterIdV1,
+    },
+    /// A member carries no weight.
+    #[error("channel {channel}: member {id} has zero weight; a member of nothing is a mistake")]
+    ZeroWeight {
+        /// The channel.
+        channel: crate::ChannelIdV1,
+        /// The member.
+        id: VoterIdV1,
+    },
+    /// The weights of a roster add up past what a weight total can hold.
+    #[error("channel {channel}: total weight exceeds {max}")]
+    TotalWeightOverflow {
+        /// The channel.
+        channel: crate::ChannelIdV1,
+        /// The largest representable total.
+        max: u64,
+    },
+    /// A roster lists more members than the reader accepts.
+    #[error("channel {channel} lists more than {limit} members")]
+    TooManyMembers {
+        /// The channel.
+        channel: crate::ChannelIdV1,
+        /// The limit.
+        limit: usize,
+    },
+    /// A channel carries an element its mode does not allow.
+    #[error("channel {channel} is {mode} and must not carry <{element}>")]
+    UnexpectedElement {
+        /// The channel.
+        channel: crate::ChannelIdV1,
+        /// The channel's mode.
+        mode: &'static str,
+        /// The element found.
+        element: &'static str,
+    },
 }
 
 /// Why a record or document was refused.
