@@ -8,10 +8,9 @@
 //! it says is what the company is.
 
 use crate::error::LedgerError;
-use bornite_rules::VotingRulesV1;
 use irena_core::{
-    CompanyIdV1, IdentityV1, IrenaRecordV1, NotarisationV1, RecordBodyV1, RecordKindV1,
-    ShareStructureV1, read_record,
+    CompanyIdV1, DecisionChannelsV1, IdentityV1, IrenaRecordV1, NotarisationV1, RecordBodyV1,
+    RecordKindV1, ShareStructureV1, read_record,
 };
 use prunella_core::{BlockHeight, PublicKey, TxId};
 use prunella_store::LocalChainStore;
@@ -76,8 +75,8 @@ pub struct CompanyStateV1 {
     pub identity: InForceV1<IdentityV1>,
     /// The share register.
     pub shares: InForceV1<ShareStructureV1>,
-    /// The active governance configuration.
-    pub rules: InForceV1<VotingRulesV1>,
+    /// The active governance configuration: who decides, and how.
+    pub channels: InForceV1<DecisionChannelsV1>,
     /// Every Irena record applied, in chain order, the genesis first.
     pub applied: Vec<RecordRefV1>,
 }
@@ -90,7 +89,7 @@ impl CompanyStateV1 {
             RecordKindV1::CompanyGenesis => self.genesis_tx_id,
             RecordKindV1::Identity => self.identity.tx_id,
             RecordKindV1::ShareStructure => self.shares.tx_id,
-            RecordKindV1::VotingRules => self.rules.tx_id,
+            RecordKindV1::DecisionChannels => self.channels.tx_id,
         }
     }
 
@@ -211,7 +210,7 @@ fn found_company(found: RecordRefV1) -> Result<CompanyStateV1, LedgerError> {
         genesis_height: found.height,
         identity: InForceV1::from_record(&found, genesis.identity, &()),
         shares: InForceV1::from_record(&found, genesis.shares, &()),
-        rules: InForceV1::from_record(&found, genesis.rules, &()),
+        channels: InForceV1::from_record(&found, genesis.channels, &()),
         applied: vec![found],
     })
 }
@@ -255,8 +254,8 @@ fn apply(mut state: CompanyStateV1, found: RecordRefV1) -> Result<CompanyStateV1
         RecordBodyV1::ShareStructure(value) => {
             state.shares = InForceV1::from_record(&found, value.clone(), &());
         }
-        RecordBodyV1::VotingRules(value) => {
-            state.rules = InForceV1::from_record(&found, value.clone(), &());
+        RecordBodyV1::DecisionChannels(value) => {
+            state.channels = InForceV1::from_record(&found, value.clone(), &());
         }
         RecordBodyV1::CompanyGenesis(_) => unreachable!("refused above"),
     }

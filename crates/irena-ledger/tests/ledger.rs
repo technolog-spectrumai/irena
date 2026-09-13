@@ -44,6 +44,55 @@ const RULES_V2: &str = r#"<voting-rules version="1.0">
   <tie treatment="accept"/>
 </voting-rules>"#;
 
+/// One channel: the shareholders, under RULES_V1.
+const CHANNELS_V1: &str = r#"<decision-channels>
+  <channel id="shareholders" mode="collective">
+    <actors source="share-register"/>
+    <voting-rules version="1.0">
+  <weight type="electorate"/>
+  <exclusions enabled="true"/>
+  <quorum type="none"/>
+  <threshold type="simple-majority" basis="votes-cast"/>
+  <abstentions treatment="exclude"/>
+  <tie treatment="reject"/>
+</voting-rules>
+  </channel>
+</decision-channels>"#;
+
+/// The shareholders under RULES_V2, and a new individual channel beside them.
+const CHANNELS_V2: &str = r#"<decision-channels>
+  <channel id="shareholders" mode="collective">
+    <actors source="share-register"/>
+    <voting-rules version="1.0">
+  <weight type="electorate"/>
+  <exclusions enabled="true"/>
+  <quorum type="none"/>
+  <threshold type="fraction" numerator="2" denominator="3" basis="votes-cast"/>
+  <abstentions treatment="exclude"/>
+  <tie treatment="accept"/>
+</voting-rules>
+  </channel>
+  <channel id="ceo" mode="individual">
+    <actors source="roster">
+      <member id="chen" key="c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1"/>
+    </actors>
+  </channel>
+</decision-channels>"#;
+
+fn shareholders() -> irena_core::ChannelIdV1 {
+    irena_core::ChannelIdV1::new("shareholders").expect("channel id")
+}
+
+/// The shareholders' rules of a channel set in force.
+fn rules_of(channels: &irena_core::DecisionChannelsV1) -> &bornite_rules::VotingRulesV1 {
+    channels
+        .get(&shareholders())
+        .expect("shareholders channel")
+        .mode
+        .rules()
+        .expect("collective")
+}
+
 const IDENTITY_V2: &str =
     r#"<identity name="Acme Industries plc" jurisdiction="gb" registered-number="01234567"/>"#;
 
@@ -55,7 +104,7 @@ fn genesis_xml() -> String {
   <incorporation document-digest="9a3f9a3f9a3f9a3f9a3f9a3f9a3f9a3f9a3f9a3f9a3f9a3f9a3f9a3f9a3f9a3f"/>
   {SHARES_V1}
   <governance>
-  {RULES_V1}
+  {CHANNELS_V1}
   </governance>
 </company-genesis>"#
     )
@@ -137,7 +186,7 @@ fn the_genesis_founds_the_whole_company_at_height_zero() {
     assert_eq!(state.identity.value.name, "Acme Industries Ltd");
     assert_eq!(state.shares.value.total_shares(), 1000);
     assert_eq!(
-        state.rules.value,
+        *rules_of(&state.channels.value),
         bornite_xml::read_rules_document(RULES_V1).unwrap()
     );
     // Every part is provided by the genesis transaction, which supersedes nothing.
@@ -191,7 +240,7 @@ fn the_ledger_stores_bodies_byte_for_byte_and_the_export_shows_them_nested() {
         "2026-02-01T10:00:00Z",
         1000,
     );
-    for (height, body) in [(0, SHARES_V1), (0, RULES_V1), (1, SHARES_V2)] {
+    for (height, body) in [(0, SHARES_V1), (0, CHANNELS_V1), (1, SHARES_V2)] {
         let block = chain.store.get_block(BlockHeight(height)).unwrap().unwrap();
         let payload = core::str::from_utf8(&block.transactions[0].payload).expect("utf-8");
         assert!(payload.contains(body), "height {height}:\n{payload}");
@@ -244,7 +293,7 @@ fn an_amendment_replaces_one_part_and_leaves_the_others() {
     assert_eq!(state.shares.supersedes, Some(genesis));
     assert_eq!(state.shares.value.len(), 4);
     assert_eq!(state.identity.tx_id, genesis, "identity untouched");
-    assert_eq!(state.rules.tx_id, genesis, "rules untouched");
+    assert_eq!(state.channels.tx_id, genesis, "channels untouched");
     assert_eq!(state.applied.len(), 2);
 
     // Identity and rules each amend on their own; the register's provider stays.
@@ -257,15 +306,15 @@ fn an_amendment_replaces_one_part_and_leaves_the_others() {
     );
     let stricter = amend(
         &chain,
-        RecordKindV1::VotingRules,
-        RULES_V2,
+        RecordKindV1::DecisionChannels,
+        CHANNELS_V2,
         "2026-03-01T10:05:00Z",
         3000,
     );
     let state = company_now(&chain.store).unwrap();
     assert_eq!(state.identity.value.name, "Acme Industries plc");
     assert_eq!(state.identity.tx_id, renamed.tx_id);
-    assert_eq!(state.rules.tx_id, stricter.tx_id);
+    assert_eq!(state.channels.tx_id, stricter.tx_id);
     assert_eq!(state.shares.tx_id, amended.tx_id);
     assert_eq!(renamed.record.supersedes, Some(genesis));
     assert_eq!(stricter.record.supersedes, Some(genesis));
@@ -283,23 +332,23 @@ fn reconstruction_at_a_past_height_is_the_company_of_that_time() {
     );
     amend(
         &chain,
-        RecordKindV1::VotingRules,
-        RULES_V2,
+        RecordKindV1::DecisionChannels,
+        CHANNELS_V2,
         "2026-02-01T10:05:00Z",
         2000,
     );
     let then = reconstruct(&chain.store, BlockHeight::GENESIS).unwrap();
     assert_eq!(then.shares.value.len(), 3);
     assert_eq!(
-        then.rules.value,
+        *rules_of(&then.channels.value),
         bornite_xml::read_rules_document(RULES_V1).unwrap()
     );
     let mid = reconstruct(&chain.store, BlockHeight(1)).unwrap();
     assert_eq!(mid.shares.tx_id, v2.tx_id);
-    assert_eq!(mid.rules.tx_id, mid.genesis_tx_id);
+    assert_eq!(mid.channels.tx_id, mid.genesis_tx_id);
     let now = reconstruct(&chain.store, BlockHeight(2)).unwrap();
     assert_eq!(
-        now.rules.value,
+        *rules_of(&now.channels.value),
         bornite_xml::read_rules_document(RULES_V2).unwrap()
     );
     // Asking beyond the head reconstructs at the head, and says which height was asked.
@@ -312,7 +361,7 @@ fn reconstruction_at_a_past_height_is_the_company_of_that_time() {
         shares.iter().map(|r| r.height.value()).collect::<Vec<_>>(),
         [0, 1]
     );
-    let rules = history(&chain.store, RecordKindV1::VotingRules, BlockHeight(2)).unwrap();
+    let rules = history(&chain.store, RecordKindV1::DecisionChannels, BlockHeight(2)).unwrap();
     assert_eq!(
         rules.iter().map(|r| r.height.value()).collect::<Vec<_>>(),
         [0, 2]
@@ -381,8 +430,8 @@ fn a_stale_amendment_is_refused_and_the_ledger_is_untouched() {
     let error = publish(
         &chain.store,
         &key(1),
-        RecordKindV1::VotingRules,
-        RULES_V2,
+        RecordKindV1::DecisionChannels,
+        CHANNELS_V2,
         Some(v2.tx_id),
         &notary("2026-02-02T10:00:00Z"),
         2000,
@@ -391,7 +440,7 @@ fn a_stale_amendment_is_refused_and_the_ledger_is_untouched() {
     assert!(matches!(
         error,
         LedgerError::StaleAmendment {
-            kind: RecordKindV1::VotingRules,
+            kind: RecordKindV1::DecisionChannels,
             ..
         }
     ));
@@ -518,7 +567,7 @@ fn a_second_genesis_a_foreign_company_and_an_unreadable_record_are_each_named() 
     );
 
     let gamma = founded();
-    append_raw(&gamma.store, "irena.rules.v1", b"not a record".to_vec());
+    append_raw(&gamma.store, "irena.channels.v1", b"not a record".to_vec());
     let error = company_now(&gamma.store).expect_err("unreadable");
     assert!(
         matches!(

@@ -2,16 +2,16 @@
 //!
 //! This crate puts [`irena_core`] records on a chain and answers one question about
 //! it: **what is the company at height `h`?** Its identity, its share register and its
-//! voting rules, each with the transaction that currently provides it. That is what
-//! "Irena knows what the rules are now" means concretely.
+//! decision channels, each with the transaction that currently provides it. That is
+//! what "Irena knows who decides now" means concretely.
 //!
 //! # How the company sits on the chain
 //!
 //! **One company per chain.** The company's genesis — the whole company: identity,
-//! initial register, initial rules — is one Prunella transaction whose payload is one
+//! initial register, initial channels — is one Prunella transaction whose payload is one
 //! `<irena-record>` element, normally in block 0. Every later change is another such
 //! transaction amending exactly one part, published under a namespace per part
-//! (`irena.company.v1`, `irena.shares.v1`, `irena.rules.v1`) and naming the transaction
+//! (`irena.company.v1`, `irena.shares.v1`, `irena.channels.v1`) and naming the transaction
 //! it supersedes. Prunella stores and orders them and never looks inside; its XML
 //! transport nests them readably inside the block.
 //!
@@ -30,8 +30,8 @@
 //!
 //! # What this crate does not do
 //!
-//! Vote. `irena-vote` derives an electorate from a reconstructed register and runs the
-//! lifecycle; this crate only says what the register is.
+//! Decide. `irena-decision` resolves a channel of a reconstructed company into actors
+//! and `irena-vote` runs the lifecycle; this crate only says what the company is.
 
 mod error;
 mod ledger;
