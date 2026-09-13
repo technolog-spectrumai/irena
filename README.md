@@ -44,6 +44,7 @@ deployment democratically. So:
 
 | Document | Covers |
 |---|---|
+| [governance.md](governance.md) | **Start here.** How a company decides and how the chain proves it, in plain language, walked through a real seven-block example |
 | [IRENA_V1.md](IRENA_V1.md) | The company model, the record envelope, notarisation, amendment and reconstruction, the vote lifecycle, shareholder meetings, resolutions, and the road ahead |
 | [BORNITE_V1.md](BORNITE_V1.md) | **Normative.** The frozen voting types, rules grammar and evaluation algorithm |
 | [PROTOCOL_V1.md](PROTOCOL_V1.md) | **Normative.** The frozen ledger wire protocol |

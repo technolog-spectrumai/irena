@@ -25,6 +25,9 @@ Sections 1–6 are the company on the chain; §7 is a vote on it; §8 is a meeti
 groups votes; §9 is the resolution that turns a passed vote into company change; §10
 is what comes next.
 
+This document is exact and normative. For the same story told in plain language, walked
+through a real seven-block example, see [governance.md](governance.md).
+
 ## 1. What a company is, to Irena
 
 **One company per chain**, founded by one record and amended one part at a time:
