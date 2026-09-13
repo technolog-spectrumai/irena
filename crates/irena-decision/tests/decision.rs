@@ -1,14 +1,18 @@
 //! Channels resolved against a real company, and an individual decision from draft to
 //! a verified record on the chain — with everything that must be refused on the way.
 
-use irena_core::{ChannelIdV1, CompanyIdV1, NotarisationV1, NotaryIdV1, NotaryTimeV1, RecordKindV1};
+use irena_core::{
+    ChannelIdV1, CompanyIdV1, NotarisationV1, NotaryIdV1, NotaryTimeV1, RecordKindV1,
+};
 use irena_decision::{
     DECISION_NAMESPACE, DecisionCheckNameV1, DecisionError, DecisionStatusV1, DecisionV1,
     FinalDecisionRecordV1, resolve_channel, verify_decision,
 };
 use irena_ledger::{company_now, genesis_with_company, publish, reconstruct};
 use prunella_canonical::Canonical;
-use prunella_core::{BlockHeight, Hash, Namespace, NetworkId, SchemaVersion, TransactionDraft, TxId};
+use prunella_core::{
+    BlockHeight, Hash, Namespace, NetworkId, SchemaVersion, TransactionDraft, TxId,
+};
 use prunella_crypto::SigningKey;
 use prunella_store::LocalChainStore;
 use std::path::Path;
@@ -144,7 +148,11 @@ fn three_configurations_resolve_through_one_function() {
         .collect();
     assert_eq!(
         weights,
-        [("alice", 500, true), ("bob", 300, true), ("carol", 200, false)],
+        [
+            ("alice", 500, true),
+            ("bob", 300, true),
+            ("carol", 200, false)
+        ],
         "share register: weight = shares, a keyless holder counts but cannot sign"
     );
     assert!(shareholders.rules().is_some());
@@ -166,7 +174,11 @@ fn three_configurations_resolve_through_one_function() {
     );
     assert_eq!(board.actors.total_weight.value(), 4);
     assert!(board.rules().is_some());
-    assert_ne!(board.rules(), shareholders.rules(), "each channel has its own rules");
+    assert_ne!(
+        board.rules(),
+        shareholders.rules(),
+        "each channel has its own rules"
+    );
 
     let ceo = resolve_channel(&state, &channel("ceo")).expect("ceo");
     let actor = ceo.sole_actor().expect("individual");
@@ -216,7 +228,10 @@ fn a_decision_runs_from_draft_to_a_verified_record() {
     assert_eq!(decision.status(), DecisionStatusV1::Finalized);
     assert_eq!(finalized.height, BlockHeight(1));
     assert_eq!(finalized.record, record);
-    assert_eq!(decision.finalized(), Some((finalized.tx_id, BlockHeight(1))));
+    assert_eq!(
+        decision.finalized(),
+        Some((finalized.tx_id, BlockHeight(1)))
+    );
 
     // On the chain, under the decision namespace, byte for byte.
     let stored = chain
@@ -247,7 +262,11 @@ fn a_decision_runs_from_draft_to_a_verified_record() {
 
     // The company itself is untouched: a decision decides, it does not change.
     let state = company_now(&chain.store).unwrap();
-    assert_eq!(state.applied.len(), 1, "only the genesis is a company record");
+    assert_eq!(
+        state.applied.len(),
+        1,
+        "only the genesis is a company record"
+    );
     assert_eq!(state.channels.tx_id, genesis);
 }
 
@@ -259,17 +278,26 @@ fn a_decision_needs_an_individual_channel_with_a_signing_actor() {
     let error = DecisionV1::draft("x", proposal())
         .freeze(&chain.store, at, &channel("board"))
         .expect_err("collective");
-    assert!(matches!(error, DecisionError::NotIndividual { .. }), "{error}");
+    assert!(
+        matches!(error, DecisionError::NotIndividual { .. }),
+        "{error}"
+    );
 
     let error = DecisionV1::draft("x", proposal())
         .freeze(&chain.store, at, &channel("shareholders"))
         .expect_err("collective");
-    assert!(matches!(error, DecisionError::NotIndividual { .. }), "{error}");
+    assert!(
+        matches!(error, DecisionError::NotIndividual { .. }),
+        "{error}"
+    );
 
     let error = DecisionV1::draft("x", proposal())
         .freeze(&chain.store, at, &channel("nobody"))
         .expect_err("unknown");
-    assert!(matches!(error, DecisionError::NoSuchChannel { .. }), "{error}");
+    assert!(
+        matches!(error, DecisionError::NoSuchChannel { .. }),
+        "{error}"
+    );
 
     // Two members in an individual channel: refused at resolution, not at parse.
     let two = example("genesis-three-channels.xml");
@@ -279,9 +307,14 @@ fn a_decision_needs_an_individual_channel_with_a_signing_actor() {
             r#"<member id="chen" key="ca93ac1705187071d67b83c7ff0efe8108e8ec4530575d7726879333dbdabe7c" name="M. Chen"/>"#,
             r#"<member id="chen" key="ca93ac1705187071d67b83c7ff0efe8108e8ec4530575d7726879333dbdabe7c" name="M. Chen"/><member id="vance"/>"#,
         );
-    assert!(channels.contains(r#"<member id="vance"/>
+    assert!(
+        channels.contains(
+            r#"<member id="vance"/>
       </actors>
-    </channel>"#) || channels.matches("vance").count() == 2, "fixture edited: {channels}");
+    </channel>"#
+        ) || channels.matches("vance").count() == 2,
+        "fixture edited: {channels}"
+    );
     amend(&chain, RecordKindV1::DecisionChannels, &channels);
     let head = chain.store.head().unwrap().height;
     let error = DecisionV1::draft("x", proposal())
@@ -328,7 +361,11 @@ fn a_single_member_company_decides_through_its_register() {
     let finalized = decision
         .finalize(&chain.store, &key(9), 5000)
         .expect("finalize");
-    assert!(verify_decision(&chain.store, &finalized.tx_id).unwrap().is_valid());
+    assert!(
+        verify_decision(&chain.store, &finalized.tx_id)
+            .unwrap()
+            .is_valid()
+    );
 
     // A second holder is admitted: the same channel no longer resolves to one actor.
     let register = format!(
@@ -348,7 +385,11 @@ fn a_single_member_company_decides_through_its_register() {
         "{error}"
     );
     // The decision already on the chain still verifies: it pinned the earlier register.
-    assert!(verify_decision(&chain.store, &finalized.tx_id).unwrap().is_valid());
+    assert!(
+        verify_decision(&chain.store, &finalized.tx_id)
+            .unwrap()
+            .is_valid()
+    );
 }
 
 #[test]
@@ -491,7 +532,10 @@ fn the_decision_state_round_trips_through_canonical_bytes_between_steps() {
     decision
         .freeze(&chain.store, BlockHeight::GENESIS, &channel("ceo"))
         .unwrap();
-    assert_eq!(restored, decision, "the same inputs freeze to the same decision");
+    assert_eq!(
+        restored, decision,
+        "the same inputs freeze to the same decision"
+    );
     let mut restored = DecisionV1::from_canonical_bytes(&restored.canonical_bytes()).unwrap();
     restored.sign(&key(4)).unwrap();
     decision.sign(&key(4)).unwrap();
@@ -585,7 +629,10 @@ fn every_tampered_field_is_caught_by_a_named_check() {
     );
 
     // A signature by someone else over the genuine snapshot.
-    let tampered = FinalDecisionRecordV1::assemble(genuine.snapshot.clone(), key(5).sign(&genuine.snapshot.signing_message()));
+    let tampered = FinalDecisionRecordV1::assemble(
+        genuine.snapshot.clone(),
+        key(5).sign(&genuine.snapshot.signing_message()),
+    );
     assert_eq!(
         failing(&plant(&tampered)),
         [DecisionCheckNameV1::SignatureVerifies]

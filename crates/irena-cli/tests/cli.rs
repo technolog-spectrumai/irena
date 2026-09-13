@@ -2030,9 +2030,7 @@ impl Cli {
         ])
         .ok();
         let frozen = self
-            .decision(&[
-                "freeze", "--state", "d.state", "--channel", "ceo", "--json",
-            ])
+            .decision(&["freeze", "--state", "d.state", "--channel", "ceo", "--json"])
             .ok();
         assert_eq!(frozen.json()["snapshot"]["actor"], "chair");
         assert_eq!(frozen.json()["snapshot"]["channel"], "ceo");
@@ -2084,7 +2082,11 @@ fn channels_resolve_and_an_individual_decision_becomes_a_resolution() {
     let decision_tx = cli.decide_alone("Register bob's transfer to dave", &digest, 1000);
     let verify = cli.decision(&["verify", "--tx", &decision_tx]).ok();
     assert!(verify.out().contains("VALID"), "{}", verify.out());
-    assert!(verify.out().contains("SignatureVerifies"), "{}", verify.out());
+    assert!(
+        verify.out().contains("SignatureVerifies"),
+        "{}",
+        verify.out()
+    );
 
     cli.resolution(&[
         "create",
@@ -2137,9 +2139,17 @@ fn channels_resolve_and_an_individual_decision_becomes_a_resolution() {
     let report = cli
         .resolution(&["verify", "--execution", &execution_tx])
         .ok();
-    assert!(report.out().contains("SelfDemotionHolds"), "{}", report.out());
+    assert!(
+        report.out().contains("SelfDemotionHolds"),
+        "{}",
+        report.out()
+    );
     assert!(report.out().contains("not applicable"), "{}", report.out());
-    assert!(report.out().contains("DecisionVerifies"), "{}", report.out());
+    assert!(
+        report.out().contains("DecisionVerifies"),
+        "{}",
+        report.out()
+    );
 
     // Only the actor can sign; a vote cannot go through an individual channel; a
     // decision cannot go through a collective one.
@@ -2155,9 +2165,19 @@ fn channels_resolve_and_an_individual_decision_becomes_a_resolution() {
     .ok();
     cli.decision(&["freeze", "--state", "d2.state", "--channel", "ceo"])
         .ok();
-    let wrong = cli.decision(&["sign", "--state", "d2.state", "--signing-key", "holder1.key"]);
+    let wrong = cli.decision(&[
+        "sign",
+        "--state",
+        "d2.state",
+        "--signing-key",
+        "holder1.key",
+    ]);
     assert_eq!(wrong.code(), 2);
-    assert!(wrong.err().contains("not the registered key"), "{}", wrong.err());
+    assert!(
+        wrong.err().contains("not the registered key"),
+        "{}",
+        wrong.err()
+    );
     let collective = cli.decision(&["freeze", "--state", "d2.state", "--channel", "board"]);
     assert_eq!(collective.code(), 2, "{}", collective.err());
     cli.vote(&[
@@ -2172,7 +2192,11 @@ fn channels_resolve_and_an_individual_decision_becomes_a_resolution() {
     .ok();
     let individual = cli.vote(&["freeze", "--state", "v.state", "--channel", "ceo"]);
     assert_eq!(individual.code(), 2);
-    assert!(individual.err().contains("individual"), "{}", individual.err());
+    assert!(
+        individual.err().contains("individual"),
+        "{}",
+        individual.err()
+    );
 }
 
 #[test]
@@ -2182,15 +2206,14 @@ fn an_individual_channel_may_only_demote_itself() {
 
     // The ceo thins the board it sits on: refused at execution, and the refusal names
     // the rule.
-    let thinned = channels(RULES)
-        .replace(
-            &format!(
-                "      <member id=\"dir-a\" key=\"{}\"/>\n      <member id=\"dir-b\" key=\"{}\"/>\n",
-                prunella_crypto::SigningKey::from_seed([6; 32]).public_key(),
-                prunella_crypto::SigningKey::from_seed([7; 32]).public_key()
-            ),
-            "",
-        );
+    let thinned = channels(RULES).replace(
+        &format!(
+            "      <member id=\"dir-a\" key=\"{}\"/>\n      <member id=\"dir-b\" key=\"{}\"/>\n",
+            prunella_crypto::SigningKey::from_seed([6; 32]).public_key(),
+            prunella_crypto::SigningKey::from_seed([7; 32]).public_key()
+        ),
+        "",
+    );
     assert!(!thinned.contains("dir-a"), "fixture edited");
     std::fs::write(cli.dir.path().join("thinned.xml"), &thinned).unwrap();
     let digest = cli.digest_of("thinned.xml");
@@ -2248,7 +2271,10 @@ fn an_individual_channel_may_only_demote_itself() {
         let end = full[start..].find("</channel>\n").unwrap() + start + "</channel>\n".len();
         format!("{}{}", &full[..start], &full[end..])
     };
-    assert!(!abolished.contains("\"ceo\""), "fixture edited:\n{abolished}");
+    assert!(
+        !abolished.contains("\"ceo\""),
+        "fixture edited:\n{abolished}"
+    );
     std::fs::write(cli.dir.path().join("abolished.xml"), &abolished).unwrap();
     let digest = cli.digest_of("abolished.xml");
     let decision_tx = cli.decide_alone("Abolish the ceo channel", &digest, 4000);
@@ -2298,10 +2324,7 @@ fn an_individual_channel_may_only_demote_itself() {
     let listed = cli.run(&["channels"]).ok();
     assert!(listed.out().contains("2 channel(s)"), "{}", listed.out());
     assert!(!listed.out().contains("decides alone"), "{}", listed.out());
-    let execution_tx = executed.json()["execution_tx"]
-        .as_str()
-        .unwrap()
-        .to_owned();
+    let execution_tx = executed.json()["execution_tx"].as_str().unwrap().to_owned();
     let report = cli
         .resolution(&["verify", "--execution", &execution_tx])
         .ok();
@@ -2320,5 +2343,9 @@ fn an_individual_channel_may_only_demote_itself() {
     .ok();
     let gone = cli.decision(&["freeze", "--state", "d3.state", "--channel", "ceo"]);
     assert_eq!(gone.code(), 2);
-    assert!(gone.err().contains("no decision channel ceo"), "{}", gone.err());
+    assert!(
+        gone.err().contains("no decision channel ceo"),
+        "{}",
+        gone.err()
+    );
 }

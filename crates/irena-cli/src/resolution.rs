@@ -288,7 +288,7 @@ pub(crate) fn run(cli: &Cli, command: &ResolutionCommand) -> Result<u8, String> 
                     lines.push(verdict(
                         verification.is_valid(),
                         failed,
-                        "the amendment is exactly what the shareholders authorised",
+                        "the amendment is exactly what the channel authorised",
                     ));
                     emit(
                         cli.json,
