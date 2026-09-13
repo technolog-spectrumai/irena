@@ -1726,3 +1726,615 @@ fn resolution_records_are_read_strictly() {
     assert_eq!(json["kind"]["target"], "share-structure");
     assert_eq!(json["notarisation"]["id"], "notary-07");
 }
+
+// ---------------------------------------------------------------------------------
+// Decision channels: three configurations, one implementation.
+// ---------------------------------------------------------------------------------
+
+use irena_decision::DecisionV1;
+use irena_resolution::{ResolutionExecutionV1, ResolutionIdV1 as RId};
+
+/// Holds a meeting of the board whose items are exactly `items`: the chair (weight 2)
+/// votes the way `pass` says, dir-a (weight 1) the other way, so the motion carries
+/// or falls 2–1.
+fn hold_board(chain: &Chain, items: &[(&str, Hash, bool)]) -> Held {
+    let mut meeting = MeetingV1::draft(MeetingMetadataV1 {
+        channel: "board".to_owned(),
+        title: "Board meeting".to_owned(),
+        scheduled_at: "2026-06-01T10:00:00Z".to_owned(),
+        notice_digest: None,
+    });
+    for (title, digest, _) in items {
+        meeting
+            .add_item(
+                *title,
+                AgendaBodyV1::Vote {
+                    proposal_digest: *digest,
+                },
+            )
+            .expect("item");
+    }
+    let base = chain.next_timestamp();
+    meeting
+        .convene(&chain.store, &key(9), &notary("2026-05-01T09:00:00Z"), base)
+        .expect("convene");
+    meeting.open(&chain.store).expect("open");
+    for (index, (_, _, pass)) in items.iter().enumerate() {
+        let number = index as u32 + 1;
+        let vote_id = meeting.vote(number).expect("vote").id().expect("frozen");
+        let (chair, other) = if *pass {
+            (BallotChoiceV1::Yes, BallotChoiceV1::No)
+        } else {
+            (BallotChoiceV1::No, BallotChoiceV1::Yes)
+        };
+        meeting
+            .cast(
+                number,
+                SignedBallotV1::sign(&key(5), vote_id, &voter("chair"), chair),
+            )
+            .expect("chair");
+        meeting
+            .cast(
+                number,
+                SignedBallotV1::sign(&key(6), vote_id, &voter("dir-a"), other),
+            )
+            .expect("dir-a");
+    }
+    meeting.close(&chain.store).expect("close");
+    let finalized = meeting
+        .finalize(
+            &chain.store,
+            &key(9),
+            &notary("2026-06-01T12:00:00Z"),
+            base + 100,
+        )
+        .expect("finalize");
+    Held {
+        meeting_tx: finalized.tx_id,
+    }
+}
+
+/// A finalised decision of the ceo (the chair, key 5) on `digest`, at the head.
+fn decide_alone(chain: &Chain, digest: Hash) -> TxId {
+    let mut decision = DecisionV1::draft("decided alone", digest);
+    let head = chain.store.head().unwrap().height;
+    decision
+        .freeze(
+            &chain.store,
+            head,
+            &irena_core::ChannelIdV1::new("ceo").unwrap(),
+        )
+        .expect("freeze");
+    decision.sign(&key(5)).expect("sign");
+    decision
+        .finalize(&chain.store, &key(9), chain.next_timestamp())
+        .expect("finalize")
+        .tx_id
+}
+
+fn authority_through(chain: &Chain, held: &Held, item: u32, channel: &str) -> AuthorityV1 {
+    AuthorityV1::Collective {
+        channel: channel.to_owned(),
+        meeting_tx: held.meeting_tx,
+        item_number: item,
+        vote_tx: vote_of(chain, held, item),
+    }
+}
+
+/// Drafts, finalises and executes an amendment resolution on any authority.
+fn carry(
+    chain: &Chain,
+    authority: AuthorityV1,
+    target: AmendmentTargetV1,
+    body: &str,
+) -> ResolutionV1 {
+    let mut resolution = ResolutionV1::draft(
+        "Resolution",
+        authority,
+        ResolutionKindV1::Amendment {
+            target,
+            body: body.to_owned(),
+        },
+    );
+    resolution
+        .finalize(
+            &chain.store,
+            &key(9),
+            &notary("2026-06-02T09:00:00Z"),
+            chain.next_timestamp(),
+        )
+        .expect("finalize");
+    resolution
+        .execute(
+            &chain.store,
+            &key(9),
+            &notary("2026-06-03T09:00:00Z"),
+            chain.next_timestamp(),
+        )
+        .expect("execute");
+    resolution
+}
+
+/// The board thinned to the chair alone.
+fn channels_thinned() -> String {
+    let full = channels(RULES);
+    let thinned = full.replace(
+        &format!(
+            "      <member id=\"dir-a\" key=\"{}\"/>\n      <member id=\"dir-b\" key=\"{}\"/>\n",
+            key(6).public_key(),
+            key(7).public_key()
+        ),
+        "",
+    );
+    assert!(!thinned.contains("dir-a"), "fixture edited");
+    thinned
+}
+
+/// The channel set without the ceo.
+fn channels_abolished() -> String {
+    let full = channels(RULES);
+    let start = full.find("  <channel id=\"ceo\"").unwrap();
+    let end = full[start..].find("</channel>\n").unwrap() + start + "</channel>\n".len();
+    format!("{}{}", &full[..start], &full[end..])
+}
+
+#[test]
+fn the_same_execution_serves_shareholders_board_and_ceo() {
+    let digest = proposal_digest(&register_v2());
+    let mut executed = Vec::new();
+
+    // Shareholders: a vote of the share register.
+    let chain = founded();
+    let held = hold(&chain, &[("Buy out carol", digest, true)]);
+    let authority = authority_through(&chain, &held, 1, "shareholders");
+    let resolution = carry(
+        &chain,
+        authority,
+        AmendmentTargetV1::ShareStructure,
+        &register_v2(),
+    );
+    executed.push((chain, resolution));
+
+    // Board: a vote of a roster, carried 2–1 on the chair's weight.
+    let chain = founded();
+    let held = hold_board(&chain, &[("Buy out carol", digest, true)]);
+    let vote = irena_vote::verify(&chain.store, &vote_of(&chain, &held, 1))
+        .unwrap()
+        .record
+        .unwrap();
+    assert_eq!(vote.snapshot.channel, "board");
+    assert_eq!(vote.evaluation.yes_weight, 2);
+    assert_eq!(vote.evaluation.no_weight, 1);
+    let authority = authority_through(&chain, &held, 1, "board");
+    let resolution = carry(
+        &chain,
+        authority,
+        AmendmentTargetV1::ShareStructure,
+        &register_v2(),
+    );
+    executed.push((chain, resolution));
+
+    // Ceo: one signature, no meeting.
+    let chain = founded();
+    let decision_tx = decide_alone(&chain, digest);
+    let authority = AuthorityV1::Individual {
+        channel: "ceo".to_owned(),
+        decision_tx,
+    };
+    let resolution = carry(
+        &chain,
+        authority,
+        AmendmentTargetV1::ShareStructure,
+        &register_v2(),
+    );
+    executed.push((chain, resolution));
+
+    // Every one of them reached the same place through the same code.
+    for (chain, resolution) in &executed {
+        let done = resolution.executed().expect("executed");
+        let state = company_now(&chain.store).unwrap();
+        assert_eq!(state.shares.tx_id, done.amendment_tx);
+        assert_eq!(state.shares.value.len(), 2, "carol is gone");
+        let report = verify_execution(&chain.store, &done.execution_tx).unwrap();
+        assert!(report.is_valid(), "{report:#?}");
+        let names: Vec<&str> = report
+            .resolution
+            .as_ref()
+            .unwrap()
+            .checks
+            .iter()
+            .map(|c| c.name.as_str())
+            .collect();
+        assert!(names.contains(&"ChannelMatches"), "{names:?}");
+        assert!(
+            report.checks.iter().any(|c| c.name == "SelfDemotionHolds"
+                && c.passed
+                && c.detail.contains("not applicable")),
+            "{report:#?}"
+        );
+    }
+    let individual = &executed[2].1;
+    assert!(individual.authority().is_individual());
+    let report =
+        verify_resolution(&executed[2].0.store, &individual.id().unwrap().tx_id()).unwrap();
+    let names: Vec<&str> = report.checks.iter().map(|c| c.name.as_str()).collect();
+    assert_eq!(
+        names,
+        [
+            "Decodes",
+            "DecisionVerifies",
+            "ChannelMatches",
+            "ProposalMatches",
+            "CompanyMatches",
+            "HeightsOrdered"
+        ]
+    );
+
+    // A board motion that falls 1–2 authorises nothing, exactly as a shareholders'
+    // one would.
+    let chain = founded();
+    let held = hold_board(&chain, &[("Buy out carol", digest, false)]);
+    let mut resolution = ResolutionV1::draft(
+        "Resolution",
+        authority_through(&chain, &held, 1, "board"),
+        ResolutionKindV1::Amendment {
+            target: AmendmentTargetV1::ShareStructure,
+            body: register_v2(),
+        },
+    );
+    let error = resolution
+        .finalize(
+            &chain.store,
+            &key(9),
+            &notary("2026-06-02T09:00:00Z"),
+            chain.next_timestamp(),
+        )
+        .expect_err("rejected");
+    assert!(
+        matches!(error, ResolutionError::VoteRejected { .. }),
+        "{error}"
+    );
+}
+
+#[test]
+fn a_resolution_names_the_channel_its_approval_came_through() {
+    let chain = founded();
+    let digest = proposal_digest(&register_v2());
+    let held = hold(&chain, &[("Buy out carol", digest, true)]);
+    let decision_tx = decide_alone(&chain, digest);
+    let kind = ResolutionKindV1::Amendment {
+        target: AmendmentTargetV1::ShareStructure,
+        body: register_v2(),
+    };
+    let finalize = |authority: AuthorityV1| {
+        ResolutionV1::draft("Resolution", authority, kind.clone()).finalize(
+            &chain.store,
+            &key(9),
+            &notary("2026-06-02T09:00:00Z"),
+            chain.next_timestamp(),
+        )
+    };
+
+    // A real shareholders' vote presented as the board's, or as the ceo's.
+    for wrong in ["board", "ceo"] {
+        let error = finalize(authority_through(&chain, &held, 1, wrong)).expect_err(wrong);
+        assert!(
+            matches!(error, ResolutionError::WrongChannel { ref expected, ref found, .. } if expected == wrong && found == "shareholders"),
+            "{wrong}: {error}"
+        );
+    }
+    // A real ceo decision presented as the shareholders', or the board's.
+    for wrong in ["shareholders", "board"] {
+        let error = finalize(AuthorityV1::Individual {
+            channel: wrong.to_owned(),
+            decision_tx,
+        })
+        .expect_err(wrong);
+        assert!(
+            matches!(error, ResolutionError::WrongChannel { ref expected, ref found, .. } if expected == wrong && found == "ceo"),
+            "{wrong}: {error}"
+        );
+    }
+    // A vote transaction offered as a decision, and a decision offered as a vote.
+    let error = finalize(AuthorityV1::Individual {
+        channel: "ceo".to_owned(),
+        decision_tx: vote_of(&chain, &held, 1),
+    })
+    .expect_err("a vote is not a decision");
+    assert!(
+        matches!(error, ResolutionError::DecisionUnverified { .. }),
+        "{error}"
+    );
+    let error = finalize(AuthorityV1::Collective {
+        channel: "shareholders".to_owned(),
+        meeting_tx: held.meeting_tx,
+        item_number: 1,
+        vote_tx: decision_tx,
+    })
+    .expect_err("a decision is not a vote");
+    assert!(
+        matches!(error, ResolutionError::WrongVote { .. }),
+        "{error}"
+    );
+    let error = finalize(AuthorityV1::Individual {
+        channel: "ceo".to_owned(),
+        decision_tx: TxId::from_hash(Hash::from_bytes([0x42; 32])),
+    })
+    .expect_err("no such decision");
+    assert!(matches!(error, ResolutionError::Decision(_)), "{error}");
+
+    // The same forgeries, published by hand, are caught by the chain.
+    let payload = compose_resolution(
+        &acme(),
+        &notary("2026-06-02T09:00:00Z"),
+        "Resolution",
+        &authority_through(&chain, &held, 1, "board"),
+        &kind,
+    )
+    .expect("compose");
+    let forged = append_raw(&chain.store, "irena.resolution.v1", payload.into_bytes());
+    let report = verify_resolution(&chain.store, &forged).unwrap();
+    assert_eq!(
+        resolution_failures(&report),
+        ["ChannelMatches"],
+        "{report:#?}"
+    );
+    let payload = compose_resolution(
+        &acme(),
+        &notary("2026-06-02T09:00:00Z"),
+        "Resolution",
+        &AuthorityV1::Individual {
+            channel: "board".to_owned(),
+            decision_tx,
+        },
+        &kind,
+    )
+    .expect("compose");
+    let forged = append_raw(&chain.store, "irena.resolution.v1", payload.into_bytes());
+    let report = verify_resolution(&chain.store, &forged).unwrap();
+    assert_eq!(
+        resolution_failures(&report),
+        ["ChannelMatches"],
+        "{report:#?}"
+    );
+
+    // And the genuine ones, from both sides, are fine.
+    finalize(authority_through(&chain, &held, 1, "shareholders")).expect("shareholders");
+    finalize(AuthorityV1::Individual {
+        channel: "ceo".to_owned(),
+        decision_tx,
+    })
+    .expect("ceo");
+}
+
+#[test]
+fn a_decision_must_match_what_it_authorises_and_carries_once() {
+    let chain = founded();
+    let digest = proposal_digest(&register_v2());
+    let decision_tx = decide_alone(&chain, digest);
+
+    // Carrying something else than what was decided.
+    let mut other = ResolutionV1::draft(
+        "Resolution",
+        AuthorityV1::Individual {
+            channel: "ceo".to_owned(),
+            decision_tx,
+        },
+        ResolutionKindV1::Amendment {
+            target: AmendmentTargetV1::ShareStructure,
+            body: register(),
+        },
+    );
+    let error = other
+        .finalize(
+            &chain.store,
+            &key(9),
+            &notary("2026-06-02T09:00:00Z"),
+            chain.next_timestamp(),
+        )
+        .expect_err("not what was decided");
+    assert!(
+        matches!(error, ResolutionError::ProposalMismatch { .. }),
+        "{error}"
+    );
+
+    // Two resolutions on one decision: the second finalises (the decision is real and
+    // says what it says) but cannot execute — the base it was decided against is gone.
+    let first = carry(
+        &chain,
+        AuthorityV1::Individual {
+            channel: "ceo".to_owned(),
+            decision_tx,
+        },
+        AmendmentTargetV1::ShareStructure,
+        &register_v2(),
+    );
+    let mut second = ResolutionV1::draft(
+        "Resolution, again",
+        AuthorityV1::Individual {
+            channel: "ceo".to_owned(),
+            decision_tx,
+        },
+        ResolutionKindV1::Amendment {
+            target: AmendmentTargetV1::ShareStructure,
+            body: register_v2(),
+        },
+    );
+    second
+        .finalize(
+            &chain.store,
+            &key(9),
+            &notary("2026-06-02T09:00:00Z"),
+            chain.next_timestamp(),
+        )
+        .expect("the decision stands");
+    let error = second
+        .execute(
+            &chain.store,
+            &key(9),
+            &notary("2026-06-03T09:00:00Z"),
+            chain.next_timestamp(),
+        )
+        .expect_err("stale");
+    assert!(
+        matches!(error, ResolutionError::StaleBase { .. }),
+        "{error}"
+    );
+    assert_eq!(
+        company_now(&chain.store).unwrap().shares.tx_id,
+        first.executed().unwrap().amendment_tx
+    );
+}
+
+#[test]
+fn self_demotion_is_enforced_at_execution_and_reverified_from_the_chain() {
+    let chain = founded();
+
+    // The ceo thins the board it sits on: finalises (the decision is genuine), but
+    // executing is refused and names the rule.
+    let thinned = channels_thinned();
+    let decision_tx = decide_alone(&chain, proposal_digest(&thinned));
+    let mut resolution = ResolutionV1::draft(
+        "Resolution 1: a smaller board",
+        AuthorityV1::Individual {
+            channel: "ceo".to_owned(),
+            decision_tx,
+        },
+        ResolutionKindV1::Amendment {
+            target: AmendmentTargetV1::DecisionChannels,
+            body: thinned.clone(),
+        },
+    );
+    resolution
+        .finalize(
+            &chain.store,
+            &key(9),
+            &notary("2026-06-02T09:00:00Z"),
+            chain.next_timestamp(),
+        )
+        .expect("finalize");
+    let before = chain.store.head().unwrap();
+    let error = resolution
+        .execute(
+            &chain.store,
+            &key(9),
+            &notary("2026-06-03T09:00:00Z"),
+            chain.next_timestamp(),
+        )
+        .expect_err("self-promotion");
+    assert!(
+        matches!(error, ResolutionError::SelfPromotion { ref channel, ref actor, ref detail } if channel == "ceo" && actor == "chair" && detail.contains("board")),
+        "{error}"
+    );
+    assert_eq!(chain.store.head().unwrap(), before, "nothing was written");
+    assert_eq!(resolution.status(), ResolutionStatusV1::Finalized);
+
+    // The same amendment written around Irena, with an execution record claiming the
+    // ceo's decision authorised it: the chain reader re-applies the rule.
+    let current = company_now(&chain.store).unwrap().channels.tx_id;
+    let amendment = publish(
+        &chain.store,
+        &key(9),
+        RecordKindV1::DecisionChannels,
+        &thinned,
+        Some(current),
+        &notary("2026-06-03T09:00:00Z"),
+        chain.next_timestamp(),
+    )
+    .expect("an amendment needs no authority to reconstruct");
+    let payload = compose_execution(
+        &acme(),
+        &notary("2026-06-03T09:00:00Z"),
+        &ResolutionExecutionV1 {
+            resolution_id: RId::from_tx(resolution.id().unwrap().tx_id()),
+            amendment_tx: amendment.tx_id,
+            target: AmendmentTargetV1::DecisionChannels,
+            replaced_tx: current,
+            body_digest: proposal_digest(&thinned),
+        },
+    )
+    .expect("compose");
+    let forged = append_raw(&chain.store, "irena.execution.v1", payload.into_bytes());
+    let report = verify_execution(&chain.store, &forged).unwrap();
+    assert!(!report.is_valid());
+    assert_eq!(
+        execution_failures(&report),
+        ["SelfDemotionHolds"],
+        "{report:#?}"
+    );
+    let detail = &report
+        .checks
+        .iter()
+        .find(|c| c.name == "SelfDemotionHolds")
+        .unwrap()
+        .detail;
+    assert!(detail.contains("board"), "{detail}");
+
+    // Undo the board change through the shareholders, who may do anything: a
+    // collective channel-set amendment is unrestricted, and the check says so.
+    let restored = channels(RULES);
+    let held = hold(
+        &chain,
+        &[("Restore the board", proposal_digest(&restored), true)],
+    );
+    let restore = carry(
+        &chain,
+        authority_through(&chain, &held, 1, "shareholders"),
+        AmendmentTargetV1::DecisionChannels,
+        &restored,
+    );
+    let report = verify_execution(&chain.store, &restore.executed().unwrap().execution_tx).unwrap();
+    assert!(report.is_valid(), "{report:#?}");
+    assert!(
+        report
+            .checks
+            .iter()
+            .any(|c| c.name == "SelfDemotionHolds" && c.detail.contains("decided collectively")),
+        "{report:#?}"
+    );
+
+    // The ceo abolishes itself: allowed, verified, and final.
+    let abolished = channels_abolished();
+    let decision_tx = decide_alone(&chain, proposal_digest(&abolished));
+    let resolution = carry(
+        &chain,
+        AuthorityV1::Individual {
+            channel: "ceo".to_owned(),
+            decision_tx,
+        },
+        AmendmentTargetV1::DecisionChannels,
+        &abolished,
+    );
+    let state = company_now(&chain.store).unwrap();
+    assert_eq!(state.channels.value.len(), 2);
+    assert!(
+        state
+            .channels
+            .value
+            .get(&irena_core::ChannelIdV1::new("ceo").unwrap())
+            .is_none()
+    );
+    let report =
+        verify_execution(&chain.store, &resolution.executed().unwrap().execution_tx).unwrap();
+    assert!(report.is_valid(), "{report:#?}");
+    assert!(
+        report.checks.iter().any(|c| c.name == "SelfDemotionHolds"
+            && c.passed
+            && c.detail.contains("gives up ceo")),
+        "{report:#?}"
+    );
+    // ...and the execution of the abolished channel's own decision still verifies a
+    // block later: it is pinned to the channel set it was taken under.
+    let mut after = DecisionV1::draft("x", Hash::from_bytes([1; 32]));
+    let head = chain.store.head().unwrap().height;
+    assert!(
+        after
+            .freeze(
+                &chain.store,
+                head,
+                &irena_core::ChannelIdV1::new("ceo").unwrap()
+            )
+            .is_err(),
+        "the channel is gone"
+    );
+}
