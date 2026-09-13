@@ -9,6 +9,7 @@ use irena_ledger::{
     InForceV1, LedgerError, RecordRefV1, company_at, genesis_in_force, genesis_with_company,
     history, publish, shares_in_force,
 };
+use irena_vote::derive_electorate;
 use prunella_core::{BlockHeight, NetworkId};
 use prunella_store::LocalChainStore;
 use serde_json::json;
@@ -92,22 +93,25 @@ pub(crate) fn run(cli: &Cli) -> Result<u8, String> {
             let at = height_or_head(&store, *at)?;
             let found = shares_in_force(&store, &company, at).map_err(|e| e.to_string())?;
             let register = &found.value;
+            let derived = derive_electorate(register).map_err(|e| e.to_string())?;
             let mut lines = vec![
                 format!("share register for {company} at height {at}"),
                 describe_record("record", &found),
                 format!(
-                    "{} holder(s), {} share(s) in issue; one share, one vote",
+                    "{} holder(s), {} share(s) in issue; one share, one vote; total weight {}; {} can sign",
                     register.len(),
-                    register.total_shares()
+                    register.total_shares(),
+                    derived.total_weight,
+                    derived.signing_holders
                 ),
             ];
-            for holder in register.holders() {
+            for holder in &derived.holders {
                 lines.push(format!(
                     "  {:<24} shares {:>12}  weight {:>12}  {}",
                     holder.id,
                     holder.shares,
-                    holder.shares,
-                    if holder.key.is_some() {
+                    holder.weight,
+                    if holder.can_sign {
                         "can sign"
                     } else {
                         "no key: cannot sign"
@@ -122,13 +126,15 @@ pub(crate) fn run(cli: &Cli) -> Result<u8, String> {
                     "at": at,
                     "record": record_json(&found),
                     "total_shares": register.total_shares(),
-                    "holders": register.holders().iter().map(|h| json!({
-                        "id": h.id,
+                    "total_weight": derived.total_weight,
+                    "signing_holders": derived.signing_holders,
+                    "holders": derived.holders.iter().zip(register.holders()).map(|(d, h)| json!({
+                        "id": d.id,
                         "name": h.name,
-                        "shares": h.shares,
-                        "weight": h.shares,
-                        "key": h.key,
-                        "can_sign": h.key.is_some(),
+                        "shares": d.shares,
+                        "weight": d.weight,
+                        "key": d.key,
+                        "can_sign": d.can_sign,
                     })).collect::<Vec<_>>(),
                 }),
             );
@@ -207,6 +213,7 @@ pub(crate) fn run(cli: &Cli) -> Result<u8, String> {
             );
             Ok(if ok { EXIT_OK } else { EXIT_FINDING })
         }
+        Command::Vote(_) => unreachable!("dispatched in main"),
     }
 }
 

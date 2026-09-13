@@ -15,12 +15,16 @@ clap.workspace = true
 hex.workspace = true
 irena-core.workspace = true
 irena-ledger.workspace = true
+irena-vote.workspace = true
+bornite-core.workspace = true
+prunella-canonical.workspace = true
 prunella-core.workspace = true
 prunella-crypto.workspace = true
 prunella-store.workspace = true
 serde_json.workspace = true
 
 [dev-dependencies]
+prunella-canonical.workspace = true
 prunella-xml.workspace = true
 serde_json.workspace = true
 tempfile.workspace = true

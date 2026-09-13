@@ -462,3 +462,413 @@ fn the_export_shows_every_record_nested_and_readable() {
     );
     assert!(xml.contains("<notarisation id=\"notary-07\" name=\"Jane Roe\" address=\"12 High Street, London\" at=\"2026-03-01T09:30:00Z\"/>"), "{xml}");
 }
+
+// ---------------------------------------------------------------------------------
+// Votes.
+// ---------------------------------------------------------------------------------
+
+/// A register whose holders' keys are the seeds 0x01 (alice) and 0x02 (bob); carol
+/// has none.
+fn keyed_register() -> String {
+    let key = |seed: u8| prunella_crypto::SigningKey::from_seed([seed; 32]).public_key();
+    format!(
+        r#"<share-structure>
+  <holder id="alice" key="{}" shares="500"/>
+  <holder id="bob" key="{}" shares="300"/>
+  <holder id="carol" shares="200"/>
+</share-structure>
+"#,
+        key(1),
+        key(2)
+    )
+}
+
+impl Cli {
+    /// A founded company whose holders can sign, and seed files for them.
+    fn founded_for_voting(&self) {
+        std::fs::write(self.dir.path().join("shares1.xml"), keyed_register()).expect("write");
+        for seed in 1..=3u8 {
+            std::fs::write(
+                self.dir.path().join(format!("holder{seed}.key")),
+                format!("{seed:02}").repeat(32),
+            )
+            .expect("key");
+        }
+        self.founded();
+    }
+    fn vote(&self, args: &[&str]) -> Run {
+        let mut full = vec!["vote"];
+        full.extend_from_slice(args);
+        self.run(&full)
+    }
+    fn ballot(&self, voter: &str, choice: &str, seed: u8) -> String {
+        let out = format!("{voter}.ballot");
+        self.vote(&[
+            "ballot",
+            "--state",
+            "v.state",
+            "--voter",
+            voter,
+            "--choice",
+            choice,
+            "--signing-key",
+            &format!("holder{seed}.key"),
+            "--out",
+            &out,
+        ])
+        .ok();
+        out
+    }
+}
+
+#[test]
+fn a_vote_runs_end_to_end_and_the_freeze_holds_against_a_mid_vote_amendment() {
+    let cli = Cli::new();
+    cli.founded_for_voting();
+    let digest = "d0".repeat(32);
+
+    let new = cli
+        .vote(&[
+            "new",
+            "--company",
+            "acme",
+            "--subject",
+            "Approve the 2026 accounts",
+            "--proposal-digest",
+            &digest,
+            "--state",
+            "v.state",
+            "--json",
+        ])
+        .ok();
+    assert_eq!(new.json()["status"], "draft");
+
+    let frozen = cli
+        .vote(&["freeze", "--state", "v.state", "--at", "2", "--json"])
+        .ok();
+    assert_eq!(frozen.json()["status"], "frozen");
+    assert_eq!(frozen.json()["snapshot"]["height"], 2);
+    assert_eq!(
+        frozen.json()["snapshot"]["electorate"]
+            .as_array()
+            .map(Vec::len),
+        Some(3)
+    );
+    let vote_id = frozen.json()["vote_id"].as_str().unwrap().to_owned();
+
+    // Not open yet: a ballot is refused with both ends of the transition named.
+    let alice = cli.ballot("alice", "yes", 1);
+    let early = cli.vote(&["cast", "--state", "v.state", "--ballot", &alice]);
+    assert_eq!(early.code(), 2);
+    assert!(
+        early
+            .err()
+            .contains("cannot cast a ballot in a vote that is frozen"),
+        "{}",
+        early.err()
+    );
+
+    cli.vote(&["open", "--state", "v.state"]).ok();
+    cli.vote(&["cast", "--state", "v.state", "--ballot", &alice])
+        .ok();
+    let bob = cli.ballot("bob", "no", 2);
+    cli.vote(&["cast", "--state", "v.state", "--ballot", &bob])
+        .ok();
+
+    // carol owns shares but registered no key.
+    let carol = cli.ballot("carol", "yes", 3);
+    let keyless = cli.vote(&["cast", "--state", "v.state", "--ballot", &carol]);
+    assert_eq!(keyless.code(), 2);
+    assert!(
+        keyless.err().contains("no signing key"),
+        "{}",
+        keyless.err()
+    );
+
+    // alice again, changing her mind: the first ballot stands.
+    let again = cli.ballot("alice", "no", 1);
+    let duplicate = cli.vote(&["cast", "--state", "v.state", "--ballot", &again]);
+    assert_eq!(duplicate.code(), 2);
+    assert!(
+        duplicate.err().contains("already cast"),
+        "{}",
+        duplicate.err()
+    );
+
+    // The register is amended mid-vote: bob sells everything to dave.
+    let v1 = cli
+        .run(&["shares", "--company", "acme", "--json"])
+        .ok()
+        .json()["record"]["tx_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    std::fs::write(
+        cli.dir.path().join("shares-amended.xml"),
+        keyed_register().replace("id=\"bob\"", "id=\"dave\""),
+    )
+    .expect("write");
+    cli.with_notary(&[
+        "publish-shares",
+        "--company",
+        "acme",
+        "--file",
+        "shares-amended.xml",
+        "--signing-key",
+        "k.key",
+        "--supersedes",
+        &v1,
+        "--timestamp",
+        "3000",
+    ])
+    .ok();
+    let now = cli
+        .run(&["shares", "--company", "acme", "--json"])
+        .ok()
+        .json();
+    assert_eq!(now["holders"][2]["id"], "dave", "the chain moved on");
+
+    let status = cli
+        .vote(&["status", "--state", "v.state", "--json"])
+        .ok()
+        .json();
+    assert_eq!(status["vote_id"], vote_id, "the vote did not");
+    assert_eq!(status["ballots"], 2);
+
+    cli.vote(&["close", "--state", "v.state"]).ok();
+    let evaluated = cli.vote(&["evaluate", "--state", "v.state", "--json"]).ok();
+    assert_eq!(evaluated.json()["summary"]["outcome"], "accepted");
+    assert_eq!(evaluated.json()["summary"]["yes_weight"], 500);
+    assert_eq!(evaluated.json()["summary"]["no_weight"], 300);
+    assert_eq!(
+        evaluated.json()["summary"]["total_weight"],
+        1000,
+        "the frozen electorate, not the amended one"
+    );
+
+    let finalized = cli
+        .vote(&[
+            "finalize",
+            "--state",
+            "v.state",
+            "--signing-key",
+            "k.key",
+            "--timestamp",
+            "4000",
+            "--json",
+        ])
+        .ok();
+    let tx = finalized.json()["tx_id"].as_str().unwrap().to_owned();
+    assert_eq!(finalized.json()["height"], 4);
+    assert_eq!(finalized.json()["record"]["snapshot"]["height"], 2);
+
+    // Verification from nothing but the chain and the id.
+    let verified = cli.vote(&["verify", "--tx", &tx]).ok();
+    assert!(
+        verified.out().contains("ResultReproduces"),
+        "{}",
+        verified.out()
+    );
+    assert!(
+        verified.out().contains("exactly what the chain says"),
+        "{}",
+        verified.out()
+    );
+    let report = cli.vote(&["verify", "--tx", &tx, "--json"]).ok().json();
+    assert_eq!(report["checks"].as_array().map(Vec::len), Some(9));
+    assert!(
+        report["checks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|c| c["passed"] == true),
+        "{report}"
+    );
+
+    // A finalised vote is finished.
+    let again = cli.vote(&["finalize", "--state", "v.state", "--signing-key", "k.key"]);
+    assert_eq!(again.code(), 2);
+    assert!(
+        again
+            .err()
+            .contains("cannot finalize a vote that is finalized"),
+        "{}",
+        again.err()
+    );
+}
+
+#[test]
+fn a_corrupted_record_fails_verification_by_name() {
+    let cli = Cli::new();
+    cli.founded_for_voting();
+    let digest = "d0".repeat(32);
+    cli.vote(&[
+        "new",
+        "--company",
+        "acme",
+        "--subject",
+        "x",
+        "--proposal-digest",
+        &digest,
+        "--state",
+        "v.state",
+    ])
+    .ok();
+    cli.vote(&["freeze", "--state", "v.state", "--at", "2"])
+        .ok();
+    cli.vote(&["open", "--state", "v.state"]).ok();
+    let alice = cli.ballot("alice", "yes", 1);
+    cli.vote(&["cast", "--state", "v.state", "--ballot", &alice])
+        .ok();
+    cli.vote(&["close", "--state", "v.state"]).ok();
+    cli.vote(&["evaluate", "--state", "v.state"]).ok();
+    let tx = cli
+        .vote(&[
+            "finalize",
+            "--state",
+            "v.state",
+            "--signing-key",
+            "k.key",
+            "--timestamp",
+            "3000",
+            "--json",
+        ])
+        .ok()
+        .json()["tx_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    // Take the record off the chain, flip one byte inside the ballot's signature, and
+    // put the corrupted copy on the chain as a new transaction.
+    let path = cli.dir.path().join("acme.chain");
+    let corrupted = {
+        use prunella_canonical::Canonical;
+        use prunella_core::{Namespace, SchemaVersion, TransactionDraft, TxId};
+        let store = prunella_store::LocalChainStore::open(&path).expect("open");
+        let located = store
+            .get_transaction(&TxId::from_hex(&tx).unwrap())
+            .unwrap()
+            .unwrap();
+        let mut record =
+            irena_vote::FinalVoteRecordV1::from_canonical_bytes(&located.transaction.payload)
+                .unwrap();
+        let mut signature = record.ballots[0].signature.to_bytes();
+        signature[5] ^= 0x01;
+        record.ballots[0].signature = prunella_core::Signature::from_bytes(signature);
+        let signer = prunella_crypto::SigningKey::from_seed([9; 32]);
+        let head = store.head().unwrap();
+        let parent = store.get_block(head.height).unwrap().unwrap();
+        let transaction = signer.sign_transaction(TransactionDraft {
+            namespace: Namespace::new("irena.vote.v1").unwrap(),
+            schema_version: SchemaVersion(1),
+            payload: record.canonical_bytes(),
+            signer: signer.public_key(),
+            nonce: 77,
+        });
+        let id = transaction.id;
+        let block = parent
+            .header
+            .child_draft(vec![transaction], 5000)
+            .unwrap()
+            .build()
+            .unwrap();
+        store.append_block(block).unwrap();
+        id.to_string()
+    };
+
+    let failed = cli.vote(&["verify", "--tx", &corrupted]);
+    assert_eq!(failed.code(), 1, "{}", failed.err());
+    assert!(
+        failed.out().contains("FAIL BallotsVerify"),
+        "{}",
+        failed.out()
+    );
+    assert!(failed.out().contains("does not verify"), "{}", failed.out());
+    // The ballot's digest moved with its signature, so the commitment no longer
+    // derives either: both findings are reported, not just the first.
+    assert!(
+        failed.out().contains("FAIL CommitmentDerives"),
+        "{}",
+        failed.out()
+    );
+    assert!(
+        failed.out().contains("2 check(s) failed"),
+        "{}",
+        failed.out()
+    );
+    // The genuine record still verifies: Prunella kept both, and only one is true.
+    assert_eq!(cli.vote(&["verify", "--tx", &tx]).code(), 0);
+
+    let missing = cli.vote(&["verify", "--tx", &"00".repeat(32)]);
+    assert_eq!(missing.code(), 2);
+}
+
+#[test]
+fn a_vote_needs_a_frozen_company_and_a_rejected_motion_exits_one() {
+    let cli = Cli::new();
+    cli.founded_for_voting();
+    let digest = "d0".repeat(32);
+    cli.vote(&[
+        "new",
+        "--company",
+        "acme",
+        "--subject",
+        "x",
+        "--proposal-digest",
+        &digest,
+        "--state",
+        "v.state",
+    ])
+    .ok();
+
+    // Nothing to vote on before the freeze.
+    let early = cli.vote(&[
+        "ballot",
+        "--state",
+        "v.state",
+        "--voter",
+        "alice",
+        "--choice",
+        "yes",
+        "--signing-key",
+        "holder1.key",
+        "--out",
+        "a.ballot",
+    ]);
+    assert_eq!(early.code(), 2);
+    // Freezing where the company is incomplete is refused and leaves a draft.
+    let incomplete = cli.vote(&["freeze", "--state", "v.state", "--at", "1"]);
+    assert_eq!(incomplete.code(), 2);
+    assert_eq!(
+        cli.vote(&["status", "--state", "v.state", "--json"])
+            .ok()
+            .json()["status"],
+        "draft"
+    );
+
+    cli.vote(&["freeze", "--state", "v.state"]).ok();
+    cli.vote(&["open", "--state", "v.state"]).ok();
+    let bob = cli.ballot("bob", "no", 2);
+    cli.vote(&["cast", "--state", "v.state", "--ballot", &bob])
+        .ok();
+    let bad_choice = cli.vote(&[
+        "ballot",
+        "--state",
+        "v.state",
+        "--voter",
+        "alice",
+        "--choice",
+        "maybe",
+        "--signing-key",
+        "holder1.key",
+        "--out",
+        "a.ballot",
+    ]);
+    assert_eq!(bad_choice.code(), 2);
+    cli.vote(&["close", "--state", "v.state"]).ok();
+    // 300 no against a 1/2-of-1000 quorum with no yes: rejected, exit 1.
+    let evaluated = cli.vote(&["evaluate", "--state", "v.state"]);
+    assert_eq!(evaluated.code(), 1, "{}", evaluated.err());
+    assert!(evaluated.out().contains("Rejected"), "{}", evaluated.out());
+}

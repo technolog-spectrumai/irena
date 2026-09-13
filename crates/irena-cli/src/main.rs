@@ -5,10 +5,15 @@
 //! call into `irena-ledger`; the only things this binary adds are file reading, a clock
 //! for block timestamps, and output formatting.
 //!
-//! Exit codes: `0` success; `1` a finding (a broken amendment chain reported by
-//! `verify-structure`); `2` invalid input or a refused operation.
+//! The `vote` subcommands carry a vote through its lifecycle as a state file, so each
+//! step is one invocation; see `vote.rs`.
+//!
+//! Exit codes: `0` success; `1` a finding (a broken amendment chain from
+//! `verify-structure`, a rejected motion from `vote evaluate`, a record that fails
+//! `vote verify`); `2` invalid input or a refused operation.
 
 mod company;
+mod vote;
 
 use clap::{Parser, Subcommand};
 use irena_core::{CompanyIdV1, NotarisationV1, NotaryIdV1, NotaryTimeV1};
@@ -172,11 +177,18 @@ pub(crate) enum Command {
         #[arg(long)]
         at: Option<u64>,
     },
+    /// A vote, carried through its lifecycle as a state file.
+    #[command(subcommand)]
+    Vote(vote::VoteCommand),
 }
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
-    match company::run(&cli) {
+    let outcome = match &cli.command {
+        Command::Vote(command) => vote::run(&cli, command),
+        _ => company::run(&cli),
+    };
+    match outcome {
         Ok(code) => ExitCode::from(code),
         Err(message) => {
             eprintln!("error: {message}");

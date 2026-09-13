@@ -454,10 +454,13 @@ dependencies = [
 name = "irena-cli"
 version = "0.1.0"
 dependencies = [
+ "bornite-core",
  "clap",
  "hex",
  "irena-core",
  "irena-ledger",
+ "irena-vote",
+ "prunella-canonical",
  "prunella-core",
  "prunella-crypto",
  "prunella-store",
