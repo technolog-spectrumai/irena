@@ -184,7 +184,7 @@ mod tests {
 
     #[test]
     fn accepts_documented_grammar() {
-        for value in ["a", "0", "irena", "com.example.governance", "x_1-2.3"] {
+        for value in ["a", "0", "demo", "com.example.governance", "x_1-2.3"] {
             assert!(validate_label(value).is_ok(), "{value} should be accepted");
         }
     }
@@ -215,7 +215,7 @@ mod tests {
 
     #[test]
     fn case_differences_are_never_folded_away() {
-        assert!(NetworkId::new("irena").is_ok());
-        assert!(NetworkId::new("Irena").is_err());
+        assert!(NetworkId::new("demo").is_ok());
+        assert!(NetworkId::new("Demo").is_err());
     }
 }

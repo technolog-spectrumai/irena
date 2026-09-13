@@ -19,8 +19,8 @@ bornite-core = { path = "crates/bornite-core" }
 bornite-rules = { path = "crates/bornite-rules" }
 bornite-eval = { path = "crates/bornite-eval" }
 bornite-xml = { path = "crates/bornite-xml" }
-governance-bridge = { path = "crates/governance-bridge" }
 irena-core = { path = "crates/irena-core" }
+irena-ledger = { path = "crates/irena-ledger" }
 
 base64 = "0.23"
 blake3 = "1.8"

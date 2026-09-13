@@ -414,39 +414,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "governance-bridge"
-version = "0.1.0"
-dependencies = [
- "bornite-core",
- "bornite-eval",
- "bornite-rules",
- "bornite-xml",
- "prunella-core",
- "prunella-crypto",
- "prunella-store",
- "quick-xml",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror",
-]
-
-[[package]]
-name = "governance-cli"
-version = "0.1.0"
-dependencies = [
- "bornite-eval",
- "clap",
- "governance-bridge",
- "hex",
- "prunella-core",
- "prunella-crypto",
- "prunella-store",
- "serde_json",
- "tempfile",
-]
-
-[[package]]
 name = "hashbrown"
 version = "0.17.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -493,6 +460,23 @@ dependencies = [
  "prunella-core",
  "prunella-xml",
  "quick-xml",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+]
+
+[[package]]
+name = "irena-ledger"
+version = "0.1.0"
+dependencies = [
+ "bornite-rules",
+ "bornite-xml",
+ "irena-core",
+ "prunella-core",
+ "prunella-crypto",
+ "prunella-store",
+ "prunella-xml",
  "serde",
  "serde_json",
  "tempfile",
