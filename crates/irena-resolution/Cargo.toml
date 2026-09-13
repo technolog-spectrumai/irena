@@ -1,0 +1,32 @@
+[package]
+name = "irena-resolution"
+description = "The governance-closing loop: a passed shareholder vote becomes a formal resolution, and an amendment resolution authorises exactly one company amendment"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+
+[dependencies]
+bornite-xml.workspace = true
+borsh.workspace = true
+irena-core.workspace = true
+irena-ledger.workspace = true
+irena-meeting.workspace = true
+irena-vote.workspace = true
+prunella-canonical.workspace = true
+prunella-core.workspace = true
+prunella-crypto.workspace = true
+prunella-store.workspace = true
+quick-xml.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+blake3.workspace = true
+bornite-core.workspace = true
+prunella-xml.workspace = true
+serde_json.workspace = true
+tempfile.workspace = true
+
+[lints]
+workspace = true

@@ -23,6 +23,7 @@ irena-core = { path = "crates/irena-core" }
 irena-ledger = { path = "crates/irena-ledger" }
 irena-vote = { path = "crates/irena-vote" }
 irena-meeting = { path = "crates/irena-meeting" }
+irena-resolution = { path = "crates/irena-resolution" }
 irena-cli = { path = "crates/irena-cli" }
 
 base64 = "0.23"

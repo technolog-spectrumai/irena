@@ -46,7 +46,8 @@ pub use record::{
 };
 pub use shares::{HolderV1, MAX_HOLDERS, ShareStructureV1};
 pub use xml::{
-    DEFAULT_MAX_DOCUMENT_BYTES, compose_record, escape_attribute, read_company_genesis_document,
-    read_identity_document, read_notarisation, read_record, read_record_with_limit,
-    read_share_structure_document, read_voting_rules_document, write_notarisation,
+    DEFAULT_MAX_DOCUMENT_BYTES, compose_record, escape_attribute, normalise_body,
+    read_company_genesis_document, read_identity_document, read_notarisation, read_record,
+    read_record_with_limit, read_share_structure_document, read_voting_rules_document,
+    write_notarisation,
 };

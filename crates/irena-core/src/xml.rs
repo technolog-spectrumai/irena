@@ -814,6 +814,16 @@ fn check_size(xml: &str, max_bytes: u64) -> Result<(), IrenaError> {
 }
 
 /// Removes a leading XML declaration and surrounding whitespace, leaving the element.
+/// Removes a leading XML declaration and surrounding whitespace, leaving the element.
+///
+/// This is exactly what [`compose_record`] does to a body before embedding it, so a
+/// caller that digests or stores a body element normalises it the same way and gets
+/// the same bytes the ledger will hold.
+#[must_use]
+pub fn normalise_body(text: &str) -> &str {
+    strip_declaration(text)
+}
+
 fn strip_declaration(text: &str) -> &str {
     let trimmed = text.trim();
     if let Some(rest) = trimmed.strip_prefix("<?xml")

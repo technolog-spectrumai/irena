@@ -526,6 +526,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "irena-resolution"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "bornite-core",
+ "bornite-xml",
+ "borsh",
+ "irena-core",
+ "irena-ledger",
+ "irena-meeting",
+ "irena-vote",
+ "prunella-canonical",
+ "prunella-core",
+ "prunella-crypto",
+ "prunella-store",
+ "prunella-xml",
+ "quick-xml",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+]
+
+[[package]]
 name = "irena-vote"
 version = "0.1.0"
 dependencies = [
