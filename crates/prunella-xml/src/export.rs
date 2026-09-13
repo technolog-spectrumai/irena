@@ -3,7 +3,7 @@
 use crate::document::{ChainDocument, DocumentBlock, DocumentKind, FORMAT_VERSION, Projection};
 use crate::error::XmlError;
 use prunella_core::{BlockHeight, Namespace};
-use prunella_store::ChainStore;
+use prunella_store::LocalChainStore;
 
 /// What to export.
 #[derive(Clone, Debug, Default)]
@@ -61,7 +61,7 @@ impl ExportRequest {
 ///
 /// Returns [`XmlError::Store`] if the chain could not be read, or
 /// [`XmlError::NotRestorable`] if the requested range is empty.
-pub fn export(store: &ChainStore, request: &ExportRequest) -> Result<ChainDocument, XmlError> {
+pub fn export(store: &LocalChainStore, request: &ExportRequest) -> Result<ChainDocument, XmlError> {
     let head = store.head()?;
     let from = request.from.unwrap_or(BlockHeight::GENESIS);
     let to = request.to.map_or(head.height, |to| to.min(head.height));
@@ -78,7 +78,7 @@ pub fn export(store: &ChainStore, request: &ExportRequest) -> Result<ChainDocume
     };
 
     let mut blocks = Vec::new();
-    for block in store.blocks_in_range(from, to)? {
+    for block in store.iter_blocks(from, to)? {
         let mut block = block?;
         let declared_hash = block.hash();
         if let Some(namespace) = &request.namespace {

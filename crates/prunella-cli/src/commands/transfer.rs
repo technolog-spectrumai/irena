@@ -3,7 +3,7 @@
 use crate::args::{ExportArgs, ImportArgs};
 use crate::output::{EXIT_OK, Format};
 use prunella_core::{BlockHeight, Namespace};
-use prunella_store::ChainStore;
+use prunella_store::LocalChainStore;
 use prunella_xml::{
     ExportRequest, export, import, plan_import, read_document, restore, write_document,
 };
@@ -14,7 +14,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Writes the chain, or part of it, as XML.
 pub fn export_chain(path: &Path, args: &ExportArgs, format: Format) -> Result<u8, String> {
-    let store = ChainStore::open(path).map_err(|error| error.to_string())?;
+    let store = LocalChainStore::open(path).map_err(|error| error.to_string())?;
 
     let namespace = args
         .namespace
@@ -92,14 +92,14 @@ pub fn import_chain(path: &Path, args: &ImportArgs, format: Format) -> Result<u8
                 path.display(),
                 args.r#in.display(),
                 outcome.appended,
-                outcome.skipped,
+                outcome.already_present,
                 outcome.head
             ),
             &json!({
                 "created": true,
                 "path": path.display().to_string(),
                 "appended": outcome.appended,
-                "skipped": outcome.skipped,
+                "already_present": outcome.already_present,
                 "head": outcome.head,
                 "genesis_hash": store.genesis_hash(),
             }),
@@ -107,7 +107,7 @@ pub fn import_chain(path: &Path, args: &ImportArgs, format: Format) -> Result<u8
         return Ok(EXIT_OK);
     }
 
-    let store = ChainStore::open(path).map_err(|error| error.to_string())?;
+    let store = LocalChainStore::open(path).map_err(|error| error.to_string())?;
 
     if args.dry_run {
         let plan = plan_import(&store, &document).map_err(|error| error.to_string())?;
@@ -133,13 +133,13 @@ pub fn import_chain(path: &Path, args: &ImportArgs, format: Format) -> Result<u8
             "imported {}\nappended: {}\nalready present: {}\nhead: {}",
             args.r#in.display(),
             outcome.appended,
-            outcome.skipped,
+            outcome.already_present,
             outcome.head
         ),
         &json!({
             "dry_run": false,
             "appended": outcome.appended,
-            "skipped": outcome.skipped,
+            "already_present": outcome.already_present,
             "head": outcome.head,
         }),
     );

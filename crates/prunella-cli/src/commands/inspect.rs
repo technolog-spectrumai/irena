@@ -3,17 +3,17 @@
 use crate::args::{BlockArgs, TxArgs};
 use crate::output::{EXIT_FINDING, EXIT_OK, Format};
 use prunella_core::{Block, BlockHeight, Hash, TxId};
-use prunella_store::ChainStore;
+use prunella_store::LocalChainStore;
 use serde_json::json;
 use std::path::Path;
 
 /// Shows one block, selected by height or by hash.
 pub fn block(path: &Path, args: &BlockArgs, format: Format) -> Result<u8, String> {
-    let store = ChainStore::open(path).map_err(|error| error.to_string())?;
+    let store = LocalChainStore::open(path).map_err(|error| error.to_string())?;
 
     let found = if let Ok(height) = args.selector.parse::<u64>() {
         store
-            .block_at(BlockHeight(height))
+            .get_block(BlockHeight(height))
             .map_err(|error| error.to_string())?
     } else {
         let hash = Hash::from_hex(&args.selector).map_err(|error| {
@@ -23,7 +23,7 @@ pub fn block(path: &Path, args: &BlockArgs, format: Format) -> Result<u8, String
             )
         })?;
         store
-            .block_by_hash(&hash)
+            .get_block_by_hash(&hash)
             .map_err(|error| error.to_string())?
     };
 
@@ -41,11 +41,14 @@ pub fn block(path: &Path, args: &BlockArgs, format: Format) -> Result<u8, String
 
 /// Shows one transaction and where it was committed.
 pub fn tx(path: &Path, args: &TxArgs, format: Format) -> Result<u8, String> {
-    let store = ChainStore::open(path).map_err(|error| error.to_string())?;
+    let store = LocalChainStore::open(path).map_err(|error| error.to_string())?;
     let id = TxId::from_hex(&args.id)
         .map_err(|error| format!("{} is not a transaction id: {error}", args.id))?;
 
-    let Some(located) = store.transaction(&id).map_err(|error| error.to_string())? else {
+    let Some(located) = store
+        .get_transaction(&id)
+        .map_err(|error| error.to_string())?
+    else {
         eprintln!("no transaction matches {id}");
         return Ok(EXIT_FINDING);
     };

@@ -84,7 +84,7 @@ impl BlockAcceptancePolicy for MalachiteConsensusPolicy {
     }
 }
 
-let store = ChainStore::open_with_policy(path, Box::new(policy))?;
+let store = LocalChainStore::open_with_policy(path, Box::new(policy))?;
 ```
 
 Nothing else changes: not the canonical encoding, not the block hashes, not the storage

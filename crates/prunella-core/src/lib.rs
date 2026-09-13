@@ -48,6 +48,22 @@ pub use keys::{PUBLIC_KEY_LEN, PublicKey, SIGNATURE_LEN, Signature};
 pub use labels::{BlockHeight, MAX_LABEL_LEN, Namespace, NetworkId, SchemaVersion};
 pub use transaction::{Transaction, TransactionDraft};
 
+/// Protocol version 1 names for the wire types.
+///
+/// Prunella Protocol V1 is the only protocol this build implements: [`BlockHeader::version`]
+/// is always [`HEADER_VERSION`], and a header declaring anything else is rejected. These
+/// aliases exist so code that wants to be explicit about which protocol version it is
+/// handling can say so. When a version 2 arrives it will introduce distinct types
+/// alongside these, rather than changing what `TransactionV1` means.
+pub mod v1 {
+    /// Protocol version 1 transaction. See [`Transaction`](super::Transaction).
+    pub type TransactionV1 = super::Transaction;
+    /// Protocol version 1 block header. See [`BlockHeader`](super::BlockHeader).
+    pub type BlockHeaderV1 = super::BlockHeader;
+    /// Protocol version 1 block. See [`Block`](super::Block).
+    pub type BlockV1 = super::Block;
+}
+
 /// Parses a fixed-size byte value from strictly lowercase hex.
 ///
 /// Uppercase is rejected rather than accepted, so each value has exactly one textual

@@ -24,9 +24,39 @@
 //! [`LocalDeterministicPolicy`], which defers entirely to `prunella-verify`. A
 //! consensus engine would be a second implementation of the same trait and would
 //! require no change to this module. See `docs/consensus-boundary.md`.
+//!
+//! **A successful append means locally accepted after full deterministic validation.**
+//! It does not mean distributed finality. There is no consensus here, and storage is
+//! written so that adding one later does not change anything in this module.
+//!
+//! # The abstraction and its implementation
+//!
+//! [`ChainStorage`] is the contract; [`LocalChainStore`] is the one implementation,
+//! backed by a local redb file. The trait carries the invariants every chain store must
+//! uphold, and its `verify_from` defers to `prunella-verify` so that no implementation
+//! can grow its own opinion about what a valid chain is.
+//!
+//! ```no_run
+//! use prunella_core::{BlockHeight, GenesisSpec, NetworkId};
+//! use prunella_store::{ChainStorage, LocalChainStore};
+//!
+//! # fn main() -> Result<(), Box<dyn std::error::Error>> {
+//! let spec = GenesisSpec::new(NetworkId::new("demo")?);
+//! let store = LocalChainStore::init_genesis("demo.chain", spec)?;
+//!
+//! let head = store.head()?;
+//! let genesis = store.get_block(BlockHeight::GENESIS)?.expect("genesis exists");
+//! assert_eq!(head.hash, genesis.hash());
+//!
+//! let report = store.verify_from(BlockHeight::GENESIS);
+//! assert!(report.is_valid());
+//! # Ok(())
+//! # }
+//! ```
 
 mod acceptance;
 mod error;
+mod storage;
 mod store;
 mod tables;
 
@@ -34,7 +64,6 @@ pub use acceptance::{
     AcceptanceContext, AcceptanceError, Accepted, BlockAcceptancePolicy, LocalDeterministicPolicy,
 };
 pub use error::StoreError;
-pub use store::{
-    AppendOutcome, BlockRange, ChainStatus, ChainStore, ExistingBlockPolicy, LocatedTransaction,
-};
+pub use storage::{AppendOutcome, AppendStatus, BatchOutcome, ChainStorage};
+pub use store::{BlockRange, ChainStatus, LocalChainStore, LocatedTransaction};
 pub use tables::STORE_FORMAT_VERSION;

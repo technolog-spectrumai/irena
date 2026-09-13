@@ -55,7 +55,7 @@ The graph is acyclic and every crate is testable on its own.
 ### Why verification sits below storage
 
 `prunella-verify` defines `BlockSource`, a read-only view of a chain, and
-`prunella-store::ChainStore` implements it. Verification therefore never depends on
+`prunella-store::LocalChainStore` implements it. Verification therefore never depends on
 redb, and the same verification code walks a persisted chain and an in-memory one. It
 also means the block rules can be applied to a candidate block before anything is
 written, which is what makes import atomic.

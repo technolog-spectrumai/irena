@@ -3,7 +3,7 @@
 use crate::args::{InitArgs, VerifyArgs};
 use crate::output::{EXIT_FINDING, EXIT_OK, Format};
 use prunella_core::{BlockHeight, GenesisSpec, NetworkId};
-use prunella_store::ChainStore;
+use prunella_store::LocalChainStore;
 use prunella_verify::{VerifyOptions, verify_chain};
 use serde_json::json;
 use std::path::Path;
@@ -16,7 +16,7 @@ pub fn init(path: &Path, args: &InitArgs, format: Format) -> Result<u8, String> 
         timestamp_millis: args.genesis_timestamp,
         transactions: Vec::new(),
     };
-    let store = ChainStore::create(path, spec).map_err(|error| error.to_string())?;
+    let store = LocalChainStore::init_genesis(path, spec).map_err(|error| error.to_string())?;
 
     format.emit(
         &format!(
@@ -36,7 +36,7 @@ pub fn init(path: &Path, args: &InitArgs, format: Format) -> Result<u8, String> 
 
 /// Reports the chain's identity, head and counts.
 pub fn status(path: &Path, format: Format) -> Result<u8, String> {
-    let store = ChainStore::open(path).map_err(|error| error.to_string())?;
+    let store = LocalChainStore::open(path).map_err(|error| error.to_string())?;
     let status = store.status().map_err(|error| error.to_string())?;
 
     format.emit(
@@ -76,7 +76,7 @@ pub fn status(path: &Path, format: Format) -> Result<u8, String> {
 
 /// Verifies the chain and reports every defect.
 pub fn verify(path: &Path, args: &VerifyArgs, format: Format) -> Result<u8, String> {
-    let store = ChainStore::open(path).map_err(|error| error.to_string())?;
+    let store = LocalChainStore::open(path).map_err(|error| error.to_string())?;
     let options = VerifyOptions {
         from: args.from.map(BlockHeight),
         to: args.to.map(BlockHeight),

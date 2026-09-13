@@ -56,14 +56,6 @@ pub enum StoreError {
     /// The acceptance policy refused the block.
     #[error(transparent)]
     NotAccepted(#[from] AcceptanceError),
-    /// A block was offered at a height that is already committed.
-    #[error("height {height} already holds block {existing}; committed blocks are immutable")]
-    HeightOccupied {
-        /// The occupied height.
-        height: BlockHeight,
-        /// The block already committed there.
-        existing: Hash,
-    },
     /// A block was offered that does not continue the chain.
     #[error("expected the block at height {expected}, but was offered height {found}")]
     NonContiguous {

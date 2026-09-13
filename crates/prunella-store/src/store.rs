@@ -2,6 +2,7 @@
 
 use crate::acceptance::{AcceptanceContext, BlockAcceptancePolicy, LocalDeterministicPolicy};
 use crate::error::StoreError;
+use crate::storage::{AppendOutcome, AppendStatus, BatchOutcome, ChainStorage, source_error};
 use crate::tables::{
     BLOCKS, HEIGHT_BY_HASH, META, STORE_FORMAT_VERSION, TX_LOCATION, decode_location,
     encode_location, meta_key,
@@ -11,32 +12,9 @@ use prunella_core::{
     Block, BlockHeader, BlockHeight, ChainHead, GenesisSpec, Hash, NetworkId, Transaction, TxId,
 };
 use prunella_verify::{BlockSource, SourceError, TxIdLookup};
-use redb::{Database, ReadableDatabase, ReadableTable, TableError};
+use redb::{Database, Durability, ReadableDatabase, ReadableTable, TableError};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-
-/// What to do when a block is offered at a height that is already committed.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ExistingBlockPolicy {
-    /// Refuse. Used by ordinary appends, where re-offering a committed height is a bug.
-    Reject,
-    /// Skip when the committed block is identical, refuse when it differs.
-    ///
-    /// Used by import, so that re-importing a document already applied succeeds as a
-    /// no-op while an import that would rewrite history still fails.
-    SkipIfIdentical,
-}
-
-/// What an append or import did.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct AppendOutcome {
-    /// Blocks newly committed.
-    pub appended: u64,
-    /// Blocks already present and identical, so not committed again.
-    pub skipped: u64,
-    /// The head after the operation.
-    pub head: ChainHead,
-}
 
 /// A transaction located within the chain.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -73,7 +51,7 @@ pub struct ChainStatus {
 /// Committed blocks are immutable: there is no method here that rewrites or removes
 /// one. Appends go through the configured [`BlockAcceptancePolicy`] and commit in a
 /// single database transaction, so an append either happens completely or not at all.
-pub struct ChainStore {
+pub struct LocalChainStore {
     database: Database,
     path: PathBuf,
     network_id: NetworkId,
@@ -81,27 +59,30 @@ pub struct ChainStore {
     policy: Box<dyn BlockAcceptancePolicy>,
 }
 
-impl ChainStore {
-    /// Creates a new chain from a genesis specification.
+impl LocalChainStore {
+    /// Creates a chain and writes its genesis block.
     ///
     /// The genesis block is derived from the specification, so two instances given the
     /// same specification produce the same genesis hash without communicating.
+    ///
+    /// Genesis is written exactly once. This fails rather than overwriting an existing
+    /// chain, because replacing a chain's root is never something to do by accident.
     ///
     /// # Errors
     ///
     /// Returns [`StoreError::AlreadyExists`] if the path is occupied, or a database
     /// error if the file could not be created.
-    pub fn create(path: impl AsRef<Path>, genesis: GenesisSpec) -> Result<Self, StoreError> {
-        Self::create_with_policy(path, genesis, Box::new(LocalDeterministicPolicy))
+    pub fn init_genesis(path: impl AsRef<Path>, genesis: GenesisSpec) -> Result<Self, StoreError> {
+        Self::init_genesis_with_policy(path, genesis, Box::new(LocalDeterministicPolicy))
     }
 
-    /// Creates a new chain with a specific acceptance policy.
+    /// Creates a chain with a specific acceptance policy.
     ///
     /// # Errors
     ///
-    /// As [`ChainStore::create`], plus [`StoreError::NotAccepted`] if the policy
-    /// refuses the genesis block.
-    pub fn create_with_policy(
+    /// As [`LocalChainStore::init_genesis`], plus [`StoreError::NotAccepted`] if the
+    /// policy refuses the genesis block.
+    pub fn init_genesis_with_policy(
         path: impl AsRef<Path>,
         genesis: GenesisSpec,
         policy: Box<dyn BlockAcceptancePolicy>,
@@ -146,7 +127,7 @@ impl ChainStore {
     ///
     /// # Errors
     ///
-    /// As [`ChainStore::open`].
+    /// As [`LocalChainStore::open`].
     pub fn open_with_policy(
         path: impl AsRef<Path>,
         policy: Box<dyn BlockAcceptancePolicy>,
@@ -261,7 +242,7 @@ impl ChainStore {
     /// # Errors
     ///
     /// Returns [`StoreError::CorruptBlock`] if the stored bytes are not a block.
-    pub fn block_at(&self, height: BlockHeight) -> Result<Option<Block>, StoreError> {
+    pub fn get_block(&self, height: BlockHeight) -> Result<Option<Block>, StoreError> {
         let read = self.database.begin_read().map_err(StoreError::database)?;
         let blocks = read.open_table(BLOCKS).map_err(StoreError::database)?;
         read_block(&blocks, height)
@@ -273,7 +254,7 @@ impl ChainStore {
     ///
     /// Returns [`StoreError::CorruptBlock`] if the stored bytes are not a block, or
     /// [`StoreError::Inconsistent`] if the hash index points at a missing block.
-    pub fn block_by_hash(&self, hash: &Hash) -> Result<Option<Block>, StoreError> {
+    pub fn get_block_by_hash(&self, hash: &Hash) -> Result<Option<Block>, StoreError> {
         let read = self.database.begin_read().map_err(StoreError::database)?;
         let index = read
             .open_table(HEIGHT_BY_HASH)
@@ -301,7 +282,7 @@ impl ChainStore {
     ///
     /// Returns [`StoreError::Inconsistent`] if the index points somewhere the
     /// transaction is not.
-    pub fn transaction(&self, id: &TxId) -> Result<Option<LocatedTransaction>, StoreError> {
+    pub fn get_transaction(&self, id: &TxId) -> Result<Option<LocatedTransaction>, StoreError> {
         let read = self.database.begin_read().map_err(StoreError::database)?;
         let locations = read.open_table(TX_LOCATION).map_err(StoreError::database)?;
         let Some(raw) = locations.get(id.as_bytes()).map_err(StoreError::database)? else {
@@ -357,59 +338,76 @@ impl ChainStore {
             .is_some())
     }
 
-    /// Iterates blocks over an inclusive height range from a single consistent snapshot.
+    /// Iterates blocks over the inclusive height range `start..=end`.
+    ///
+    /// Read from a single consistent snapshot, so a concurrent append cannot make the
+    /// range internally inconsistent. An empty range yields nothing.
     ///
     /// # Errors
     ///
     /// Returns a database error if the snapshot could not be opened.
-    pub fn blocks_in_range(
+    pub fn iter_blocks(
         &self,
-        from: BlockHeight,
-        to: BlockHeight,
+        start: BlockHeight,
+        end: BlockHeight,
     ) -> Result<BlockRange, StoreError> {
         let transaction = self.database.begin_read().map_err(StoreError::database)?;
         Ok(BlockRange {
             transaction,
-            next: (from <= to).then_some(from),
-            end: to,
+            next: (start <= end).then_some(start),
+            end,
         })
     }
 
-    /// Appends one block.
+    /// Validates a block and, if it is acceptable, commits it atomically.
+    ///
+    /// Returns [`AppendStatus::AlreadyPresent`] when a byte-identical block is already
+    /// committed at that height: re-offering a block the chain already holds is how a
+    /// retried transfer behaves, and it is not an error. A *different* block at a
+    /// committed height is [`StoreError::ForkedHistory`], because storing it would
+    /// rewrite history.
+    ///
+    /// A successful append means locally accepted after full deterministic validation.
+    /// It does not mean distributed finality; there is no consensus here.
     ///
     /// # Errors
     ///
-    /// Returns [`StoreError::NotAccepted`] if the policy refuses it,
-    /// [`StoreError::HeightOccupied`] if its height is already committed, or
-    /// [`StoreError::NonContiguous`] if it does not directly follow the head.
-    pub fn append_block(&self, block: Block) -> Result<ChainHead, StoreError> {
-        self.append_blocks(vec![block], ExistingBlockPolicy::Reject)
-            .map(|outcome| outcome.head)
+    /// Returns [`StoreError::NotAccepted`] if the block breaks a rule,
+    /// [`StoreError::NonContiguous`] if it does not directly follow the head, or
+    /// [`StoreError::ForkedHistory`] if it contradicts a committed block.
+    pub fn append_block(&self, block: Block) -> Result<AppendOutcome, StoreError> {
+        let outcome = self.append_blocks(vec![block])?;
+        Ok(AppendOutcome {
+            status: if outcome.appended == 1 {
+                AppendStatus::Committed
+            } else {
+                AppendStatus::AlreadyPresent
+            },
+            head: outcome.head,
+        })
     }
 
     /// Appends a run of blocks in one atomic database transaction.
     ///
-    /// Either every block is committed or none is: a failure anywhere leaves the chain
-    /// exactly as it was. This is what makes an interrupted or rejected import safe.
+    /// Either every block is committed or none is: a failure anywhere returns before
+    /// the commit, so the chain and all of its indexes are left exactly as they were.
+    ///
+    /// Blocks already committed identically are counted and skipped, so re-applying a
+    /// run that was partly applied before is safe.
     ///
     /// # Errors
     ///
-    /// As [`ChainStore::append_block`], plus [`StoreError::ForkedHistory`] when a block
-    /// contradicts one already committed at its height.
-    pub fn append_blocks(
-        &self,
-        blocks: Vec<Block>,
-        existing: ExistingBlockPolicy,
-    ) -> Result<AppendOutcome, StoreError> {
+    /// As [`LocalChainStore::append_block`].
+    pub fn append_blocks(&self, blocks: Vec<Block>) -> Result<BatchOutcome, StoreError> {
         if blocks.is_empty() {
-            return Ok(AppendOutcome {
+            return Ok(BatchOutcome {
                 appended: 0,
-                skipped: 0,
+                already_present: 0,
                 head: self.head()?,
             });
         }
         let display = self.path.display().to_string();
-        let write = self.database.begin_write().map_err(StoreError::database)?;
+        let write = self.begin_durable_write()?;
         let outcome = {
             let mut meta = write.open_table(META).map_err(StoreError::database)?;
             let mut block_table = write.open_table(BLOCKS).map_err(StoreError::database)?;
@@ -423,7 +421,7 @@ impl ChainStore {
             let mut head = read_head(&meta, &display)?;
             let mut transaction_count = read_u64(&meta, meta_key::TRANSACTION_COUNT, &display)?;
             let mut appended = 0u64;
-            let mut skipped = 0u64;
+            let mut already_present = 0u64;
             let mut parent: Option<BlockHeader> = None;
             let mut pending: HashSet<TxId> = HashSet::new();
 
@@ -438,25 +436,19 @@ impl ChainStore {
                             ),
                         }
                     })?;
-                    match existing {
-                        ExistingBlockPolicy::Reject => {
-                            return Err(StoreError::HeightOccupied {
-                                height,
-                                existing: committed.hash(),
-                            });
-                        }
-                        ExistingBlockPolicy::SkipIfIdentical => {
-                            if committed == block {
-                                skipped += 1;
-                                continue;
-                            }
-                            return Err(StoreError::ForkedHistory {
-                                height,
-                                existing: committed.hash(),
-                                offered: block.hash(),
-                            });
-                        }
+                    // Identical is a no-op; different is a rewrite of history and is
+                    // refused. Comparing the whole block, not just its hash, means a
+                    // block that hashes the same but differs in some byte the header
+                    // does not commit to is still caught.
+                    if committed == block {
+                        already_present += 1;
+                        continue;
                     }
+                    return Err(StoreError::ForkedHistory {
+                        height,
+                        existing: committed.hash(),
+                        offered: block.hash(),
+                    });
                 }
 
                 let expected = head.height.next()?;
@@ -512,19 +504,49 @@ impl ChainStore {
 
             write_head(&mut meta, head)?;
             write_u64(&mut meta, meta_key::TRANSACTION_COUNT, transaction_count)?;
-            AppendOutcome {
+            BatchOutcome {
                 appended,
-                skipped,
+                already_present,
                 head,
             }
         };
+        // Nothing above this line is visible to any reader. The commit is what makes
+        // the block, the hash index, the transaction index and the head record appear,
+        // all at once, and it is durable by the time it returns.
         write.commit().map_err(StoreError::database)?;
         Ok(outcome)
     }
 
+    /// Closes the chain, flushing and releasing the database file.
+    ///
+    /// Dropping the store closes it too. This exists so a caller that wants to know the
+    /// close succeeded can find out, rather than discovering a problem later.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error if the file could not be released cleanly.
+    pub fn close(self) -> Result<(), StoreError> {
+        // Every commit is already durable, so there is nothing buffered to flush. The
+        // drop releases the file lock.
+        drop(self);
+        Ok(())
+    }
+
+    /// Begins a write transaction that is durable by the time it commits.
+    ///
+    /// Stated explicitly rather than relied on as a default: a ledger whose commits
+    /// were buffered would lose blocks it had already reported as appended.
+    fn begin_durable_write(&self) -> Result<redb::WriteTransaction, StoreError> {
+        let mut write = self.database.begin_write().map_err(StoreError::database)?;
+        write
+            .set_durability(Durability::Immediate)
+            .map_err(StoreError::database)?;
+        Ok(write)
+    }
+
     /// Writes the genesis block and the chain metadata in one transaction.
     fn write_genesis(&self, block: &Block) -> Result<(), StoreError> {
-        let write = self.database.begin_write().map_err(StoreError::database)?;
+        let write = self.begin_durable_write()?;
         {
             let mut meta = write.open_table(META).map_err(StoreError::database)?;
             let mut block_table = write.open_table(BLOCKS).map_err(StoreError::database)?;
@@ -638,16 +660,16 @@ impl ChainStore {
     }
 }
 
-impl TxIdLookup for ChainStore {
+impl TxIdLookup for LocalChainStore {
     fn contains(&self, id: &TxId) -> Result<bool, SourceError> {
         Self::contains_transaction(self, id).map_err(|error| SourceError::new(error.to_string()))
     }
 }
 
-impl core::fmt::Debug for ChainStore {
+impl core::fmt::Debug for LocalChainStore {
     /// Renders the chain's identity, never its contents.
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("ChainStore")
+        f.debug_struct("LocalChainStore")
             .field("path", &self.path)
             .field("network_id", &self.network_id)
             .field("genesis_hash", &self.genesis_hash)
@@ -656,7 +678,7 @@ impl core::fmt::Debug for ChainStore {
     }
 }
 
-impl BlockSource for ChainStore {
+impl BlockSource for LocalChainStore {
     fn network_id(&self) -> &NetworkId {
         &self.network_id
     }
@@ -666,11 +688,51 @@ impl BlockSource for ChainStore {
     }
 
     fn head(&self) -> Result<ChainHead, SourceError> {
-        Self::head(self).map_err(|error| SourceError::new(error.to_string()))
+        Self::head(self).map_err(|error| source_error(&error))
     }
 
     fn block_at(&self, height: BlockHeight) -> Result<Option<Block>, SourceError> {
-        Self::block_at(self, height).map_err(|error| SourceError::new(error.to_string()))
+        Self::get_block(self, height).map_err(|error| source_error(&error))
+    }
+}
+
+/// The local file-backed implementation of the storage contract.
+///
+/// Every method forwards to the inherent method of the same name. The inherent methods
+/// take priority in method resolution, so calling `store.get_block(h)` on a concrete
+/// `LocalChainStore` is unambiguous while generic code over [`ChainStorage`] still
+/// works.
+impl ChainStorage for LocalChainStore {
+    type Location = PathBuf;
+    type Error = StoreError;
+    type Blocks<'a> = BlockRange;
+
+    fn init_genesis(location: Self::Location, genesis: GenesisSpec) -> Result<Self, Self::Error> {
+        Self::init_genesis(location, genesis)
+    }
+
+    fn get_block(&self, height: BlockHeight) -> Result<Option<Block>, Self::Error> {
+        Self::get_block(self, height)
+    }
+
+    fn get_block_by_hash(&self, hash: &Hash) -> Result<Option<Block>, Self::Error> {
+        Self::get_block_by_hash(self, hash)
+    }
+
+    fn get_transaction(&self, id: &TxId) -> Result<Option<LocatedTransaction>, Self::Error> {
+        Self::get_transaction(self, id)
+    }
+
+    fn iter_blocks(
+        &self,
+        start: BlockHeight,
+        end: BlockHeight,
+    ) -> Result<Self::Blocks<'_>, Self::Error> {
+        Self::iter_blocks(self, start, end)
+    }
+
+    fn append_block(&self, block: Block) -> Result<AppendOutcome, Self::Error> {
+        Self::append_block(self, block)
     }
 }
 

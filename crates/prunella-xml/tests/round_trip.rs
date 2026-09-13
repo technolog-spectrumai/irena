@@ -5,7 +5,7 @@ use prunella_core::{
     TransactionDraft,
 };
 use prunella_crypto::SigningKey;
-use prunella_store::{ChainStore, StoreError};
+use prunella_store::{LocalChainStore, StoreError};
 use prunella_xml::{
     ChainDocument, DocumentKind, ExportRequest, XmlError, export, import, plan_import,
     read_document, read_document_with_limit, restore, write_document,
@@ -55,9 +55,10 @@ impl Workspace {
     }
 
     /// A chain with genesis plus `count` blocks, one transaction each.
-    fn chain(&self, count: u64) -> (PathBuf, ChainStore) {
+    fn chain(&self, count: u64) -> (PathBuf, LocalChainStore) {
         let path = self.fresh();
-        let store = ChainStore::create(&path, GenesisSpec::new(network())).expect("create");
+        let store =
+            LocalChainStore::init_genesis(&path, GenesisSpec::new(network())).expect("create");
         for n in 1..=count {
             append(
                 &store,
@@ -73,9 +74,9 @@ impl Workspace {
     }
 }
 
-fn append(store: &ChainStore, transactions: Vec<Transaction>) -> Block {
+fn append(store: &LocalChainStore, transactions: Vec<Transaction>) -> Block {
     let head = store.head().expect("head");
-    let parent = store.block_at(head.height).expect("read").expect("block");
+    let parent = store.get_block(head.height).expect("read").expect("block");
     let block = parent
         .header
         .child_draft(transactions, parent.header.timestamp_millis + 1)
@@ -86,7 +87,7 @@ fn append(store: &ChainStore, transactions: Vec<Transaction>) -> Block {
     block
 }
 
-fn export_xml(store: &ChainStore, request: &ExportRequest) -> String {
+fn export_xml(store: &LocalChainStore, request: &ExportRequest) -> String {
     write_document(&export(store, request).expect("export")).expect("render")
 }
 
@@ -124,7 +125,7 @@ fn a_full_export_reimports_into_an_identical_chain() {
     let (restored, outcome) = restore(&restored_path, &document).expect("restore");
     assert_eq!(outcome.appended, 5);
     assert_eq!(
-        outcome.skipped, 1,
+        outcome.already_present, 1,
         "genesis is created, then recognised as already present"
     );
 
@@ -133,8 +134,8 @@ fn a_full_export_reimports_into_an_identical_chain() {
     for height in 0..=5 {
         let height = BlockHeight(height);
         assert_eq!(
-            restored.block_at(height).expect("read"),
-            source.block_at(height).expect("read"),
+            restored.get_block(height).expect("read"),
+            source.get_block(height).expect("read"),
             "block {height} differs"
         );
     }
@@ -144,7 +145,7 @@ fn a_full_export_reimports_into_an_identical_chain() {
 fn payload_bytes_survive_a_round_trip_exactly() {
     let workspace = Workspace::new();
     let path = workspace.fresh();
-    let store = ChainStore::create(&path, GenesisSpec::new(network())).expect("create");
+    let store = LocalChainStore::init_genesis(&path, GenesisSpec::new(network())).expect("create");
 
     let payloads: Vec<Vec<u8>> = vec![
         Vec::new(),
@@ -168,7 +169,7 @@ fn payload_bytes_survive_a_round_trip_exactly() {
 
     for (index, payload) in payloads.iter().enumerate() {
         let height = BlockHeight(index as u64 + 1);
-        let block = restored.block_at(height).expect("read").expect("block");
+        let block = restored.get_block(height).expect("read").expect("block");
         assert_eq!(
             &block.transactions[0].payload, payload,
             "payload at height {height}"
@@ -180,7 +181,7 @@ fn payload_bytes_survive_a_round_trip_exactly() {
 fn transaction_order_is_preserved() {
     let workspace = Workspace::new();
     let path = workspace.fresh();
-    let store = ChainStore::create(&path, GenesisSpec::new(network())).expect("create");
+    let store = LocalChainStore::init_genesis(&path, GenesisSpec::new(network())).expect("create");
     let ordered: Vec<Transaction> = (1..=6)
         .map(|n| transaction(1, "app.demo", format!("tx{n}").as_bytes(), n))
         .collect();
@@ -190,7 +191,7 @@ fn transaction_order_is_preserved() {
     let restored_path = workspace.path("ordered.prunella");
     let (restored, _) = restore(&restored_path, &document).expect("restore");
     let block = restored
-        .block_at(BlockHeight(1))
+        .get_block(BlockHeight(1))
         .expect("read")
         .expect("block");
 
@@ -198,7 +199,7 @@ fn transaction_order_is_preserved() {
     assert_eq!(
         block.hash(),
         store
-            .block_at(BlockHeight(1))
+            .get_block(BlockHeight(1))
             .expect("read")
             .expect("b")
             .hash()
@@ -241,10 +242,11 @@ fn a_range_export_imports_incrementally() {
     .expect("parse");
 
     let target_path = workspace.fresh();
-    let target = ChainStore::create(&target_path, GenesisSpec::new(network())).expect("create");
+    let target =
+        LocalChainStore::init_genesis(&target_path, GenesisSpec::new(network())).expect("create");
     let outcome = import(&target, &first).expect("first range");
     assert_eq!(outcome.appended, 2);
-    assert_eq!(outcome.skipped, 1);
+    assert_eq!(outcome.already_present, 1);
 
     let outcome = import(&target, &second).expect("second range");
     assert_eq!(outcome.appended, 3);
@@ -262,7 +264,8 @@ fn importing_ranges_out_of_order_is_refused_as_a_gap() {
     .expect("parse");
 
     let target_path = workspace.fresh();
-    let target = ChainStore::create(&target_path, GenesisSpec::new(network())).expect("create");
+    let target =
+        LocalChainStore::init_genesis(&target_path, GenesisSpec::new(network())).expect("create");
 
     let error = import(&target, &later).expect_err("gap");
     assert!(
@@ -280,7 +283,8 @@ fn importing_the_same_document_twice_is_a_no_op() {
     let document = read_document(&export_xml(&source, &ExportRequest::full())).expect("parse");
 
     let target_path = workspace.fresh();
-    let target = ChainStore::create(&target_path, GenesisSpec::new(network())).expect("create");
+    let target =
+        LocalChainStore::init_genesis(&target_path, GenesisSpec::new(network())).expect("create");
 
     let first = import(&target, &document).expect("first import");
     assert_eq!(first.appended, 4);
@@ -288,7 +292,7 @@ fn importing_the_same_document_twice_is_a_no_op() {
 
     let second = import(&target, &document).expect("second import");
     assert_eq!(second.appended, 0);
-    assert_eq!(second.skipped, 5);
+    assert_eq!(second.already_present, 5);
     assert_eq!(target.head().expect("head"), head_after_first);
 }
 
@@ -299,12 +303,13 @@ fn a_dry_run_reports_the_same_outcome_and_writes_nothing() {
     let document = read_document(&export_xml(&source, &ExportRequest::full())).expect("parse");
 
     let target_path = workspace.fresh();
-    let target = ChainStore::create(&target_path, GenesisSpec::new(network())).expect("create");
+    let target =
+        LocalChainStore::init_genesis(&target_path, GenesisSpec::new(network())).expect("create");
     let before = {
         drop(target);
         stored_blocks(&target_path)
     };
-    let target = ChainStore::open(&target_path).expect("reopen");
+    let target = LocalChainStore::open(&target_path).expect("reopen");
 
     let plan = plan_import(&target, &document).expect("dry run");
     assert_eq!(plan.blocks_in_document, 5);
@@ -330,7 +335,8 @@ fn a_dry_run_refuses_exactly_what_a_real_import_refuses() {
     let document = read_document(&xml).expect("parse");
 
     let target_path = workspace.fresh();
-    let target = ChainStore::create(&target_path, GenesisSpec::new(network())).expect("create");
+    let target =
+        LocalChainStore::init_genesis(&target_path, GenesisSpec::new(network())).expect("create");
 
     let dry = plan_import(&target, &document).expect_err("dry run rejects");
     let real = import(&target, &document).expect_err("import rejects");
@@ -363,7 +369,8 @@ fn a_tampered_payload_is_caught_even_though_the_block_hash_still_matches() {
     .expect("parse");
 
     let target_path = workspace.fresh();
-    let target = ChainStore::create(&target_path, GenesisSpec::new(network())).expect("create");
+    let target =
+        LocalChainStore::init_genesis(&target_path, GenesisSpec::new(network())).expect("create");
     let error = import(&target, &document).expect_err("tampering");
     let XmlError::InvalidBlocks { findings } = error else {
         panic!("expected invalid blocks, got {error}");
@@ -388,7 +395,8 @@ fn a_tampered_header_is_caught_as_a_declared_hash_mismatch() {
     let document = read_document(&xml).expect("parse");
 
     let target_path = workspace.fresh();
-    let target = ChainStore::create(&target_path, GenesisSpec::new(network())).expect("create");
+    let target =
+        LocalChainStore::init_genesis(&target_path, GenesisSpec::new(network())).expect("create");
     let error = import(&target, &document).expect_err("tampering");
     assert!(
         matches!(error, XmlError::DeclaredHashMismatch { .. }),
@@ -403,7 +411,7 @@ fn a_document_from_another_network_is_refused() {
     let document = read_document(&export_xml(&source, &ExportRequest::full())).expect("parse");
 
     let other_path = workspace.fresh();
-    let other = ChainStore::create(
+    let other = LocalChainStore::init_genesis(
         &other_path,
         GenesisSpec::new(NetworkId::new("othernet").expect("valid")),
     )
@@ -423,7 +431,7 @@ fn a_document_from_a_chain_with_a_different_genesis_is_refused() {
     let document = read_document(&export_xml(&source, &ExportRequest::full())).expect("parse");
 
     let other_path = workspace.fresh();
-    let other = ChainStore::create(
+    let other = LocalChainStore::init_genesis(
         &other_path,
         GenesisSpec {
             network_id: network(),
@@ -447,7 +455,8 @@ fn a_document_that_contradicts_committed_history_is_refused_as_a_fork() {
     let document = read_document(&export_xml(&source, &ExportRequest::full())).expect("parse");
 
     let rival_path = workspace.fresh();
-    let rival = ChainStore::create(&rival_path, GenesisSpec::new(network())).expect("create");
+    let rival =
+        LocalChainStore::init_genesis(&rival_path, GenesisSpec::new(network())).expect("create");
     append(
         &rival,
         vec![transaction(1, "app.demo", b"a different history", 1)],
@@ -479,12 +488,13 @@ fn a_failed_import_leaves_the_chain_untouched() {
     let document = read_document(&xml).expect("parse");
 
     let target_path = workspace.fresh();
-    let target = ChainStore::create(&target_path, GenesisSpec::new(network())).expect("create");
+    let target =
+        LocalChainStore::init_genesis(&target_path, GenesisSpec::new(network())).expect("create");
     let before = {
         drop(target);
         stored_blocks(&target_path)
     };
-    let target = ChainStore::open(&target_path).expect("reopen");
+    let target = LocalChainStore::open(&target_path).expect("reopen");
 
     let error = import(&target, &document).expect_err("poisoned document");
     assert!(
@@ -493,7 +503,7 @@ fn a_failed_import_leaves_the_chain_untouched() {
     );
 
     assert_eq!(target.head().expect("head").height, BlockHeight::GENESIS);
-    assert_eq!(target.block_at(BlockHeight(1)).expect("read"), None);
+    assert_eq!(target.get_block(BlockHeight(1)).expect("read"), None);
     drop(target);
     assert_eq!(
         stored_blocks(&target_path),
@@ -506,7 +516,7 @@ fn a_failed_import_leaves_the_chain_untouched() {
 fn a_namespace_export_is_marked_as_a_projection_and_cannot_be_imported() {
     let workspace = Workspace::new();
     let path = workspace.fresh();
-    let store = ChainStore::create(&path, GenesisSpec::new(network())).expect("create");
+    let store = LocalChainStore::init_genesis(&path, GenesisSpec::new(network())).expect("create");
     append(
         &store,
         vec![
@@ -543,7 +553,8 @@ fn a_namespace_export_is_marked_as_a_projection_and_cannot_be_imported() {
     assert_eq!(document.blocks[1].block.header.tx_count, 3);
 
     let target_path = workspace.fresh();
-    let target = ChainStore::create(&target_path, GenesisSpec::new(network())).expect("create");
+    let target =
+        LocalChainStore::init_genesis(&target_path, GenesisSpec::new(network())).expect("create");
     let error = import(&target, &document).expect_err("projections are not backups");
     assert!(
         matches!(error, XmlError::NotImportable { .. }),
@@ -716,7 +727,7 @@ fn exports_validate_against_the_published_schema() {
 
     let workspace = Workspace::new();
     let path = workspace.fresh();
-    let store = ChainStore::create(&path, GenesisSpec::new(network())).expect("create");
+    let store = LocalChainStore::init_genesis(&path, GenesisSpec::new(network())).expect("create");
     append(&store, vec![transaction(1, "app.alpha", b"", 1)]);
     append(
         &store,

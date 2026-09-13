@@ -8,14 +8,14 @@ use base64::engine::general_purpose::STANDARD as BASE64;
 use prunella_canonical::Canonical;
 use prunella_core::{Namespace, SchemaVersion, Transaction, TransactionDraft};
 use prunella_crypto::SigningKey;
-use prunella_store::ChainStore;
+use prunella_store::{AppendStatus, LocalChainStore};
 use serde_json::json;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Signs and appends one block.
 pub fn append(path: &Path, args: &AppendArgs, format: Format) -> Result<u8, String> {
-    let store = ChainStore::open(path).map_err(|error| error.to_string())?;
+    let store = LocalChainStore::open(path).map_err(|error| error.to_string())?;
 
     let mut transactions = Vec::new();
     for file in &args.tx_file {
@@ -30,7 +30,7 @@ pub fn append(path: &Path, args: &AppendArgs, format: Format) -> Result<u8, Stri
 
     let head = store.head().map_err(|error| error.to_string())?;
     let parent = store
-        .block_at(head.height)
+        .get_block(head.height)
         .map_err(|error| error.to_string())?
         .ok_or_else(|| format!("the chain head is {head} but no block is stored there"))?;
 
@@ -58,25 +58,33 @@ pub fn append(path: &Path, args: &AppendArgs, format: Format) -> Result<u8, Stri
     let hash = block.hash();
     let ids: Vec<_> = block.transactions.iter().map(|t| t.id).collect();
     let count = block.transactions.len();
-    let head = store
+    let height = block.header.height;
+    let outcome = store
         .append_block(block)
         .map_err(|error| error.to_string())?;
 
+    // An identical block already committed is reported as such rather than as an
+    // error: re-running the same append is a no-op, not a failure.
+    let verb = match outcome.status {
+        AppendStatus::Committed => "appended",
+        AppendStatus::AlreadyPresent => "already present:",
+    };
+
     format.emit(
         &format!(
-            "appended block {} at height {}\ntransactions: {count}\n{}",
-            hash,
-            head.height,
+            "{verb} block {hash} at height {height}\ntransactions: {count}\n{}",
             ids.iter()
                 .map(|id| format!("  {id}"))
                 .collect::<Vec<_>>()
                 .join("\n")
         ),
         &json!({
+            "status": outcome.status.to_string(),
+            "committed": outcome.status.committed(),
             "block_hash": hash,
-            "height": head.height,
+            "height": height,
             "transaction_ids": ids,
-            "head": head,
+            "head": outcome.head,
         }),
     );
     Ok(EXIT_OK)

@@ -549,7 +549,7 @@ fn importing_the_same_document_twice_changes_nothing() {
         .ok()
         .json();
     assert_eq!(again["appended"], 0);
-    assert_eq!(again["skipped"], 4);
+    assert_eq!(again["already_present"], 4);
 }
 
 #[test]

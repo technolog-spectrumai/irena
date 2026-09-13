@@ -10,7 +10,7 @@
 use crate::document::{ChainDocument, DocumentKind};
 use crate::error::XmlError;
 use prunella_core::{Block, BlockHeader, BlockHeight, ChainHead, GenesisSpec, TxId};
-use prunella_store::{AppendOutcome, ChainStore, ExistingBlockPolicy};
+use prunella_store::{BatchOutcome, LocalChainStore};
 use prunella_verify::{BlockContext, Finding, SourceError, TxIdLookup, check_block};
 use std::collections::HashSet;
 use std::path::Path;
@@ -57,7 +57,10 @@ impl core::fmt::Display for ImportPlan {
 /// [`XmlError::NetworkMismatch`], [`XmlError::GenesisMismatch`],
 /// [`XmlError::DeclaredHashMismatch`], [`XmlError::Gap`], [`XmlError::Fork`] or
 /// [`XmlError::InvalidBlocks`].
-pub fn plan_import(store: &ChainStore, document: &ChainDocument) -> Result<ImportPlan, XmlError> {
+pub fn plan_import(
+    store: &LocalChainStore,
+    document: &ChainDocument,
+) -> Result<ImportPlan, XmlError> {
     check_document_identity(store, document)?;
     check_declared_hashes(document)?;
 
@@ -69,7 +72,7 @@ pub fn plan_import(store: &ChainStore, document: &ChainDocument) -> Result<Impor
         let height = entry.block.header.height;
         if height.value() <= head.height.value() {
             let committed = store
-                .block_at(height)?
+                .get_block(height)?
                 .ok_or_else(|| XmlError::ChainUnreadable {
                     detail: format!("the chain claims height {height} but holds no block there"),
                 })?;
@@ -127,20 +130,20 @@ pub fn plan_import(store: &ChainStore, document: &ChainDocument) -> Result<Impor
 /// Applies a document to a chain atomically.
 ///
 /// The blocks are committed in a single database transaction by
-/// [`ChainStore::append_blocks`], so a rejection anywhere leaves the chain exactly as
+/// [`LocalChainStore::append_blocks`], so a rejection anywhere leaves the chain exactly as
 /// it was. Re-importing a document that was already applied succeeds as a no-op.
 ///
 /// # Errors
 ///
 /// As [`plan_import`], plus [`XmlError::Store`] if the write failed.
-pub fn import(store: &ChainStore, document: &ChainDocument) -> Result<AppendOutcome, XmlError> {
+pub fn import(store: &LocalChainStore, document: &ChainDocument) -> Result<BatchOutcome, XmlError> {
     plan_import(store, document)?;
     let blocks: Vec<Block> = document
         .blocks
         .iter()
         .map(|entry| entry.block.clone())
         .collect();
-    Ok(store.append_blocks(blocks, ExistingBlockPolicy::SkipIfIdentical)?)
+    Ok(store.append_blocks(blocks)?)
 }
 
 /// Creates a chain from a full backup and applies it.
@@ -156,7 +159,7 @@ pub fn import(store: &ChainStore, document: &ChainDocument) -> Result<AppendOutc
 pub fn restore(
     path: impl AsRef<Path>,
     document: &ChainDocument,
-) -> Result<(ChainStore, AppendOutcome), XmlError> {
+) -> Result<(LocalChainStore, BatchOutcome), XmlError> {
     if document.kind != DocumentKind::Full {
         return Err(XmlError::NotRestorable {
             detail: format!(
@@ -196,7 +199,7 @@ pub fn restore(
         });
     }
 
-    let store = ChainStore::create(
+    let store = LocalChainStore::init_genesis(
         path,
         GenesisSpec {
             network_id: rebuilt.header.network_id.clone(),
@@ -209,7 +212,10 @@ pub fn restore(
 }
 
 /// Rejects a document that is not for this chain, or not importable at all.
-fn check_document_identity(store: &ChainStore, document: &ChainDocument) -> Result<(), XmlError> {
+fn check_document_identity(
+    store: &LocalChainStore,
+    document: &ChainDocument,
+) -> Result<(), XmlError> {
     if !document.is_importable() {
         return Err(XmlError::NotImportable {
             kind: document.kind.to_string(),
@@ -255,12 +261,12 @@ fn check_declared_hashes(document: &ChainDocument) -> Result<(), XmlError> {
 
 /// Applies the deterministic rules to a run of blocks that would extend the chain.
 fn validate_run(
-    store: &ChainStore,
+    store: &LocalChainStore,
     head: &ChainHead,
     blocks: &[&Block],
 ) -> Result<Vec<Finding>, XmlError> {
     let parent_block = store
-        .block_at(head.height)?
+        .get_block(head.height)?
         .ok_or_else(|| XmlError::ChainUnreadable {
             detail: format!("the chain head is {head} but no block is stored there"),
         })?;
@@ -291,7 +297,7 @@ fn validate_run(
 
 /// Transaction ids already committed, plus those an in-progress import would add.
 struct PendingAware<'a> {
-    store: &'a ChainStore,
+    store: &'a LocalChainStore,
     pending: &'a HashSet<TxId>,
 }
 

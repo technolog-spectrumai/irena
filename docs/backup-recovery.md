@@ -10,7 +10,7 @@ silently rebuilds an index, re-derives a head, or drops an undecodable block has
 the chain self-consistent again and destroyed the evidence of what went wrong. You would
 no longer be able to tell a disk fault from tampering, or say when either began.
 
-So `ChainStore::open` reports `Inconsistent` naming exactly what disagrees with what,
+So `LocalChainStore::open` reports `Inconsistent` naming exactly what disagrees with what,
 and stops. Recovery is a deliberate act, performed from a backup you chose.
 
 ## Taking a backup

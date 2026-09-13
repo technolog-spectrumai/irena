@@ -155,14 +155,54 @@ An empty `Vec<Finding>` means the block is acceptable. See
 
 ## `prunella-store`
 
-Persistent, append-only storage.
+Persistent, append-only storage. [`ChainStorage`] is the contract; `LocalChainStore` is
+the one implementation, backed by a local redb file.
 
 ```rust
-impl ChainStore {
-    pub fn create(path, genesis: GenesisSpec) -> Result<Self, StoreError>;
-    pub fn create_with_policy(path, genesis, policy: Box<dyn BlockAcceptancePolicy>) -> Result<Self, StoreError>;
+pub trait ChainStorage: BlockSource + Sized {
+    type Location;
+    type Error;
+    type Blocks<'a>: Iterator<Item = Result<Block, Self::Error>> where Self: 'a;
+
+    fn init_genesis(location: Self::Location, genesis: GenesisSpec) -> Result<Self, Self::Error>;
+    fn get_block(&self, height: BlockHeight) -> Result<Option<Block>, Self::Error>;
+    fn get_block_by_hash(&self, hash: &Hash) -> Result<Option<Block>, Self::Error>;
+    fn get_transaction(&self, id: &TxId) -> Result<Option<LocatedTransaction>, Self::Error>;
+    fn iter_blocks(&self, start: BlockHeight, end: BlockHeight)
+        -> Result<Self::Blocks<'_>, Self::Error>;
+    fn append_block(&self, block: Block) -> Result<AppendOutcome, Self::Error>;
+
+    /// Provided: defers entirely to `prunella_verify`. Do not override.
+    fn verify_from(&self, start_height: BlockHeight) -> VerificationReport { /* ... */ }
+}
+
+pub enum AppendStatus { Committed, AlreadyPresent }
+pub struct AppendOutcome { pub status: AppendStatus, pub head: ChainHead }
+pub struct BatchOutcome { pub appended: u64, pub already_present: u64, pub head: ChainHead }
+pub struct LocatedTransaction { pub height: BlockHeight, pub index: u32,
+                                pub transaction: Transaction }
+pub struct ChainStatus { /* identity, head, counts, format version, policy name */ }
+```
+
+`head()` comes from the `BlockSource` supertrait rather than being declared on
+`ChainStorage` a second time: declaring it twice would make `store.head()` ambiguous in
+code generic over the trait, so there is exactly one.
+
+The trait is not object-safe — `init_genesis` returns `Self` and `iter_blocks` returns an
+associated type. Use `BlockSource` where a `dyn` read-only view is needed.
+
+`LocalChainStore` carries inherent methods of the same names. Inherent methods win
+method resolution, so `store.get_block(h)` on a concrete store is unambiguous, while
+generic code over `ChainStorage` still works. It adds:
+
+```rust
+impl LocalChainStore {
+    pub fn init_genesis(path, genesis: GenesisSpec) -> Result<Self, StoreError>;
+    pub fn init_genesis_with_policy(path, genesis, policy: Box<dyn BlockAcceptancePolicy>)
+        -> Result<Self, StoreError>;
     pub fn open(path) -> Result<Self, StoreError>;
     pub fn open_with_policy(path, policy) -> Result<Self, StoreError>;
+    pub fn close(self) -> Result<(), StoreError>;
 
     pub fn network_id(&self) -> &NetworkId;
     pub fn genesis_hash(&self) -> Hash;
@@ -171,27 +211,16 @@ impl ChainStore {
 
     pub fn head(&self) -> Result<ChainHead, StoreError>;
     pub fn status(&self) -> Result<ChainStatus, StoreError>;
-    pub fn block_at(&self, height: BlockHeight) -> Result<Option<Block>, StoreError>;
-    pub fn block_by_hash(&self, hash: &Hash) -> Result<Option<Block>, StoreError>;
-    pub fn transaction(&self, id: &TxId) -> Result<Option<LocatedTransaction>, StoreError>;
     pub fn contains_transaction(&self, id: &TxId) -> Result<bool, StoreError>;
-    pub fn blocks_in_range(&self, from, to) -> Result<BlockRange, StoreError>;
 
-    pub fn append_block(&self, block: Block) -> Result<ChainHead, StoreError>;
-    pub fn append_blocks(&self, blocks: Vec<Block>, existing: ExistingBlockPolicy)
-        -> Result<AppendOutcome, StoreError>;
+    /// Appends a run of blocks in one atomic transaction.
+    pub fn append_blocks(&self, blocks: Vec<Block>) -> Result<BatchOutcome, StoreError>;
 }
-
-pub enum ExistingBlockPolicy { Reject, SkipIfIdentical }
-pub struct AppendOutcome { pub appended: u64, pub skipped: u64, pub head: ChainHead }
-pub struct LocatedTransaction { pub height: BlockHeight, pub index: u32,
-                                pub transaction: Transaction }
-pub struct ChainStatus { /* identity, head, counts, format version, policy name */ }
 ```
 
-`ChainStore` implements `BlockSource` and `TxIdLookup`. There is no method that rewrites
-or removes a committed block, and no method that repairs an inconsistent chain. See
-[storage.md](storage.md).
+`LocalChainStore` implements `ChainStorage`, `BlockSource` and `TxIdLookup`. There is no
+method that rewrites or removes a committed block, and no method that repairs an
+inconsistent chain. See [storage.md](storage.md).
 
 The acceptance boundary — `BlockAcceptancePolicy`, `AcceptanceContext`, `Accepted`,
 `AcceptanceError`, `LocalDeterministicPolicy` — is documented in
@@ -200,14 +229,14 @@ The acceptance boundary — `BlockAcceptancePolicy`, `AcceptanceContext`, `Accep
 ## `prunella-xml`
 
 ```rust
-pub fn export(store: &ChainStore, request: &ExportRequest) -> Result<ChainDocument, XmlError>;
+pub fn export(store: &LocalChainStore, request: &ExportRequest) -> Result<ChainDocument, XmlError>;
 pub fn write_document(document: &ChainDocument) -> Result<String, XmlError>;
 pub fn read_document(xml: &str) -> Result<ChainDocument, XmlError>;
 pub fn read_document_with_limit(xml: &str, max_bytes: u64) -> Result<ChainDocument, XmlError>;
 
-pub fn plan_import(store: &ChainStore, document: &ChainDocument) -> Result<ImportPlan, XmlError>;
-pub fn import(store: &ChainStore, document: &ChainDocument) -> Result<AppendOutcome, XmlError>;
-pub fn restore(path, document: &ChainDocument) -> Result<(ChainStore, AppendOutcome), XmlError>;
+pub fn plan_import(store: &LocalChainStore, document: &ChainDocument) -> Result<ImportPlan, XmlError>;
+pub fn import(store: &LocalChainStore, document: &ChainDocument) -> Result<BatchOutcome, XmlError>;
+pub fn restore(path, document: &ChainDocument) -> Result<(LocalChainStore, BatchOutcome), XmlError>;
 
 pub struct ExportRequest { pub from: Option<BlockHeight>, pub to: Option<BlockHeight>,
                            pub namespace: Option<Namespace>, pub exported_at_millis: u64 }
@@ -224,13 +253,13 @@ what a document claims and what its contents derive is detectable. See
 ## Worked example
 
 ```rust
-use prunella_core::{GenesisSpec, Namespace, NetworkId, SchemaVersion, TransactionDraft};
+use prunella_core::{BlockHeight, GenesisSpec, Namespace, NetworkId, SchemaVersion,
+                    TransactionDraft};
 use prunella_crypto::SigningKey;
-use prunella_store::ChainStore;
-use prunella_verify::{VerifyOptions, verify_chain};
+use prunella_store::{ChainStorage, LocalChainStore};
 
 let network = NetworkId::new("demo")?;
-let store = ChainStore::create("demo.chain", GenesisSpec::new(network.clone()))?;
+let store = LocalChainStore::init_genesis("demo.chain", GenesisSpec::new(network.clone()))?;
 
 let key = SigningKey::generate()?;
 let transaction = key.sign_transaction(TransactionDraft {
@@ -242,10 +271,9 @@ let transaction = key.sign_transaction(TransactionDraft {
 });
 
 let head = store.head()?;
-let parent = store.block_at(head.height)?.expect("head block");
+let parent = store.get_block(head.height)?.expect("head block");
 let block = parent.header.child_draft(vec![transaction], 1_000)?.build()?;
 store.append_block(block)?;
 
-let report = verify_chain(&store, VerifyOptions::default());
-assert!(report.is_valid());
+assert!(store.verify_from(BlockHeight::GENESIS).is_valid());
 ```

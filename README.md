@@ -33,6 +33,8 @@ genesis: 012673fe1d4bd19b206c326ae34913cf285673955f03f022352a4524e2641b84
   height, transaction index and identifier.
 * **Lossless versioned XML export and import** — atomic, idempotent, dry-runnable —
   preserving payload bytes exactly.
+* **A storage abstraction** with one local persistent implementation: atomic appends,
+  height/hash/transaction indexes, clean close and reopen.
 * **A narrow acceptance boundary** so consensus can be added later without touching
   storage, encoding or verification.
 
@@ -81,7 +83,7 @@ prunella-canonical  →  prunella-core  →  prunella-crypto  →  prunella-veri
 | [`prunella-core`](crates/prunella-core) | Ledger types and the four hash derivations |
 | [`prunella-crypto`](crates/prunella-crypto) | Ed25519 signing and strict verification |
 | [`prunella-verify`](crates/prunella-verify) | The block rules, chain walking, structured reports |
-| [`prunella-store`](crates/prunella-store) | redb persistence and the acceptance boundary |
+| [`prunella-store`](crates/prunella-store) | The `ChainStorage` contract, a redb implementation, the acceptance boundary |
 | [`prunella-xml`](crates/prunella-xml) | Versioned XML transport |
 | [`prunella-cli`](crates/prunella-cli) | The `prunella` binary |
 
