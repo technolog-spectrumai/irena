@@ -8,8 +8,7 @@ use crate::snapshot::{ElectorateEntryV1, VoteIdV1, VoteSnapshotV1};
 use bornite_core::{BallotSetV1, BallotV1, VoterIdV1};
 use bornite_eval::VoteEvaluationV1;
 use borsh::{BorshDeserialize, BorshSerialize};
-use irena_core::CompanyIdV1;
-use irena_ledger::{company_at, rules_in_force};
+use irena_ledger::reconstruct;
 use prunella_canonical::Canonical;
 use prunella_core::{BlockHeight, Hash, Namespace, SchemaVersion, TransactionDraft, TxId};
 use prunella_crypto::SigningKey;
@@ -80,14 +79,15 @@ pub struct VoteV1 {
 impl Canonical for VoteV1 {}
 
 impl VoteV1 {
-    /// Starts a vote: which company, what about, and the digest of the proposal.
+    /// Starts a vote: what about, and the digest of the proposal.
     ///
-    /// The proposal is identified by its digest and never interpreted.
+    /// The company is the chain's — one company per chain — and is filled in at
+    /// freeze time. The proposal is identified by its digest and never interpreted.
     #[must_use]
-    pub fn draft(company: &CompanyIdV1, subject: impl Into<String>, proposal_digest: Hash) -> Self {
+    pub fn draft(subject: impl Into<String>, proposal_digest: Hash) -> Self {
         Self {
             status: VoteStatusV1::Draft,
-            company: company.as_str().to_owned(),
+            company: String::new(),
             subject: subject.into(),
             proposal_digest,
             snapshot: None,
@@ -103,7 +103,7 @@ impl VoteV1 {
         self.status
     }
 
-    /// The company label.
+    /// The company label, once frozen; empty before.
     #[must_use]
     pub fn company(&self) -> &str {
         &self.company
@@ -179,8 +179,8 @@ impl VoteV1 {
         at: BlockHeight,
     ) -> Result<&VoteSnapshotV1, VoteError> {
         self.expect_status(VoteStatusV1::Draft, "freeze")?;
-        let company = CompanyIdV1::new(self.company.clone())?;
-        let state = company_at(store, &company, at)?;
+        let state = reconstruct(store, at)?;
+        self.company = state.company.as_str().to_owned();
         let derived = derive_electorate(&state.shares.value)?;
         let electorate = derived
             .holders
@@ -197,7 +197,7 @@ impl VoteV1 {
             subject: self.subject.clone(),
             proposal_digest: self.proposal_digest,
             height: at,
-            genesis_tx_id: state.genesis.tx_id,
+            genesis_tx_id: state.genesis_tx_id,
             shares_tx_id: state.shares.tx_id,
             rules_tx_id: state.rules.tx_id,
             electorate,
@@ -277,9 +277,9 @@ impl VoteV1 {
     /// Runs Bornite over the frozen inputs, whatever the status.
     fn evaluate_now(&self, store: &LocalChainStore) -> Result<VoteEvaluationV1, VoteError> {
         let snapshot = self.snapshot.as_ref().expect("past draft implies frozen");
-        let company = CompanyIdV1::new(self.company.clone())?;
-        let rules = rules_in_force(store, &company, snapshot.height)?;
-        if rules.tx_id != snapshot.rules_tx_id {
+        let state = reconstruct(store, snapshot.height)?;
+        let rules = state.rules;
+        if rules.tx_id != snapshot.rules_tx_id || state.company.as_str() != snapshot.company {
             return Err(VoteError::RulesMoved {
                 height: snapshot.height,
                 expected: snapshot.rules_tx_id,

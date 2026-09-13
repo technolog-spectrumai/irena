@@ -6,7 +6,7 @@ use crate::error::VoteError;
 use crate::lifecycle::bornite_ballots;
 use crate::record::{EvaluationSummaryV1, FinalVoteRecordV1, RECORD_VERSION, VOTE_NAMESPACE};
 use crate::snapshot::ElectorateEntryV1;
-use irena_ledger::company_at;
+use irena_ledger::reconstruct;
 use prunella_canonical::Canonical;
 use prunella_core::{BlockHeight, TxId};
 use prunella_store::LocalChainStore;
@@ -183,17 +183,28 @@ pub fn verify(store: &LocalChainStore, tx_id: &TxId) -> Result<VerificationV1, V
             return Ok(report);
         }
     };
-    let state = match company_at(store, &company, record.snapshot.height) {
+    let state = match reconstruct(store, record.snapshot.height) {
         Ok(state) => state,
         Err(error) => {
             report.check(CheckNameV1::RecordsResolve, false, error.to_string());
             return Ok(report);
         }
     };
+    if state.company != company {
+        report.check(
+            CheckNameV1::RecordsResolve,
+            false,
+            format!(
+                "the chain holds company {}, the record claims {company}",
+                state.company
+            ),
+        );
+        return Ok(report);
+    }
     let pinned = [
         (
             "genesis",
-            state.genesis.tx_id,
+            state.genesis_tx_id,
             record.snapshot.genesis_tx_id,
         ),
         ("shares", state.shares.tx_id, record.snapshot.shares_tx_id),

@@ -1,9 +1,10 @@
 //! The `irena` command line interface.
 //!
-//! Founds a company on a Prunella ledger, publishes and amends its share register and
-//! voting rules, and shows what the company is at any height. Every command is a thin
-//! call into `irena-ledger`; the only things this binary adds are file reading, a clock
-//! for block timestamps, and output formatting.
+//! Founds a company on a Prunella ledger, amends its identity, share register and
+//! voting rules, and shows what the company is at any height. One company per chain,
+//! so no command but `init` names it. Every command is a thin call into
+//! `irena-ledger`; the only things this binary adds are file reading, a clock for
+//! block timestamps, and output formatting.
 //!
 //! The `vote` subcommands carry a vote through its lifecycle as a state file, so each
 //! step is one invocation; see `vote.rs`.
@@ -97,19 +98,16 @@ impl NotaryArgs {
 /// Arguments every publishing command shares.
 #[derive(clap::Args, Debug, Clone)]
 pub(crate) struct PublishArgs {
-    /// The company's label on the ledger.
-    #[arg(long)]
-    pub(crate) company: String,
     /// The body document to publish.
     #[arg(long)]
     pub(crate) file: PathBuf,
     /// Hex seed file, as written by `prunella keygen`.
     #[arg(long)]
     pub(crate) signing_key: PathBuf,
-    /// Transaction id of the record of this kind currently in force. Required when
-    /// one is; forbidden when none is.
+    /// Transaction id of the record currently providing this part: the genesis, or
+    /// the last amendment of the part. See `show`.
     #[arg(long)]
-    pub(crate) supersedes: Option<String>,
+    pub(crate) supersedes: String,
     /// Block timestamp in milliseconds. Defaults to the system clock.
     #[arg(long)]
     pub(crate) timestamp: Option<u64>,
@@ -119,7 +117,8 @@ pub(crate) struct PublishArgs {
 
 #[derive(Subcommand, Debug)]
 pub(crate) enum Command {
-    /// Create a chain whose genesis block carries the company's founding record.
+    /// Create a chain whose genesis block founds the company: identity, register and
+    /// rules, in one company-genesis document.
     Init {
         /// Chain identifier.
         #[arg(long)]
@@ -139,41 +138,33 @@ pub(crate) enum Command {
         #[command(flatten)]
         notary: NotaryArgs,
     },
-    /// Publish a company-genesis record, amending the identity in force.
-    PublishGenesis(PublishArgs),
-    /// Publish a share-structure record, amending the register in force if any.
+    /// Publish an identity record, amending who the company is.
+    PublishIdentity(PublishArgs),
+    /// Publish a share-structure record, amending the register.
     PublishShares(PublishArgs),
-    /// Publish a voting-rules record, amending the rules in force if any.
+    /// Publish a voting-rules record, amending the rules.
     PublishRules(PublishArgs),
     /// Show what the company is at a height: identity, register and rules together.
     Show {
-        #[arg(long)]
-        company: String,
-        /// Resolve at this height. Defaults to the head.
+        /// Reconstruct at this height. Defaults to the head.
         #[arg(long)]
         at: Option<u64>,
     },
-    /// Show the share register in force, with each holder's voting weight.
+    /// Show the share register, with each holder's voting weight.
     Shares {
         #[arg(long)]
-        company: String,
-        #[arg(long)]
         at: Option<u64>,
     },
-    /// List every version of one kind of record, in ledger order.
+    /// List every record that has provided one part, in ledger order.
     History {
-        #[arg(long)]
-        company: String,
-        /// `company-genesis`, `share-structure` or `voting-rules`.
+        /// `identity`, `share-structure` or `voting-rules`.
         #[arg(long)]
         kind: String,
         #[arg(long)]
         at: Option<u64>,
     },
-    /// Walk every amendment chain of the company and report any break.
+    /// Reconstruct the company record by record and report any break.
     VerifyStructure {
-        #[arg(long)]
-        company: String,
         #[arg(long)]
         at: Option<u64>,
     },
@@ -236,10 +227,8 @@ pub(crate) fn company_of(text: &str) -> Result<CompanyIdV1, String> {
     CompanyIdV1::new(text).map_err(|e| format!("--company: {e}"))
 }
 
-pub(crate) fn parse_supersedes(text: Option<&str>) -> Result<Option<TxId>, String> {
-    text.map(TxId::from_hex)
-        .transpose()
-        .map_err(|e| format!("--supersedes: {e}"))
+pub(crate) fn parse_supersedes(text: &str) -> Result<TxId, String> {
+    TxId::from_hex(text).map_err(|e| format!("--supersedes: {e}"))
 }
 
 pub(crate) fn height_or_head(

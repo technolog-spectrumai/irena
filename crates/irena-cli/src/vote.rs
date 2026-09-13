@@ -5,7 +5,7 @@
 //! machine is the same vote. Ballots are files too, so a holder signs on their own
 //! machine and hands the file over.
 
-use crate::{Cli, EXIT_FINDING, EXIT_OK, company_of, emit, open, read_key, timestamp_for};
+use crate::{Cli, EXIT_FINDING, EXIT_OK, emit, open, read_key, timestamp_for};
 use bornite_core::VoterIdV1;
 use irena_vote::{BallotChoiceV1, SignedBallotV1, VoteV1, verify};
 use prunella_canonical::Canonical;
@@ -16,10 +16,9 @@ use std::path::{Path, PathBuf};
 /// One step of a vote.
 #[derive(clap::Subcommand, Debug)]
 pub(crate) enum VoteCommand {
-    /// Start a vote: which company, what about, and the digest of the proposal.
+    /// Start a vote: what about, and the digest of the proposal. The company is the
+    /// chain's.
     New {
-        #[arg(long)]
-        company: String,
         /// What is being voted on, as a label. Never interpreted.
         #[arg(long)]
         subject: String,
@@ -105,21 +104,15 @@ pub(crate) enum VoteCommand {
 pub(crate) fn run(cli: &Cli, command: &VoteCommand) -> Result<u8, String> {
     match command {
         VoteCommand::New {
-            company,
             subject,
             proposal_digest,
             state,
         } => {
-            let company = company_of(company)?;
             let digest =
                 Hash::from_hex(proposal_digest).map_err(|e| format!("--proposal-digest: {e}"))?;
-            let vote = VoteV1::draft(&company, subject.clone(), digest);
+            let vote = VoteV1::draft(subject.clone(), digest);
             save(state, &vote)?;
-            report(
-                cli,
-                &vote,
-                &format!("drafted vote on {subject:?} for {company}"),
-            )
+            report(cli, &vote, &format!("drafted vote on {subject:?}"))
         }
         VoteCommand::Freeze { state, at } => {
             let store = open(&cli.chain)?;
@@ -320,7 +313,9 @@ fn report(cli: &Cli, vote: &VoteV1, headline: &str) -> Result<u8, String> {
         lines.push(headline.to_owned());
     }
     lines.push(format!("status:   {}", vote.status()));
-    lines.push(format!("company:  {}", vote.company()));
+    if !vote.company().is_empty() {
+        lines.push(format!("company:  {}", vote.company()));
+    }
     lines.push(format!("subject:  {}", vote.subject()));
     lines.push(format!("proposal: {}", vote.proposal_digest()));
     if let Some(snapshot) = vote.snapshot() {

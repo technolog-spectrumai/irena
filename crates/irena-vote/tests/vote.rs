@@ -3,7 +3,7 @@
 
 use bornite_core::{BallotSetV1, BallotV1, VoterIdV1};
 use irena_core::{CompanyIdV1, NotarisationV1, NotaryIdV1, NotaryTimeV1, RecordKindV1};
-use irena_ledger::{genesis_with_company, publish, shares_in_force};
+use irena_ledger::{company_now, genesis_with_company, publish, reconstruct};
 use irena_vote::{
     BallotChoiceV1, BallotRejectionV1, COMMITMENT_TAGS, CheckNameV1, FinalVoteRecordV1,
     SignedBallotV1, VoteError, VoteStatusV1, VoteV1, ballot_commitment, derive_electorate, verify,
@@ -15,8 +15,13 @@ use prunella_crypto::SigningKey;
 use prunella_store::LocalChainStore;
 use tempfile::TempDir;
 
-const GENESIS: &str =
-    r#"<company-genesis><identity name="Acme Industries Ltd"/></company-genesis>"#;
+/// The whole company: alice (500, key 1), bob (300, key 2), carol (200, no key), RULES.
+fn genesis_xml() -> String {
+    format!(
+        "<company-genesis><identity name=\"Acme Industries Ltd\"/>{}<governance>{RULES}</governance></company-genesis>",
+        register()
+    )
+}
 
 const RULES: &str = r#"<voting-rules version="1.0">
   <weight type="electorate"/>
@@ -94,52 +99,48 @@ struct Chain {
     store: LocalChainStore,
 }
 
-/// Genesis at 0, register at 1, rules at 2.
+/// The company founded at height 0 with its register and rules.
 fn founded() -> Chain {
     let dir = TempDir::new().expect("temp dir");
     let spec = genesis_with_company(
         NetworkId::new("acme-net").expect("n"),
         &key(9),
         &acme(),
-        GENESIS,
+        &genesis_xml(),
         &notary("2026-01-10T09:00:00Z"),
         0,
     )
     .expect("spec");
     let store = LocalChainStore::init_genesis(dir.path().join("acme.chain"), spec).expect("create");
-    publish(
-        &store,
-        &key(9),
-        &acme(),
-        RecordKindV1::ShareStructure,
-        &register(),
-        None,
-        &notary("2026-01-10T09:05:00Z"),
-        1000,
-    )
-    .expect("shares");
-    publish(
-        &store,
-        &key(9),
-        &acme(),
-        RecordKindV1::VotingRules,
-        RULES,
-        None,
-        &notary("2026-01-10T09:10:00Z"),
-        2000,
-    )
-    .expect("rules");
     Chain { _dir: dir, store }
 }
+
+/// Publishes an amendment superseding whatever currently provides the part.
+fn amend(chain: &Chain, kind: RecordKindV1, body: &str, at: &str, ts: u64) {
+    let current = company_now(&chain.store).expect("state").provider_of(kind);
+    publish(
+        &chain.store,
+        &key(9),
+        kind,
+        body,
+        Some(current),
+        &notary(at),
+        ts,
+    )
+    .expect("publish");
+}
+
+/// The height every test freezes at: the founding block.
+const FOUNDED: BlockHeight = BlockHeight::GENESIS;
 
 fn proposal() -> Hash {
     Hash::from_bytes([0xd0; 32])
 }
 
-/// A vote frozen at height 2 and open.
+/// A vote frozen at the founding height and open.
 fn open_vote(chain: &Chain) -> VoteV1 {
-    let mut vote = VoteV1::draft(&acme(), "Approve the 2026 accounts", proposal());
-    vote.freeze(&chain.store, BlockHeight(2)).expect("freeze");
+    let mut vote = VoteV1::draft("Approve the 2026 accounts", proposal());
+    vote.freeze(&chain.store, FOUNDED).expect("freeze");
     vote.open().expect("open");
     vote
 }
@@ -155,25 +156,20 @@ fn ballot(vote: &VoteV1, seed: u8, id: &str, choice: BallotChoiceV1) -> SignedBa
 #[test]
 fn a_vote_runs_from_draft_to_a_verified_record() {
     let chain = founded();
-    let mut vote = VoteV1::draft(&acme(), "Approve the 2026 accounts", proposal());
+    let mut vote = VoteV1::draft("Approve the 2026 accounts", proposal());
     assert_eq!(vote.status(), VoteStatusV1::Draft);
     assert!(vote.id().is_none());
 
-    let snapshot = vote
-        .freeze(&chain.store, BlockHeight(2))
-        .expect("freeze")
-        .clone();
+    let snapshot = vote.freeze(&chain.store, FOUNDED).expect("freeze").clone();
     assert_eq!(vote.status(), VoteStatusV1::Frozen);
-    assert_eq!(snapshot.height, BlockHeight(2));
+    assert_eq!(snapshot.height, FOUNDED);
     assert_eq!(snapshot.electorate.len(), 3);
     assert_eq!(snapshot.electorate[0].id, "alice");
     assert_eq!(snapshot.electorate[0].weight, 500);
     assert_eq!(snapshot.electorate[2].key, None);
     assert_eq!(
         snapshot.shares_tx_id,
-        shares_in_force(&chain.store, &acme(), BlockHeight(2))
-            .unwrap()
-            .tx_id
+        reconstruct(&chain.store, FOUNDED).unwrap().shares.tx_id
     );
 
     vote.open().expect("open");
@@ -195,9 +191,9 @@ fn a_vote_runs_from_draft_to_a_verified_record() {
         .finalize(&chain.store, &key(9), 3000)
         .expect("finalize");
     assert_eq!(vote.status(), VoteStatusV1::Finalized);
-    assert_eq!(finalized.height, BlockHeight(3));
+    assert_eq!(finalized.height, BlockHeight(1));
     assert_eq!(finalized.record.ballots.len(), 2);
-    assert_eq!(vote.finalized(), Some((finalized.tx_id, BlockHeight(3))));
+    assert_eq!(vote.finalized(), Some((finalized.tx_id, BlockHeight(1))));
 
     // The record is on the chain under the vote namespace, as canonical bytes.
     let committed = chain
@@ -221,7 +217,7 @@ fn a_vote_runs_from_draft_to_a_verified_record() {
 #[test]
 fn every_invalid_transition_is_reported_with_both_ends() {
     let chain = founded();
-    let mut vote = VoteV1::draft(&acme(), "x", proposal());
+    let mut vote = VoteV1::draft("x", proposal());
     let transition = |result: Result<(), VoteError>, from: VoteStatusV1| match result
         .expect_err("invalid transition")
     {
@@ -242,10 +238,10 @@ fn every_invalid_transition_is_reported_with_both_ends() {
     );
     transition(vote.final_record().map(|_| ()), VoteStatusV1::Draft);
 
-    vote.freeze(&chain.store, BlockHeight(2)).expect("freeze");
+    vote.freeze(&chain.store, FOUNDED).expect("freeze");
     // Frozen: only open.
     transition(
-        vote.freeze(&chain.store, BlockHeight(2)).map(|_| ()),
+        vote.freeze(&chain.store, FOUNDED).map(|_| ()),
         VoteStatusV1::Frozen,
     );
     transition(
@@ -305,24 +301,29 @@ fn every_invalid_transition_is_reported_with_both_ends() {
     transition(vote.open(), VoteStatusV1::Finalized);
     assert!(vote.final_record().is_ok());
     let error = vote
-        .freeze(&chain.store, BlockHeight(2))
+        .freeze(&chain.store, FOUNDED)
         .map(|_| ())
         .expect_err("frozen for ever");
     assert_eq!(error.to_string(), "cannot freeze a vote that is finalized");
 }
 
 #[test]
-fn a_vote_needs_a_complete_company_at_its_height() {
-    let chain = founded();
-    let mut vote = VoteV1::draft(&acme(), "x", proposal());
+fn a_vote_needs_a_company_on_the_chain() {
+    let dir = TempDir::new().expect("dir");
+    let store = LocalChainStore::init_genesis(
+        dir.path().join("plain.chain"),
+        prunella_core::GenesisSpec::new(NetworkId::new("plain").expect("n")),
+    )
+    .expect("create");
+    let mut vote = VoteV1::draft("x", proposal());
     let error = vote
-        .freeze(&chain.store, BlockHeight(1))
+        .freeze(&store, BlockHeight::GENESIS)
         .map(|_| ())
-        .expect_err("no rules yet");
+        .expect_err("no company");
     assert!(
         matches!(
             error,
-            VoteError::Ledger(irena_ledger::LedgerError::NothingInForce { .. })
+            VoteError::Ledger(irena_ledger::LedgerError::NoCompany { .. })
         ),
         "{error}"
     );
@@ -331,18 +332,23 @@ fn a_vote_needs_a_complete_company_at_its_height() {
         VoteStatusV1::Draft,
         "a failed freeze leaves a draft"
     );
-    let mut other = VoteV1::draft(&CompanyIdV1::new("nobody").unwrap(), "x", proposal());
-    assert!(other.freeze(&chain.store, BlockHeight(2)).is_err());
+    assert!(vote.company().is_empty());
+
+    // Once frozen, the vote knows its company from the chain.
+    let chain = founded();
+    let frozen = open_vote(&chain);
+    assert_eq!(frozen.company(), "acme");
+    assert_eq!(frozen.snapshot().unwrap().company, "acme");
 }
 
 #[test]
 fn the_vote_state_round_trips_through_canonical_bytes_between_steps() {
     let chain = founded();
-    let mut vote = VoteV1::draft(&acme(), "x", proposal());
+    let mut vote = VoteV1::draft("x", proposal());
     let reload =
         |vote: &VoteV1| VoteV1::from_canonical_bytes(&vote.canonical_bytes()).expect("decode");
     assert_eq!(reload(&vote), vote);
-    vote.freeze(&chain.store, BlockHeight(2)).expect("freeze");
+    vote.freeze(&chain.store, FOUNDED).expect("freeze");
     let mut vote = reload(&vote);
     vote.open().expect("open");
     vote.cast(ballot(&vote, 1, "alice", BallotChoiceV1::Yes))
@@ -370,30 +376,20 @@ fn amendments_after_freezing_change_nothing() {
     let frozen_id = vote.id().unwrap();
 
     // The register and the rules both change mid-vote.
-    let shares = shares_in_force(&chain.store, &acme(), BlockHeight(2)).unwrap();
-    publish(
-        &chain.store,
-        &key(9),
-        &acme(),
+    amend(
+        &chain,
         RecordKindV1::ShareStructure,
         &register_amended(),
-        Some(shares.tx_id),
-        &notary("2026-02-01T10:00:00Z"),
-        3000,
-    )
-    .expect("amend shares");
-    let rules = irena_ledger::rules_in_force(&chain.store, &acme(), BlockHeight(3)).unwrap();
-    publish(
-        &chain.store,
-        &key(9),
-        &acme(),
+        "2026-02-01T10:00:00Z",
+        1000,
+    );
+    amend(
+        &chain,
         RecordKindV1::VotingRules,
         RULES_STRICT,
-        Some(rules.tx_id),
-        &notary("2026-02-01T10:05:00Z"),
-        4000,
-    )
-    .expect("amend rules");
+        "2026-02-01T10:05:00Z",
+        2000,
+    );
 
     // dave, now a holder, is not in this vote; carol, now with a key, still cannot vote.
     let dave = SignedBallotV1::sign(&key(4), frozen_id, &voter("dave"), BallotChoiceV1::Yes);
@@ -424,7 +420,7 @@ fn amendments_after_freezing_change_nothing() {
     let finalized = vote
         .finalize(&chain.store, &key(9), 5000)
         .expect("finalize");
-    assert_eq!(finalized.record.snapshot.height, BlockHeight(2));
+    assert_eq!(finalized.record.snapshot.height, FOUNDED);
     let report = verify(&chain.store, &finalized.tx_id).expect("verify");
     assert!(
         report.is_valid(),
@@ -432,8 +428,8 @@ fn amendments_after_freezing_change_nothing() {
     );
 
     // A vote frozen now sees the amended company and the stricter rules.
-    let mut later = VoteV1::draft(&acme(), "x", proposal());
-    later.freeze(&chain.store, BlockHeight(5)).expect("freeze");
+    let mut later = VoteV1::draft("x", proposal());
+    later.freeze(&chain.store, BlockHeight(3)).expect("freeze");
     assert_ne!(later.id(), Some(frozen_id));
     later.open().unwrap();
     later
@@ -461,12 +457,8 @@ fn the_same_inputs_freeze_to_the_same_vote_on_another_machine() {
     assert_eq!(va.id(), vb.id());
     assert_eq!(va.snapshot(), vb.snapshot());
     // A different proposal is a different vote.
-    let mut other = VoteV1::draft(
-        &acme(),
-        "Approve the 2026 accounts",
-        Hash::from_bytes([0xd1; 32]),
-    );
-    other.freeze(&a.store, BlockHeight(2)).unwrap();
+    let mut other = VoteV1::draft("Approve the 2026 accounts", Hash::from_bytes([0xd1; 32]));
+    other.freeze(&a.store, FOUNDED).unwrap();
     assert_ne!(other.id(), va.id());
 }
 
@@ -549,8 +541,8 @@ fn each_ballot_check_is_named() {
 fn a_ballot_from_one_vote_cannot_be_replayed_in_another() {
     let chain = founded();
     let first = open_vote(&chain);
-    let mut second = VoteV1::draft(&acme(), "Something else", Hash::from_bytes([0x02; 32]));
-    second.freeze(&chain.store, BlockHeight(2)).unwrap();
+    let mut second = VoteV1::draft("Something else", Hash::from_bytes([0x02; 32]));
+    second.freeze(&chain.store, FOUNDED).unwrap();
     second.open().unwrap();
     let replay = ballot(&first, 1, "alice", BallotChoiceV1::Yes);
     assert!(matches!(
@@ -953,8 +945,9 @@ fn a_broken_chain_stops_evaluation_rather_than_guessing() {
     vote.cast(ballot(&vote, 1, "alice", BallotChoiceV1::Yes))
         .unwrap();
     vote.close().unwrap();
-    // Write a rules record around Irena at height 3; the snapshot is at 2, so the
-    // pinned rules still resolve — the freeze holds even against a later break.
+    // Write a rules record around Irena that supersedes nothing; the snapshot is at
+    // the founding height, so the pinned rules still resolve — the freeze holds even
+    // against a later break.
     let payload = irena_core::compose_record(
         RecordKindV1::VotingRules,
         &acme(),
@@ -972,9 +965,9 @@ fn a_broken_chain_stops_evaluation_rather_than_guessing() {
     assert!(verify(&chain.store, &finalized.tx_id).unwrap().is_valid());
 
     // But a vote frozen after the break cannot exist: the company does not resolve.
-    let mut later = VoteV1::draft(&acme(), "x", proposal());
+    let mut later = VoteV1::draft("x", proposal());
     assert!(matches!(
-        later.freeze(&chain.store, BlockHeight(4)),
+        later.freeze(&chain.store, BlockHeight(2)),
         Err(VoteError::Ledger(
             irena_ledger::LedgerError::BrokenAmendmentChain { .. }
         ))

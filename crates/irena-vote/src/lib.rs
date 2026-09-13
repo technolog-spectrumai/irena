@@ -11,8 +11,8 @@
 //! Draft ──freeze──▶ Frozen ──open──▶ Open ──close──▶ Closed ──evaluate──▶ Evaluated ──finalize──▶ Finalized
 //! ```
 //!
-//! * **freeze** resolves the company at one height — share register and voting rules,
-//!   each pinned by the transaction id of the record in force — derives the electorate
+//! * **freeze** reconstructs the company at one height — share register and voting
+//!   rules, each pinned by the transaction that provides it — derives the electorate
 //!   from the register, and records all of it in an immutable [`VoteSnapshotV1`]. The
 //!   vote's id is the digest of that snapshot. Amendments to the register or the rules
 //!   after this height are irrelevant to this vote for ever after.

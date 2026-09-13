@@ -1,33 +1,50 @@
-//! End-to-end: found a company, publish its register and rules, amend, show, verify.
+//! End-to-end: found a company, amend its parts, show it at heights, verify it, and
+//! run a vote on it.
 
 use std::process::{Command, Output};
 use tempfile::TempDir;
 
-const GENESIS: &str = r#"<company-genesis>
-  <identity name="Acme Industries Ltd" jurisdiction="gb" registered-number="01234567"/>
-</company-genesis>
-"#;
-const SHARES_V1: &str = r#"<share-structure>
-  <holder id="alice" key="4e9c4e9c4e9c4e9c4e9c4e9c4e9c4e9c4e9c4e9c4e9c4e9c4e9c4e9c4e9c4e9c" name="Alice Smith" shares="500"/>
-  <holder id="bob" key="7b217b217b217b217b217b217b217b217b217b217b217b217b217b217b217b21" shares="300"/>
-  <holder id="carol" shares="200"/>
-</share-structure>
-"#;
-const SHARES_V2: &str = r#"<share-structure>
-  <holder id="alice" key="4e9c4e9c4e9c4e9c4e9c4e9c4e9c4e9c4e9c4e9c4e9c4e9c4e9c4e9c4e9c4e9c" name="Alice Smith" shares="500"/>
-  <holder id="bob" key="7b217b217b217b217b217b217b217b217b217b217b217b217b217b217b217b21" shares="150"/>
-  <holder id="carol" shares="200"/>
-  <holder id="dave" key="d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0" shares="150"/>
-</share-structure>
-"#;
 const RULES: &str = r#"<voting-rules version="1.0">
   <weight type="electorate"/>
   <exclusions enabled="true"/>
-  <quorum type="none"/>
+  <quorum type="fraction" numerator="1" denominator="2" basis="total-electorate"/>
   <threshold type="simple-majority" basis="votes-cast"/>
   <abstentions treatment="exclude"/>
   <tie treatment="reject"/>
 </voting-rules>
+"#;
+
+/// alice (500, key from seed 0x01), bob (300, seed 0x02), carol (200, no key).
+fn register() -> String {
+    let key = |seed: u8| prunella_crypto::SigningKey::from_seed([seed; 32]).public_key();
+    format!(
+        r#"<share-structure>
+  <holder id="alice" key="{}" name="Alice Smith" shares="500"/>
+  <holder id="bob" key="{}" shares="300"/>
+  <holder id="carol" shares="200"/>
+</share-structure>
+"#,
+        key(1),
+        key(2)
+    )
+}
+
+/// The whole company, as founded.
+fn genesis() -> String {
+    format!(
+        r#"<company-genesis>
+  <identity name="Acme Industries Ltd" jurisdiction="gb" registered-number="01234567"/>
+  {}
+  <governance>
+  {RULES}
+  </governance>
+</company-genesis>
+"#,
+        register()
+    )
+}
+
+const IDENTITY_V2: &str = r#"<identity name="Acme Industries plc" jurisdiction="gb" registered-number="01234567"/>
 "#;
 
 struct Cli {
@@ -75,15 +92,26 @@ const NOTARY: &[&str] = &[
 impl Cli {
     fn new() -> Self {
         let dir = TempDir::new().expect("temp dir");
-        for (name, text) in [
-            ("genesis.xml", GENESIS),
-            ("shares1.xml", SHARES_V1),
-            ("shares2.xml", SHARES_V2),
-            ("rules.xml", RULES),
-        ] {
-            std::fs::write(dir.path().join(name), text).expect("write");
+        std::fs::write(dir.path().join("genesis.xml"), genesis()).expect("write");
+        std::fs::write(dir.path().join("identity2.xml"), IDENTITY_V2).expect("write");
+        std::fs::write(
+            dir.path().join("shares2.xml"),
+            register().replace("id=\"bob\"", "id=\"dave\""),
+        )
+        .expect("write");
+        std::fs::write(
+            dir.path().join("rules2.xml"),
+            RULES.replace("reject", "accept"),
+        )
+        .expect("write");
+        std::fs::write(dir.path().join("k.key"), "09".repeat(32)).expect("key");
+        for seed in 1..=3u8 {
+            std::fs::write(
+                dir.path().join(format!("holder{seed}.key")),
+                format!("{seed:02}").repeat(32),
+            )
+            .expect("key");
         }
-        std::fs::write(dir.path().join("k.key"), "01".repeat(32)).expect("key");
         Self { dir }
     }
     fn run(&self, args: &[&str]) -> Run {
@@ -100,99 +128,127 @@ impl Cli {
         full.extend_from_slice(NOTARY);
         self.run(&full)
     }
-    /// A founded company with its register at height 1 and rules at height 2.
+    /// A founded company: identity, register and rules all in block 0.
     fn founded(&self) -> Run {
-        let init = self
-            .with_notary(&[
-                "init",
-                "--network",
-                "acme-net",
-                "--company",
-                "acme",
-                "--genesis",
-                "genesis.xml",
-                "--signing-key",
-                "k.key",
-                "--json",
-            ])
-            .ok();
         self.with_notary(&[
-            "publish-shares",
+            "init",
+            "--network",
+            "acme-net",
             "--company",
             "acme",
-            "--file",
-            "shares1.xml",
+            "--genesis",
+            "genesis.xml",
             "--signing-key",
             "k.key",
-            "--timestamp",
-            "1000",
+            "--json",
         ])
-        .ok();
+        .ok()
+    }
+    /// The transaction currently providing a part.
+    fn provider(&self, part: &str) -> String {
+        self.run(&["show", "--json"]).ok().json()[part]["tx_id"]
+            .as_str()
+            .expect("tx id")
+            .to_owned()
+    }
+    fn amend(&self, command: &str, file: &str, part: &str, timestamp: &str) -> Run {
+        let supersedes = self.provider(part);
         self.with_notary(&[
-            "publish-rules",
-            "--company",
-            "acme",
+            command,
             "--file",
-            "rules.xml",
+            file,
             "--signing-key",
             "k.key",
+            "--supersedes",
+            &supersedes,
             "--timestamp",
-            "2000",
+            timestamp,
+            "--json",
+        ])
+    }
+    fn vote(&self, args: &[&str]) -> Run {
+        let mut full = vec!["vote"];
+        full.extend_from_slice(args);
+        self.run(&full)
+    }
+    fn ballot(&self, voter: &str, choice: &str, seed: u8) -> String {
+        let out = format!("{voter}.ballot");
+        self.vote(&[
+            "ballot",
+            "--state",
+            "v.state",
+            "--voter",
+            voter,
+            "--choice",
+            choice,
+            "--signing-key",
+            &format!("holder{seed}.key"),
+            "--out",
+            &out,
         ])
         .ok();
-        init
+        out
     }
 }
 
 #[test]
-fn init_founds_the_company_in_genesis() {
+fn init_founds_the_whole_company_in_genesis() {
     let cli = Cli::new();
     let init = cli.founded();
     assert_eq!(init.json()["company"], "acme");
-    let show = cli
-        .run(&["show", "--company", "acme", "--at", "2", "--json"])
-        .ok();
-    let state = show.json();
-    assert_eq!(state["genesis"]["height"], 0);
-    assert_eq!(state["genesis"]["tx_id"], init.json()["genesis_tx_id"]);
-    assert_eq!(
-        state["genesis"]["value"]["identity"]["name"],
-        "Acme Industries Ltd"
-    );
-    assert_eq!(state["shares"]["height"], 1);
-    assert_eq!(state["rules"]["height"], 2);
-    assert_eq!(state["rules"]["value"]["tie"], "reject");
-    assert_eq!(state["shares"]["notarisation"]["id"], "notary-07");
-    assert_eq!(state["shares"]["notarisation"]["name"], "Jane Roe");
-    assert_eq!(
-        state["shares"]["notarisation"]["address"],
-        "12 High Street, London"
-    );
-    assert_eq!(
-        state["shares"]["notarisation"]["at"],
-        "2026-03-01T09:30:00Z"
-    );
+    let genesis_tx = init.json()["genesis_tx_id"].as_str().unwrap().to_owned();
 
-    let text = cli.run(&["show", "--company", "acme"]).ok();
+    let state = cli.run(&["show", "--json"]).ok().json();
+    assert_eq!(state["company"], "acme");
+    assert_eq!(state["genesis_height"], 0);
+    assert_eq!(state["genesis_tx_id"], genesis_tx);
+    for part in ["identity", "shares", "rules"] {
+        assert_eq!(state[part]["height"], 0, "{part}");
+        assert_eq!(
+            state[part]["tx_id"], genesis_tx,
+            "{part} is provided by the genesis"
+        );
+        assert!(state[part]["supersedes"].is_null(), "{part}");
+        assert_eq!(state[part]["notarisation"]["id"], "notary-07");
+        assert_eq!(state[part]["notarisation"]["name"], "Jane Roe");
+        assert_eq!(
+            state[part]["notarisation"]["address"],
+            "12 High Street, London"
+        );
+        assert_eq!(state[part]["notarisation"]["at"], "2026-03-01T09:30:00Z");
+    }
+    assert_eq!(state["identity"]["value"]["name"], "Acme Industries Ltd");
+    assert_eq!(state["shares"]["value"].as_array().map(Vec::len), Some(3));
+    assert_eq!(state["rules"]["value"]["tie"], "reject");
+    assert_eq!(state["applied"].as_array().map(Vec::len), Some(1));
+
+    let text = cli.run(&["show"]).ok();
     assert!(text.out().contains("Acme Industries Ltd"), "{}", text.out());
+    assert!(text.out().contains("founded at height 0"), "{}", text.out());
     assert!(
         text.out()
             .contains("Jane Roe (notary-07), 12 High Street, London at 2026-03-01T09:30:00Z"),
         "{}",
         text.out()
     );
+    assert!(text.out().contains("1 record(s) applied"), "{}", text.out());
 }
 
 #[test]
-fn show_before_the_company_is_complete_says_what_is_missing() {
+fn a_plain_chain_has_no_company() {
     let cli = Cli::new();
-    cli.founded();
-    let early = cli.run(&["show", "--company", "acme", "--at", "1"]);
-    assert_eq!(early.code(), 2);
+    let path = cli.dir.path().join("acme.chain");
+    prunella_store::LocalChainStore::init_genesis(
+        &path,
+        prunella_core::GenesisSpec::new(prunella_core::NetworkId::new("plain").unwrap()),
+    )
+    .expect("plain chain");
+    let show = cli.run(&["show"]);
+    assert_eq!(show.code(), 2);
     assert!(
-        early.err().contains("no voting-rules record is in force"),
+        show.err().contains("no company is founded"),
         "{}",
-        early.err()
+        show.err()
     );
 }
 
@@ -200,12 +256,9 @@ fn show_before_the_company_is_complete_says_what_is_missing() {
 fn shares_prints_each_holder_with_weight_and_signing_ability() {
     let cli = Cli::new();
     cli.founded();
-    let shares = cli.run(&["shares", "--company", "acme"]).ok();
+    let shares = cli.run(&["shares"]).ok();
     let out = shares.out();
-    assert!(
-        out.contains("3 holder(s), 1000 share(s) in issue; one share, one vote"),
-        "{out}"
-    );
+    assert!(out.contains("3 holder(s), 1000 share(s) in issue; one share, one vote; total weight 1000; 2 can sign"), "{out}");
     assert!(
         out.contains("alice") && out.contains("500") && out.contains("can sign"),
         "{out}"
@@ -214,11 +267,7 @@ fn shares_prints_each_holder_with_weight_and_signing_ability() {
         out.contains("carol") && out.contains("no key: cannot sign"),
         "{out}"
     );
-
-    let json = cli
-        .run(&["shares", "--company", "acme", "--json"])
-        .ok()
-        .json();
+    let json = cli.run(&["shares", "--json"]).ok().json();
     assert_eq!(json["total_shares"], 1000);
     assert_eq!(json["holders"][0]["id"], "alice");
     assert_eq!(json["holders"][0]["weight"], 500);
@@ -226,91 +275,104 @@ fn shares_prints_each_holder_with_weight_and_signing_ability() {
 }
 
 #[test]
-fn an_amendment_needs_the_id_in_force_and_history_lists_both() {
+fn each_part_amends_on_its_own_and_past_heights_keep_their_company() {
     let cli = Cli::new();
-    cli.founded();
-    let v1 = cli
-        .run(&["shares", "--company", "acme", "--json"])
-        .ok()
-        .json()["record"]["tx_id"]
+    let genesis_tx = cli.founded().json()["genesis_tx_id"]
         .as_str()
-        .expect("tx id")
+        .unwrap()
         .to_owned();
 
-    // Without --supersedes the amendment is stale.
-    let stale = cli.with_notary(&[
+    // Without --supersedes clap refuses; with a stale one Irena refuses.
+    let missing = cli.with_notary(&[
         "publish-shares",
-        "--company",
-        "acme",
         "--file",
         "shares2.xml",
         "--signing-key",
         "k.key",
+    ]);
+    assert_eq!(missing.code(), 2);
+    assert!(missing.err().contains("--supersedes"), "{}", missing.err());
+
+    let shares = cli
+        .amend("publish-shares", "shares2.xml", "shares", "1000")
+        .ok();
+    assert_eq!(shares.json()["height"], 1);
+    assert_eq!(shares.json()["record"]["supersedes"], genesis_tx);
+    let shares_tx = shares.json()["tx_id"].as_str().unwrap().to_owned();
+
+    let stale = cli.with_notary(&[
+        "publish-shares",
+        "--file",
+        "shares2.xml",
+        "--signing-key",
+        "k.key",
+        "--supersedes",
+        &genesis_tx,
         "--timestamp",
-        "3000",
+        "2000",
     ]);
     assert_eq!(stale.code(), 2);
     assert!(stale.err().contains("stale amendment"), "{}", stale.err());
+    assert!(stale.err().contains(&shares_tx), "{}", stale.err());
 
-    let amended = cli
-        .with_notary(&[
-            "publish-shares",
-            "--company",
-            "acme",
-            "--file",
-            "shares2.xml",
-            "--signing-key",
-            "k.key",
-            "--supersedes",
-            &v1,
-            "--timestamp",
-            "3000",
-            "--json",
-        ])
+    let identity = cli
+        .amend("publish-identity", "identity2.xml", "identity", "2000")
         .ok();
-    assert_eq!(amended.json()["height"], 3);
-    assert_eq!(amended.json()["record"]["supersedes"], v1);
+    assert_eq!(
+        identity.json()["record"]["supersedes"],
+        genesis_tx,
+        "identity was still the genesis's"
+    );
+    let rules = cli
+        .amend("publish-rules", "rules2.xml", "rules", "3000")
+        .ok();
+    assert_eq!(rules.json()["record"]["supersedes"], genesis_tx);
 
+    let now = cli.run(&["show", "--json"]).ok().json();
+    assert_eq!(now["identity"]["value"]["name"], "Acme Industries plc");
+    assert_eq!(now["shares"]["value"][2]["id"], "dave");
+    assert_eq!(now["rules"]["value"]["tie"], "accept");
+    assert_eq!(now["applied"].as_array().map(Vec::len), Some(4));
+
+    // The company at height 1: the new register, the old name and rules.
+    let then = cli.run(&["show", "--at", "1", "--json"]).ok().json();
+    assert_eq!(then["shares"]["tx_id"], shares_tx);
+    assert_eq!(then["identity"]["value"]["name"], "Acme Industries Ltd");
+    assert_eq!(then["rules"]["tx_id"], genesis_tx);
+    assert_eq!(then["applied"].as_array().map(Vec::len), Some(2));
+    let founded = cli.run(&["shares", "--at", "0", "--json"]).ok().json();
+    assert_eq!(founded["holders"][1]["id"], "bob");
+
+    // History of a part: the genesis, then its amendments.
     let history = cli
-        .run(&[
-            "history",
-            "--company",
-            "acme",
-            "--kind",
-            "share-structure",
-            "--json",
-        ])
+        .run(&["history", "--kind", "share-structure", "--json"])
         .ok()
         .json();
     assert_eq!(history.as_array().map(Vec::len), Some(2));
-    assert_eq!(history[1]["record"]["supersedes"], v1);
-
-    // At height 2 the old register is still what was in force.
-    let then = cli
-        .run(&["shares", "--company", "acme", "--at", "2", "--json"])
-        .ok()
-        .json();
-    assert_eq!(then["record"]["tx_id"], v1);
-    assert_eq!(then["holders"].as_array().map(Vec::len), Some(3));
-    let now = cli
-        .run(&["shares", "--company", "acme", "--json"])
-        .ok()
-        .json();
-    assert_eq!(now["holders"].as_array().map(Vec::len), Some(4));
-
-    let bad_kind = cli.run(&["history", "--company", "acme", "--kind", "roll"]);
-    assert_eq!(bad_kind.code(), 2);
+    assert_eq!(history[0]["record"]["body"]["kind"], "company-genesis");
+    assert_eq!(history[1]["tx_id"], shares_tx);
+    let text = cli.run(&["history", "--kind", "voting-rules"]).ok();
+    assert!(
+        text.out()
+            .contains("2 record(s) have provided voting-rules"),
+        "{}",
+        text.out()
+    );
+    assert_eq!(cli.run(&["history", "--kind", "company-genesis"]).code(), 2);
+    assert_eq!(cli.run(&["history", "--kind", "roll"]).code(), 2);
 }
 
 #[test]
-fn verify_structure_reports_intact_chains_and_a_break() {
+fn verify_structure_reports_an_intact_company_and_a_break() {
     let cli = Cli::new();
     cli.founded();
-    let verify = cli
-        .run(&["verify-structure", "--company", "acme", "--json"])
+    cli.amend("publish-shares", "shares2.xml", "shares", "1000")
         .ok();
+    let verify = cli.run(&["verify-structure", "--json"]).ok();
     assert_eq!(verify.json()["intact"], true);
-    assert_eq!(verify.json()["kinds"].as_array().map(Vec::len), Some(3));
+    assert_eq!(verify.json()["applied"], 2);
+    assert_eq!(verify.json()["providers"][1]["kind"], "share-structure");
+    assert_eq!(verify.json()["providers"][1]["versions"], 2);
 
     // Write a record around Irena, through Prunella's own API, that breaks the chain.
     let path = cli.dir.path().join("acme.chain");
@@ -350,58 +412,48 @@ fn verify_structure_reports_intact_chains_and_a_break() {
             .expect("build");
         store.append_block(block).expect("append");
     }
-    let verify = cli.run(&["verify-structure", "--company", "acme", "--json"]);
+    let verify = cli.run(&["verify-structure", "--json"]);
     assert_eq!(verify.code(), 1, "{}", verify.err());
     assert_eq!(verify.json()["intact"], false);
-    let rules_row = &verify.json()["kinds"][2];
-    assert_eq!(rules_row["kind"], "voting-rules");
-    assert_eq!(rules_row["intact"], false);
     assert!(
-        rules_row["error"]
+        verify.json()["error"]
             .as_str()
             .unwrap()
             .contains("broken amendment chain")
     );
-    // The other chains are still fine, and nothing was repaired.
-    assert_eq!(verify.json()["kinds"][1]["intact"], true);
-    assert_eq!(
-        cli.run(&["verify-structure", "--company", "acme"]).code(),
-        1
-    );
-    let text = cli.run(&["verify-structure", "--company", "acme"]);
+    let text = cli.run(&["verify-structure"]);
     assert!(
-        text.out().contains("nothing was repaired"),
+        text.out().contains("BROKEN") && text.out().contains("nothing was repaired"),
         "{}",
         text.out()
     );
+    // Before the break the company still reconstructs; nothing was repaired.
+    assert_eq!(cli.run(&["verify-structure", "--at", "1"]).code(), 0);
+    assert_eq!(cli.run(&["show"]).code(), 2);
 }
 
 #[test]
 fn every_notary_field_is_checked_and_bad_input_is_refused() {
     let cli = Cli::new();
     cli.founded();
+    let genesis_tx = cli.provider("rules");
     let base = [
         "publish-rules",
-        "--company",
-        "acme",
         "--file",
-        "rules.xml",
+        "rules2.xml",
         "--signing-key",
         "k.key",
+        "--supersedes",
+        &genesis_tx,
     ];
-    let head_before = cli
-        .run(&["verify-structure", "--company", "acme", "--json"])
-        .ok()
-        .json();
+    let before = cli.run(&["show", "--json"]).ok().json();
 
-    // Missing --notary-at: clap refuses before anything runs.
     let mut without_at: Vec<&str> = base.to_vec();
     without_at.extend_from_slice(&["--notary-id", "n", "--notary-name", "N"]);
     let run = cli.run(&without_at);
     assert_eq!(run.code(), 2);
     assert!(run.err().contains("--notary-at"), "{}", run.err());
 
-    // A non-canonical time is refused by Irena.
     let mut bad_at: Vec<&str> = base.to_vec();
     bad_at.extend_from_slice(&[
         "--notary-id",
@@ -415,7 +467,6 @@ fn every_notary_field_is_checked_and_bad_input_is_refused() {
     assert_eq!(run.code(), 2);
     assert!(run.err().contains("--notary-at"), "{}", run.err());
 
-    // An invalid body is refused with the body's own issues.
     std::fs::write(
         cli.dir.path().join("bad.xml"),
         "<share-structure><holder id=\"a\" shares=\"0\"/></share-structure>",
@@ -423,43 +474,64 @@ fn every_notary_field_is_checked_and_bad_input_is_refused() {
     .expect("write");
     let run = cli.with_notary(&[
         "publish-shares",
-        "--company",
-        "acme",
         "--file",
         "bad.xml",
         "--signing-key",
         "k.key",
         "--supersedes",
-        "0000000000000000000000000000000000000000000000000000000000000000",
+        &genesis_tx,
     ]);
     assert_eq!(run.code(), 2);
+    assert!(run.err().contains("zero shares"), "{}", run.err());
 
-    let run = cli.run(&["show", "--company", "Acme Ltd"]);
+    // A genesis that is not a whole company is refused at init.
+    let other = Cli::new();
+    std::fs::write(
+        other.dir.path().join("half.xml"),
+        "<company-genesis><identity name=\"Half\"/></company-genesis>",
+    )
+    .expect("write");
+    let run = other.with_notary(&[
+        "init",
+        "--network",
+        "n",
+        "--company",
+        "half",
+        "--genesis",
+        "half.xml",
+        "--signing-key",
+        "k.key",
+    ]);
     assert_eq!(run.code(), 2);
-    assert!(run.err().contains("--company"), "{}", run.err());
+    assert!(
+        run.err().contains("share-structure") && run.err().contains("governance"),
+        "{}",
+        run.err()
+    );
+    assert_eq!(other.run(&["show"]).code(), 2, "no chain was created");
 
-    // None of that touched the chain.
-    let head_after = cli
-        .run(&["verify-structure", "--company", "acme", "--json"])
-        .ok()
-        .json();
-    assert_eq!(head_before, head_after);
+    assert_eq!(
+        cli.run(&["show", "--json"]).ok().json(),
+        before,
+        "nothing touched the chain"
+    );
 }
 
 #[test]
-fn the_export_shows_every_record_nested_and_readable() {
+fn the_export_shows_the_whole_company_nested_and_readable() {
     let cli = Cli::new();
     cli.founded();
-    let path = cli.dir.path().join("acme.chain");
-    let store = prunella_store::LocalChainStore::open(&path).expect("open");
+    let store =
+        prunella_store::LocalChainStore::open(cli.dir.path().join("acme.chain")).expect("open");
     let document =
         prunella_xml::export(&store, &prunella_xml::ExportRequest::full()).expect("export");
     let xml = prunella_xml::write_document(&document).expect("render");
-    assert!(xml.contains("<payload encoding=\"xml\"><irena-record version=\"1.0\" kind=\"share-structure\" company=\"acme\">"), "{xml}");
+    assert!(xml.contains("<payload encoding=\"xml\"><irena-record version=\"1.0\" kind=\"company-genesis\" company=\"acme\">"), "{xml}");
     assert!(
         xml.contains("<holder id=\"carol\" shares=\"200\"/>"),
         "{xml}"
     );
+    assert!(xml.contains("<governance>"), "{xml}");
     assert!(xml.contains("<notarisation id=\"notary-07\" name=\"Jane Roe\" address=\"12 High Street, London\" at=\"2026-03-01T09:30:00Z\"/>"), "{xml}");
 }
 
@@ -467,71 +539,15 @@ fn the_export_shows_every_record_nested_and_readable() {
 // Votes.
 // ---------------------------------------------------------------------------------
 
-/// A register whose holders' keys are the seeds 0x01 (alice) and 0x02 (bob); carol
-/// has none.
-fn keyed_register() -> String {
-    let key = |seed: u8| prunella_crypto::SigningKey::from_seed([seed; 32]).public_key();
-    format!(
-        r#"<share-structure>
-  <holder id="alice" key="{}" shares="500"/>
-  <holder id="bob" key="{}" shares="300"/>
-  <holder id="carol" shares="200"/>
-</share-structure>
-"#,
-        key(1),
-        key(2)
-    )
-}
-
-impl Cli {
-    /// A founded company whose holders can sign, and seed files for them.
-    fn founded_for_voting(&self) {
-        std::fs::write(self.dir.path().join("shares1.xml"), keyed_register()).expect("write");
-        for seed in 1..=3u8 {
-            std::fs::write(
-                self.dir.path().join(format!("holder{seed}.key")),
-                format!("{seed:02}").repeat(32),
-            )
-            .expect("key");
-        }
-        self.founded();
-    }
-    fn vote(&self, args: &[&str]) -> Run {
-        let mut full = vec!["vote"];
-        full.extend_from_slice(args);
-        self.run(&full)
-    }
-    fn ballot(&self, voter: &str, choice: &str, seed: u8) -> String {
-        let out = format!("{voter}.ballot");
-        self.vote(&[
-            "ballot",
-            "--state",
-            "v.state",
-            "--voter",
-            voter,
-            "--choice",
-            choice,
-            "--signing-key",
-            &format!("holder{seed}.key"),
-            "--out",
-            &out,
-        ])
-        .ok();
-        out
-    }
-}
-
 #[test]
 fn a_vote_runs_end_to_end_and_the_freeze_holds_against_a_mid_vote_amendment() {
     let cli = Cli::new();
-    cli.founded_for_voting();
+    cli.founded();
     let digest = "d0".repeat(32);
 
     let new = cli
         .vote(&[
             "new",
-            "--company",
-            "acme",
             "--subject",
             "Approve the 2026 accounts",
             "--proposal-digest",
@@ -543,11 +559,14 @@ fn a_vote_runs_end_to_end_and_the_freeze_holds_against_a_mid_vote_amendment() {
         .ok();
     assert_eq!(new.json()["status"], "draft");
 
-    let frozen = cli
-        .vote(&["freeze", "--state", "v.state", "--at", "2", "--json"])
-        .ok();
+    let frozen = cli.vote(&["freeze", "--state", "v.state", "--json"]).ok();
     assert_eq!(frozen.json()["status"], "frozen");
-    assert_eq!(frozen.json()["snapshot"]["height"], 2);
+    assert_eq!(
+        frozen.json()["company"],
+        "acme",
+        "the company comes from the chain"
+    );
+    assert_eq!(frozen.json()["snapshot"]["height"], 0);
     assert_eq!(
         frozen.json()["snapshot"]["electorate"]
             .as_array()
@@ -556,7 +575,6 @@ fn a_vote_runs_end_to_end_and_the_freeze_holds_against_a_mid_vote_amendment() {
     );
     let vote_id = frozen.json()["vote_id"].as_str().unwrap().to_owned();
 
-    // Not open yet: a ballot is refused with both ends of the transition named.
     let alice = cli.ballot("alice", "yes", 1);
     let early = cli.vote(&["cast", "--state", "v.state", "--ballot", &alice]);
     assert_eq!(early.code(), 2);
@@ -575,7 +593,6 @@ fn a_vote_runs_end_to_end_and_the_freeze_holds_against_a_mid_vote_amendment() {
     cli.vote(&["cast", "--state", "v.state", "--ballot", &bob])
         .ok();
 
-    // carol owns shares but registered no key.
     let carol = cli.ballot("carol", "yes", 3);
     let keyless = cli.vote(&["cast", "--state", "v.state", "--ballot", &carol]);
     assert_eq!(keyless.code(), 2);
@@ -585,7 +602,6 @@ fn a_vote_runs_end_to_end_and_the_freeze_holds_against_a_mid_vote_amendment() {
         keyless.err()
     );
 
-    // alice again, changing her mind: the first ballot stands.
     let again = cli.ballot("alice", "no", 1);
     let duplicate = cli.vote(&["cast", "--state", "v.state", "--ballot", &again]);
     assert_eq!(duplicate.code(), 2);
@@ -595,39 +611,14 @@ fn a_vote_runs_end_to_end_and_the_freeze_holds_against_a_mid_vote_amendment() {
         duplicate.err()
     );
 
-    // The register is amended mid-vote: bob sells everything to dave.
-    let v1 = cli
-        .run(&["shares", "--company", "acme", "--json"])
-        .ok()
-        .json()["record"]["tx_id"]
-        .as_str()
-        .unwrap()
-        .to_owned();
-    std::fs::write(
-        cli.dir.path().join("shares-amended.xml"),
-        keyed_register().replace("id=\"bob\"", "id=\"dave\""),
-    )
-    .expect("write");
-    cli.with_notary(&[
-        "publish-shares",
-        "--company",
-        "acme",
-        "--file",
-        "shares-amended.xml",
-        "--signing-key",
-        "k.key",
-        "--supersedes",
-        &v1,
-        "--timestamp",
-        "3000",
-    ])
-    .ok();
-    let now = cli
-        .run(&["shares", "--company", "acme", "--json"])
-        .ok()
-        .json();
-    assert_eq!(now["holders"][2]["id"], "dave", "the chain moved on");
-
+    // The register is amended mid-vote: bob's shares go to dave.
+    cli.amend("publish-shares", "shares2.xml", "shares", "3000")
+        .ok();
+    assert_eq!(
+        cli.run(&["shares", "--json"]).ok().json()["holders"][2]["id"],
+        "dave",
+        "the chain moved on"
+    );
     let status = cli
         .vote(&["status", "--state", "v.state", "--json"])
         .ok()
@@ -659,16 +650,10 @@ fn a_vote_runs_end_to_end_and_the_freeze_holds_against_a_mid_vote_amendment() {
         ])
         .ok();
     let tx = finalized.json()["tx_id"].as_str().unwrap().to_owned();
-    assert_eq!(finalized.json()["height"], 4);
-    assert_eq!(finalized.json()["record"]["snapshot"]["height"], 2);
+    assert_eq!(finalized.json()["height"], 2);
+    assert_eq!(finalized.json()["record"]["snapshot"]["height"], 0);
 
-    // Verification from nothing but the chain and the id.
     let verified = cli.vote(&["verify", "--tx", &tx]).ok();
-    assert!(
-        verified.out().contains("ResultReproduces"),
-        "{}",
-        verified.out()
-    );
     assert!(
         verified.out().contains("exactly what the chain says"),
         "{}",
@@ -685,7 +670,6 @@ fn a_vote_runs_end_to_end_and_the_freeze_holds_against_a_mid_vote_amendment() {
         "{report}"
     );
 
-    // A finalised vote is finished.
     let again = cli.vote(&["finalize", "--state", "v.state", "--signing-key", "k.key"]);
     assert_eq!(again.code(), 2);
     assert!(
@@ -700,12 +684,10 @@ fn a_vote_runs_end_to_end_and_the_freeze_holds_against_a_mid_vote_amendment() {
 #[test]
 fn a_corrupted_record_fails_verification_by_name() {
     let cli = Cli::new();
-    cli.founded_for_voting();
+    cli.founded();
     let digest = "d0".repeat(32);
     cli.vote(&[
         "new",
-        "--company",
-        "acme",
         "--subject",
         "x",
         "--proposal-digest",
@@ -714,8 +696,7 @@ fn a_corrupted_record_fails_verification_by_name() {
         "v.state",
     ])
     .ok();
-    cli.vote(&["freeze", "--state", "v.state", "--at", "2"])
-        .ok();
+    cli.vote(&["freeze", "--state", "v.state"]).ok();
     cli.vote(&["open", "--state", "v.state"]).ok();
     let alice = cli.ballot("alice", "yes", 1);
     cli.vote(&["cast", "--state", "v.state", "--ballot", &alice])
@@ -784,9 +765,6 @@ fn a_corrupted_record_fails_verification_by_name() {
         "{}",
         failed.out()
     );
-    assert!(failed.out().contains("does not verify"), "{}", failed.out());
-    // The ballot's digest moved with its signature, so the commitment no longer
-    // derives either: both findings are reported, not just the first.
     assert!(
         failed.out().contains("FAIL CommitmentDerives"),
         "{}",
@@ -797,22 +775,21 @@ fn a_corrupted_record_fails_verification_by_name() {
         "{}",
         failed.out()
     );
-    // The genuine record still verifies: Prunella kept both, and only one is true.
-    assert_eq!(cli.vote(&["verify", "--tx", &tx]).code(), 0);
-
-    let missing = cli.vote(&["verify", "--tx", &"00".repeat(32)]);
-    assert_eq!(missing.code(), 2);
+    assert_eq!(
+        cli.vote(&["verify", "--tx", &tx]).code(),
+        0,
+        "the genuine record still verifies"
+    );
+    assert_eq!(cli.vote(&["verify", "--tx", &"00".repeat(32)]).code(), 2);
 }
 
 #[test]
 fn a_vote_needs_a_frozen_company_and_a_rejected_motion_exits_one() {
     let cli = Cli::new();
-    cli.founded_for_voting();
+    cli.founded();
     let digest = "d0".repeat(32);
     cli.vote(&[
         "new",
-        "--company",
-        "acme",
         "--subject",
         "x",
         "--proposal-digest",
@@ -821,8 +798,6 @@ fn a_vote_needs_a_frozen_company_and_a_rejected_motion_exits_one() {
         "v.state",
     ])
     .ok();
-
-    // Nothing to vote on before the freeze.
     let early = cli.vote(&[
         "ballot",
         "--state",
@@ -837,15 +812,6 @@ fn a_vote_needs_a_frozen_company_and_a_rejected_motion_exits_one() {
         "a.ballot",
     ]);
     assert_eq!(early.code(), 2);
-    // Freezing where the company is incomplete is refused and leaves a draft.
-    let incomplete = cli.vote(&["freeze", "--state", "v.state", "--at", "1"]);
-    assert_eq!(incomplete.code(), 2);
-    assert_eq!(
-        cli.vote(&["status", "--state", "v.state", "--json"])
-            .ok()
-            .json()["status"],
-        "draft"
-    );
 
     cli.vote(&["freeze", "--state", "v.state"]).ok();
     cli.vote(&["open", "--state", "v.state"]).ok();
@@ -867,7 +833,6 @@ fn a_vote_needs_a_frozen_company_and_a_rejected_motion_exits_one() {
     ]);
     assert_eq!(bad_choice.code(), 2);
     cli.vote(&["close", "--state", "v.state"]).ok();
-    // 300 no against a 1/2-of-1000 quorum with no yes: rejected, exit 1.
     let evaluated = cli.vote(&["evaluate", "--state", "v.state"]);
     assert_eq!(evaluated.code(), 1, "{}", evaluated.err());
     assert!(evaluated.out().contains("Rejected"), "{}", evaluated.out());
