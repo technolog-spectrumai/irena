@@ -108,9 +108,9 @@ pub(crate) fn run(cli: &Cli) -> Result<u8, String> {
             for holder in &derived.holders {
                 lines.push(format!(
                     "  {:<24} shares {:>12}  weight {:>12}  {}",
-                    holder.id,
+                    holder.id.as_str(),
                     holder.shares,
-                    holder.weight,
+                    holder.weight.value(),
                     if holder.can_sign {
                         "can sign"
                     } else {
