@@ -3,9 +3,12 @@
   Irena record, version 1.
 
   The notarised envelope that carries company data on a Prunella ledger. One envelope,
-  one body, three kinds with separate amendment chains:
+  one body. The first record of a company is its genesis, which carries everything;
+  every later record amends exactly one part and names the record that currently
+  provides that part (supersedes):
 
-    kind="company-genesis"  carries <company-genesis>  (irena-company-v1.xsd)
+    kind="company-genesis"  carries <company-genesis>  (irena-company-v1.xsd), once
+    kind="identity"         carries <identity>         (irena-company-v1.xsd)
     kind="share-structure"  carries <share-structure>  (irena-company-v1.xsd)
     kind="voting-rules"     carries <voting-rules>     (bornite-voting-rules-v1.xsd)
 
@@ -19,9 +22,10 @@
   of it and interprets none of it: the ledger's own order is the only order, and the
   notary's date-time is never used to sequence or resolve anything.
 
-  A record that amends another names the transaction id of the record currently in
-  force for its (company, kind) in supersedes; the first record of a kind has none.
-  The ledger layer refuses anything else as a stale amendment.
+  An amendment names in supersedes the transaction id of the record that currently
+  provides the part it amends: the genesis, or the last amendment of that part. The
+  genesis has none. The ledger layer refuses anything else as a stale amendment, and
+  refuses a second genesis: one company per chain.
 
   Enforced by the reader, not this schema: the kind attribute must match the element
   carried; the body's own constraints (see the included schemas).
@@ -29,12 +33,12 @@
 <xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema" elementFormDefault="qualified"
            attributeFormDefault="unqualified">
 
-  <xs:include schemaLocation="bornite-voting-rules-v1.xsd"/>
   <xs:include schemaLocation="irena-company-v1.xsd"/>
 
   <xs:simpleType name="RecordKind">
     <xs:restriction base="xs:string">
       <xs:enumeration value="company-genesis"/>
+      <xs:enumeration value="identity"/>
       <xs:enumeration value="share-structure"/>
       <xs:enumeration value="voting-rules"/>
     </xs:restriction>
@@ -74,6 +78,7 @@
         </xs:element>
         <xs:choice>
           <xs:element name="company-genesis" type="CompanyGenesis"/>
+          <xs:element name="identity" type="Identity"/>
           <xs:element name="share-structure" type="ShareStructure"/>
           <xs:element name="voting-rules" type="VotingRules"/>
         </xs:choice>

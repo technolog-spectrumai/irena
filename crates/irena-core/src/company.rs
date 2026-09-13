@@ -94,7 +94,30 @@ pub struct IdentityV1 {
     pub registered_number: Option<String>,
 }
 
-/// The founding record: identity plus a reference to the incorporation document.
+impl IdentityV1 {
+    /// Validates the identity: the name must be non-empty.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`IrenaError::Invalid`] listing every problem.
+    pub fn validate(&self) -> Result<(), IrenaError> {
+        if self.name.trim().is_empty() {
+            return Err(IrenaError::invalid(vec![IssueV1::InvalidValue {
+                element: "identity",
+                attribute: "name",
+                value: self.name.clone(),
+                reason: "must not be empty".to_owned(),
+            }]));
+        }
+        Ok(())
+    }
+}
+
+/// The founding record: the whole company as it starts.
+///
+/// One document founds a company — who it is, who holds its shares, and how it
+/// decides. Everything a later record can amend is here first, so the state at any
+/// height is this document plus the amendments up to that height, and nothing else.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
 pub struct CompanyGenesisV1 {
     /// Who the company is.
@@ -103,30 +126,10 @@ pub struct CompanyGenesisV1 {
     ///
     /// Opaque: Irena never sees the document, only commits to which one was meant.
     pub incorporation_digest: Option<Hash>,
-}
-
-impl CompanyGenesisV1 {
-    /// Validates the genesis body: the name must be non-empty.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`IrenaError::Invalid`] listing every problem.
-    pub fn validate(&self) -> Result<(), IrenaError> {
-        let mut issues = Vec::new();
-        if self.identity.name.trim().is_empty() {
-            issues.push(IssueV1::InvalidValue {
-                element: "identity",
-                attribute: "name",
-                value: self.identity.name.clone(),
-                reason: "must not be empty".to_owned(),
-            });
-        }
-        if issues.is_empty() {
-            Ok(())
-        } else {
-            Err(IrenaError::invalid(issues))
-        }
-    }
+    /// The initial share register.
+    pub shares: crate::shares::ShareStructureV1,
+    /// The initial governance configuration: Bornite's voting rules, unchanged.
+    pub rules: bornite_rules::VotingRulesV1,
 }
 
 #[cfg(test)]
@@ -163,16 +166,13 @@ mod tests {
     }
 
     #[test]
-    fn a_genesis_needs_a_name() {
-        let genesis = CompanyGenesisV1 {
-            identity: IdentityV1 {
-                name: "  ".to_owned(),
-                jurisdiction: None,
-                registered_number: None,
-            },
-            incorporation_digest: None,
+    fn an_identity_needs_a_name() {
+        let identity = IdentityV1 {
+            name: "  ".to_owned(),
+            jurisdiction: None,
+            registered_number: None,
         };
-        let error = genesis.validate().expect_err("blank name");
+        let error = identity.validate().expect_err("blank name");
         assert_eq!(error.issues().len(), 1);
     }
 }

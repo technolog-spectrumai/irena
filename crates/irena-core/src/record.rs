@@ -1,10 +1,12 @@
 //! The notarised envelope that carries company data on the ledger.
 //!
-//! One envelope, one body, three kinds with **separate amendment chains** — the share
-//! register changes often, the voting rules rarely, the genesis almost never, and an
-//! amendment to one must not have to name the other two.
+//! One envelope, one body. The first record of a company is its genesis, which carries
+//! everything; every later record amends exactly one part — identity, share register
+//! or voting rules — and names the record that currently provides that part. The
+//! company at any height is the genesis plus the amendments up to there, applied in
+//! chain order (`irena-ledger`).
 
-use crate::company::{CompanyGenesisV1, CompanyIdV1};
+use crate::company::{CompanyGenesisV1, CompanyIdV1, IdentityV1};
 use crate::notarisation::NotarisationV1;
 use crate::shares::ShareStructureV1;
 use bornite_rules::VotingRulesV1;
@@ -20,27 +22,34 @@ pub const RECORD_SCHEMA_VERSION: u32 = 1;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum RecordKindV1 {
-    /// A `<company-genesis>` element.
+    /// A `<company-genesis>` element: the whole company, once.
     CompanyGenesis,
-    /// A `<share-structure>` element.
+    /// An `<identity>` element: amends who the company is.
+    Identity,
+    /// A `<share-structure>` element: amends the register.
     ShareStructure,
-    /// A `<voting-rules>` element: Bornite's, unchanged.
+    /// A `<voting-rules>` element, Bornite's unchanged: amends the rules.
     VotingRules,
 }
 
 impl RecordKindV1 {
     /// Every kind, in a fixed order.
-    pub const ALL: [Self; 3] = [
+    pub const ALL: [Self; 4] = [
         Self::CompanyGenesis,
+        Self::Identity,
         Self::ShareStructure,
         Self::VotingRules,
     ];
+
+    /// The kinds that amend one part of a founded company.
+    pub const AMENDMENTS: [Self; 3] = [Self::Identity, Self::ShareStructure, Self::VotingRules];
 
     /// The attribute text.
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::CompanyGenesis => "company-genesis",
+            Self::Identity => "identity",
             Self::ShareStructure => "share-structure",
             Self::VotingRules => "voting-rules",
         }
@@ -56,7 +65,7 @@ impl RecordKindV1 {
     #[must_use]
     pub const fn namespace(self) -> &'static str {
         match self {
-            Self::CompanyGenesis => "irena.company.v1",
+            Self::CompanyGenesis | Self::Identity => "irena.company.v1",
             Self::ShareStructure => "irena.shares.v1",
             Self::VotingRules => "irena.rules.v1",
         }
@@ -81,9 +90,11 @@ impl core::fmt::Display for RecordKindV1 {
 pub enum RecordBodyV1 {
     /// The founding record.
     CompanyGenesis(CompanyGenesisV1),
-    /// The share register.
+    /// An amended identity.
+    Identity(IdentityV1),
+    /// An amended share register.
     ShareStructure(ShareStructureV1),
-    /// Voting rules.
+    /// Amended voting rules.
     VotingRules(VotingRulesV1),
 }
 
@@ -93,6 +104,7 @@ impl RecordBodyV1 {
     pub const fn kind(&self) -> RecordKindV1 {
         match self {
             Self::CompanyGenesis(_) => RecordKindV1::CompanyGenesis,
+            Self::Identity(_) => RecordKindV1::Identity,
             Self::ShareStructure(_) => RecordKindV1::ShareStructure,
             Self::VotingRules(_) => RecordKindV1::VotingRules,
         }
@@ -104,10 +116,11 @@ impl RecordBodyV1 {
 pub struct IrenaRecordV1 {
     /// Which company.
     pub company: CompanyIdV1,
-    /// The record of the same kind this one amends, if any.
+    /// The record that currently provides the part this one amends.
     ///
-    /// Must name the record currently in force for (company, kind), or be absent for
-    /// the first. The ledger layer enforces that; the type only carries it.
+    /// Absent on a genesis; on an amendment it must name the genesis or the last
+    /// amendment of the same part. The ledger layer enforces that; the type only
+    /// carries it.
     pub supersedes: Option<TxId>,
     /// Who attests to it, and when.
     pub notarisation: NotarisationV1,
@@ -137,7 +150,11 @@ mod tests {
         }
         namespaces.sort_unstable();
         namespaces.dedup();
-        assert_eq!(namespaces.len(), RecordKindV1::ALL.len());
+        assert_eq!(
+            namespaces.len(),
+            3,
+            "genesis and identity share a namespace"
+        );
         assert_eq!(RecordKindV1::parse("roll"), None);
     }
 }

@@ -5,8 +5,11 @@
   Two elements a company puts on its ledger, each carried by an <irena-record>
   (irena-record-v1.xsd) or read on its own:
 
-    <company-genesis>  who the company is: name, jurisdiction, registration, and the
-                       digest of the incorporation document.
+    <company-genesis>  the whole company as founded: <identity>, an optional
+                       <incorporation>, the initial <share-structure> and <governance>
+                       wrapping Bornite's <voting-rules>. One document founds a company;
+                       later records amend one part of it each.
+    <identity>         who the company is: name, jurisdiction, registration.
     <share-structure>  the share register. FLAT SHARES: every share is one vote, so a
                        holder is a holding and one element carries both. There are no
                        share classes in version 1; when they arrive they are a new
@@ -24,6 +27,7 @@
            attributeFormDefault="unqualified">
 
   <xs:include schemaLocation="bornite-common-v1.xsd"/>
+  <xs:include schemaLocation="bornite-voting-rules-v1.xsd"/>
 
   <!-- A 32-byte digest or Ed25519 public key as 64 lowercase hex characters. -->
   <xs:simpleType name="Hex32">
@@ -38,22 +42,31 @@
     </xs:restriction>
   </xs:simpleType>
 
+  <xs:complexType name="Identity">
+    <xs:attribute name="name" type="NonEmptyText" use="required"/>
+    <!-- Free text in whatever form the notary uses: gb, us-de, Delaware. -->
+    <xs:attribute name="jurisdiction" type="xs:string" use="optional"/>
+    <xs:attribute name="registered-number" type="xs:string" use="optional"/>
+  </xs:complexType>
+
+  <!-- The active governance configuration: exactly Bornite's element, unchanged. -->
+  <xs:complexType name="Governance">
+    <xs:sequence>
+      <xs:element name="voting-rules" type="VotingRules" minOccurs="1" maxOccurs="1"/>
+    </xs:sequence>
+  </xs:complexType>
+
   <xs:complexType name="CompanyGenesis">
     <xs:sequence>
-      <xs:element name="identity" minOccurs="1" maxOccurs="1">
-        <xs:complexType>
-          <xs:attribute name="name" type="NonEmptyText" use="required"/>
-          <!-- Free text in whatever form the notary uses: gb, us-de, Delaware. -->
-          <xs:attribute name="jurisdiction" type="xs:string" use="optional"/>
-          <xs:attribute name="registered-number" type="xs:string" use="optional"/>
-        </xs:complexType>
-      </xs:element>
+      <xs:element name="identity" type="Identity" minOccurs="1" maxOccurs="1"/>
       <xs:element name="incorporation" minOccurs="0" maxOccurs="1">
         <xs:complexType>
           <!-- Digest of the certificate of incorporation or equivalent. Opaque. -->
           <xs:attribute name="document-digest" type="Hex32" use="optional"/>
         </xs:complexType>
       </xs:element>
+      <xs:element name="share-structure" type="ShareStructure" minOccurs="1" maxOccurs="1"/>
+      <xs:element name="governance" type="Governance" minOccurs="1" maxOccurs="1"/>
     </xs:sequence>
   </xs:complexType>
 
@@ -74,6 +87,7 @@
   </xs:complexType>
 
   <xs:element name="company-genesis" type="CompanyGenesis"/>
+  <xs:element name="identity" type="Identity"/>
   <xs:element name="share-structure" type="ShareStructure"/>
 
 </xs:schema>

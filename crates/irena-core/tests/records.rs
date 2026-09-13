@@ -11,7 +11,25 @@ use std::path::Path;
 const GENESIS: &str = r#"<company-genesis>
   <identity name="Acme Industries Ltd" jurisdiction="gb" registered-number="01234567"/>
   <incorporation document-digest="9a3f9a3f9a3f9a3f9a3f9a3f9a3f9a3f9a3f9a3f9a3f9a3f9a3f9a3f9a3f9a3f"/>
+  <share-structure>
+    <holder id="alice" key="4e9c4e9c4e9c4e9c4e9c4e9c4e9c4e9c4e9c4e9c4e9c4e9c4e9c4e9c4e9c4e9c" name="Alice Smith" shares="500"/>
+    <holder id="bob" key="7b217b217b217b217b217b217b217b217b217b217b217b217b217b217b217b21" shares="300"/>
+    <holder id="carol" shares="200"/>
+  </share-structure>
+  <governance>
+    <voting-rules version="1.0">
+      <weight type="electorate"/>
+      <exclusions enabled="true"/>
+      <quorum type="fraction" numerator="1" denominator="2" basis="total-electorate"/>
+      <threshold type="simple-majority" basis="votes-cast"/>
+      <abstentions treatment="exclude"/>
+      <tie treatment="reject"/>
+    </voting-rules>
+  </governance>
 </company-genesis>"#;
+
+const IDENTITY: &str =
+    r#"<identity name="Acme Industries plc" jurisdiction="gb" registered-number="01234567"/>"#;
 
 const SHARES: &str = r#"<share-structure>
   <holder id="alice" key="4e9c4e9c4e9c4e9c4e9c4e9c4e9c4e9c4e9c4e9c4e9c4e9c4e9c4e9c4e9c4e9c" name="Alice Smith" shares="500"/>
@@ -43,9 +61,10 @@ fn notary() -> NotarisationV1 {
     }
 }
 
-fn bodies() -> [(RecordKindV1, &'static str); 3] {
+fn bodies() -> [(RecordKindV1, &'static str); 4] {
     [
         (RecordKindV1::CompanyGenesis, GENESIS),
+        (RecordKindV1::Identity, IDENTITY),
         (RecordKindV1::ShareStructure, SHARES),
         (RecordKindV1::VotingRules, RULES),
     ]
@@ -120,7 +139,7 @@ fn the_share_structure_is_read_into_a_sorted_register_with_keys() {
 }
 
 #[test]
-fn the_genesis_is_read_into_its_identity() {
+fn the_genesis_is_the_whole_company() {
     let genesis = read_company_genesis_document(GENESIS).expect("read");
     assert_eq!(genesis.identity.name, "Acme Industries Ltd");
     assert_eq!(genesis.identity.jurisdiction.as_deref(), Some("gb"));
@@ -134,13 +153,22 @@ fn the_genesis_is_read_into_its_identity() {
             [0x9a, 0x3f].repeat(16).try_into().unwrap()
         ))
     );
+    assert_eq!(genesis.shares.len(), 3);
+    assert_eq!(genesis.shares.total_shares(), 1000);
+    // The nested rules are exactly what Bornite reads from a standalone file.
+    let standalone = bornite_xml::read_rules_document(RULES).expect("rules");
+    assert_eq!(genesis.rules, standalone);
 
-    let minimal =
-        read_company_genesis_document(r#"<company-genesis><identity name="X"/></company-genesis>"#)
-            .expect("minimal");
+    let minimal = read_company_genesis_document(
+        r#"<company-genesis><identity name="X"/><share-structure/><governance><voting-rules version="1.0"><weight type="equal"/><exclusions enabled="false"/><quorum type="none"/><threshold type="simple-majority" basis="votes-cast"/><abstentions treatment="exclude"/><tie treatment="reject"/></voting-rules></governance></company-genesis>"#,
+    )
+    .expect("minimal");
     assert_eq!(minimal.incorporation_digest, None);
-}
+    assert!(minimal.shares.is_empty());
 
+    let identity = irena_core::read_identity_document(IDENTITY).expect("identity");
+    assert_eq!(identity.name, "Acme Industries plc");
+}
 #[test]
 fn notarisation_special_characters_survive() {
     let mut notarisation = notary();
@@ -430,19 +458,54 @@ fn share_structure_problems_are_collected_together() {
 }
 
 #[test]
-fn genesis_problems_are_reported() {
+fn genesis_problems_are_reported_together() {
+    let governance = GENESIS
+        [GENESIS.find("<governance>").unwrap()..GENESIS.find("</company-genesis>").unwrap()]
+        .to_owned();
+    let shares = GENESIS[GENESIS.find("<share-structure>").unwrap()
+        ..GENESIS.find("</share-structure>").unwrap() + "</share-structure>".len()]
+        .to_owned();
+    let with = |middle: &str| format!("<company-genesis>{middle}</company-genesis>");
     for (label, xml, expect) in [
         (
             "no identity",
-            "<company-genesis><incorporation/></company-genesis>",
+            with(&format!("<incorporation/>{shares}{governance}")),
             IssueV1::MissingElement {
                 parent: "company-genesis",
                 element: "identity",
             },
         ),
         (
+            "no register",
+            with(&format!("<identity name=\"a\"/>{governance}")),
+            IssueV1::MissingElement {
+                parent: "company-genesis",
+                element: "share-structure",
+            },
+        ),
+        (
+            "no governance",
+            with(&format!("<identity name=\"a\"/>{shares}")),
+            IssueV1::MissingElement {
+                parent: "company-genesis",
+                element: "governance",
+            },
+        ),
+        (
+            "empty governance",
+            with(&format!(
+                "<identity name=\"a\"/>{shares}<governance></governance>"
+            )),
+            IssueV1::MissingElement {
+                parent: "governance",
+                element: "voting-rules",
+            },
+        ),
+        (
             "two identities",
-            "<company-genesis><identity name=\"a\"/><identity name=\"b\"/></company-genesis>",
+            with(&format!(
+                "<identity name=\"a\"/><identity name=\"b\"/>{shares}{governance}"
+            )),
             IssueV1::RepeatedElement {
                 parent: "company-genesis",
                 element: "identity",
@@ -450,7 +513,7 @@ fn genesis_problems_are_reported() {
         ),
         (
             "empty name",
-            "<company-genesis><identity name=\"\"/></company-genesis>",
+            with(&format!("<identity name=\"\"/>{shares}{governance}")),
             IssueV1::InvalidValue {
                 element: "identity",
                 attribute: "name",
@@ -458,18 +521,51 @@ fn genesis_problems_are_reported() {
                 reason: "must not be empty".to_owned(),
             },
         ),
+        (
+            "bad register inside the genesis",
+            with(&format!(
+                "<identity name=\"a\"/><share-structure><holder id=\"x\" shares=\"0\"/></share-structure>{governance}"
+            )),
+            IssueV1::ZeroShares {
+                id: bornite_core::VoterIdV1::new("x").unwrap(),
+            },
+        ),
     ] {
-        let error = read_company_genesis_document(xml).expect_err(label);
+        let error = read_company_genesis_document(&xml).expect_err(label);
         assert!(error.issues().contains(&expect), "{label}: {error}");
     }
-    assert!(matches!(
-        read_company_genesis_document(
-            "<company-genesis><identity name=\"a\" founder=\"x\"/></company-genesis>"
+    // Everything wrong at once is reported at once.
+    let error =
+        read_company_genesis_document("<company-genesis><identity name=\"\"/></company-genesis>")
+            .expect_err("three problems");
+    assert_eq!(error.issues().len(), 3, "{error}");
+    // Bornite's own issues inside the nested rules surface as Irena issues.
+    let bad_rules = GENESIS.replace("treatment=\"reject\"", "treatment=\"maybe\"");
+    let error = read_company_genesis_document(&bad_rules).expect_err("bad rules");
+    assert!(matches!(error.issues(), [IssueV1::Xml(_)]), "{error}");
+    for (label, xml) in [
+        (
+            "unknown attribute",
+            "<company-genesis><identity name=\"a\" founder=\"x\"/></company-genesis>",
         ),
-        Err(IrenaError::Malformed { .. })
-    ));
+        (
+            "unknown child",
+            "<company-genesis><board/></company-genesis>",
+        ),
+        (
+            "stray element in governance",
+            "<company-genesis><governance><quorum/></governance></company-genesis>",
+        ),
+    ] {
+        assert!(
+            matches!(
+                read_company_genesis_document(xml),
+                Err(IrenaError::Malformed { .. })
+            ),
+            "{label}"
+        );
+    }
 }
-
 #[test]
 fn the_kind_must_match_the_body_and_the_envelope_is_strict() {
     let good = compose_record(
@@ -612,6 +708,18 @@ fn composing_refuses_a_body_of_the_wrong_kind_or_an_invalid_notarisation() {
     .expect("ok");
     assert!(!xml.contains("<?xml"));
     assert!(xml.contains(RULES));
+    // The wrong body for a kind, in both directions.
+    assert!(compose_record(RecordKindV1::Identity, &company(), None, &notary(), GENESIS).is_err());
+    assert!(
+        compose_record(
+            RecordKindV1::CompanyGenesis,
+            &company(),
+            None,
+            &notary(),
+            IDENTITY
+        )
+        .is_err()
+    );
 }
 
 #[test]
@@ -674,6 +782,7 @@ fn composed_records_and_bodies_validate_against_the_published_schemas() {
         );
     }
     check("genesis-body", "irena-company-v1.xsd", GENESIS);
+    check("identity-body", "irena-company-v1.xsd", IDENTITY);
     check("shares-body", "irena-company-v1.xsd", SHARES);
     check(
         "empty-shares-body",

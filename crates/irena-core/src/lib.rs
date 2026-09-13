@@ -7,14 +7,15 @@
 //!
 //! # What is here
 //!
-//! * [`CompanyGenesisV1`] — who the company is: name, jurisdiction, registration.
+//! * [`CompanyGenesisV1`] — the whole company as founded: its [`IdentityV1`], its
+//!   initial [`ShareStructureV1`] and its initial governance, Bornite's
+//!   `VotingRulesV1` reused **unchanged**. One document founds a company.
 //! * [`ShareStructureV1`] — who holds how many shares, and the signing key each holder
 //!   votes with. **Flat shares**: every share is one vote. Share classes are a later
 //!   version of this body, not an attribute bolted onto it.
-//! * `VotingRulesV1` — Bornite's own rules element, reused **unchanged**. Nothing about
-//!   a company appears inside it, so the same rules work for anything.
-//! * [`IrenaRecordV1`] — the notarised envelope that puts any of those on the ledger:
-//!   which company, which record it amends, and who attested to it and when.
+//! * [`IrenaRecordV1`] — the notarised envelope that puts the genesis, or an amendment
+//!   to one part of it (identity, register, rules), on the ledger: which company, which
+//!   record it amends, and who attested to it and when.
 //!
 //! # What is deliberately not here
 //!
@@ -45,6 +46,7 @@ pub use record::{
 };
 pub use shares::{HolderV1, MAX_HOLDERS, ShareStructureV1};
 pub use xml::{
-    DEFAULT_MAX_DOCUMENT_BYTES, compose_record, read_company_genesis_document, read_record,
-    read_record_with_limit, read_share_structure_document, read_voting_rules_document,
+    DEFAULT_MAX_DOCUMENT_BYTES, compose_record, read_company_genesis_document,
+    read_identity_document, read_record, read_record_with_limit, read_share_structure_document,
+    read_voting_rules_document,
 };

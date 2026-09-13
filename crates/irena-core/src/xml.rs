@@ -62,7 +62,7 @@ pub fn read_record_with_limit(xml: &str, max_bytes: u64) -> Result<IrenaRecordV1
         malformed_at(
             &reader,
             format!(
-                "unknown record kind {kind:?}; expected company-genesis, share-structure or voting-rules"
+                "unknown record kind {kind:?}; expected company-genesis, identity, share-structure or voting-rules"
             ),
         )
     })?;
@@ -118,6 +118,18 @@ pub fn read_record_with_limit(xml: &str, max_bytes: u64) -> Result<IrenaRecordV1
                     &mut reader,
                     &child,
                 )?));
+            }
+            "identity" => {
+                refuse_second_body(&reader, body.is_some())?;
+                let mut issues = Vec::new();
+                let identity = parse_identity(&reader, &child, &mut issues)?;
+                if !is_empty {
+                    expect_empty(&mut reader, "identity")?;
+                }
+                if !issues.is_empty() {
+                    return Err(IrenaError::invalid(issues));
+                }
+                body = Some(RecordBodyV1::Identity(identity.expect("no issues")));
             }
             "share-structure" => {
                 refuse_second_body(&reader, body.is_some())?;
@@ -185,6 +197,39 @@ pub fn read_company_genesis_document(xml: &str) -> Result<CompanyGenesisV1, Iren
     let genesis = parse_company_genesis(&mut reader, &root)?;
     expect_eof(&mut reader)?;
     Ok(genesis)
+}
+
+/// Reads a standalone `<identity>` document.
+///
+/// # Errors
+///
+/// Returns [`IrenaError`] for anything that is not a valid identity element.
+pub fn read_identity_document(xml: &str) -> Result<IdentityV1, IrenaError> {
+    check_size(xml, DEFAULT_MAX_DOCUMENT_BYTES)?;
+    let mut reader = open(xml);
+    let root = loop {
+        match next_event(&mut reader)? {
+            Event::Decl(_) | Event::Comment(_) | Event::Text(_) | Event::PI(_) => {}
+            Event::Start(root) if root.name().as_ref() == "identity" => break (root, false),
+            Event::Empty(root) if root.name().as_ref() == "identity" => break (root, true),
+            other => {
+                return Err(malformed_at(
+                    &reader,
+                    format!("expected an <identity> root, found {}", describe(&other)),
+                ));
+            }
+        }
+    };
+    let mut issues = Vec::new();
+    let identity = parse_identity(&reader, &root.0, &mut issues)?;
+    if !root.1 {
+        expect_empty(&mut reader, "identity")?;
+    }
+    expect_eof(&mut reader)?;
+    if !issues.is_empty() {
+        return Err(IrenaError::invalid(issues));
+    }
+    Ok(identity.expect("no issues"))
 }
 
 /// Reads a standalone `<share-structure>` document.
@@ -260,6 +305,9 @@ pub fn compose_record(
     match kind {
         RecordKindV1::CompanyGenesis => {
             read_company_genesis_document(element)?;
+        }
+        RecordKindV1::Identity => {
+            read_identity_document(element)?;
         }
         RecordKindV1::ShareStructure => {
             read_share_structure_document(element)?;
@@ -368,7 +416,36 @@ fn read_notarisation(
     })
 }
 
+/// Parses an `<identity>` element's attributes, collecting issues.
+///
+/// Returns `None` when a required attribute is missing; the issue is recorded.
+fn parse_identity(
+    reader: &XmlReader<'_>,
+    child: &BytesStart<'_>,
+    issues: &mut Vec<IssueV1>,
+) -> Result<Option<IdentityV1>, IrenaError> {
+    let mut attributes = Attributes::of(reader, "identity", child)?;
+    let name = require(&mut attributes, "name", issues);
+    let jurisdiction = attributes.take("jurisdiction");
+    let registered_number = attributes.take("registered-number");
+    attributes.finish(reader)?;
+    Ok(name.map(|name| {
+        let identity = IdentityV1 {
+            name,
+            jurisdiction,
+            registered_number,
+        };
+        if let Err(error) = identity.validate() {
+            collect::<()>(Err(error), issues);
+        }
+        identity
+    }))
+}
+
 /// Parses the body of a `<company-genesis>` element whose start tag has been read.
+///
+/// The genesis is the whole company: `<identity>`, an optional `<incorporation>`,
+/// the `<share-structure>` and `<governance>` wrapping Bornite's `<voting-rules>`.
 fn parse_company_genesis(
     reader: &mut XmlReader<'_>,
     start: &BytesStart<'_>,
@@ -377,6 +454,19 @@ fn parse_company_genesis(
     let mut issues = Vec::new();
     let mut identity: Option<IdentityV1> = None;
     let mut incorporation: Option<Option<Hash>> = None;
+    let mut shares: Option<ShareStructureV1> = None;
+    let mut rules: Option<bornite_rules::VotingRulesV1> = None;
+    // Presence is tracked apart from the parsed value: an element that was there but
+    // invalid is reported for what is wrong with it, not also as missing.
+    let (mut shares_seen, mut governance_seen) = (false, false);
+    let repeated = |issues: &mut Vec<IssueV1>, present: bool, element: &'static str| {
+        if present {
+            issues.push(IssueV1::RepeatedElement {
+                parent: "company-genesis",
+                element,
+            });
+        }
+    };
 
     loop {
         let event = next_event(reader)?;
@@ -395,43 +485,16 @@ fn parse_company_genesis(
         let name = child.name().as_ref().to_owned();
         match name.as_str() {
             "identity" => {
-                if identity.is_some() {
-                    issues.push(IssueV1::RepeatedElement {
-                        parent: "company-genesis",
-                        element: "identity",
-                    });
-                }
-                let mut attributes = Attributes::of(reader, "identity", &child)?;
-                let company_name = require(&mut attributes, "name", &mut issues);
-                let jurisdiction = attributes.take("jurisdiction");
-                let registered_number = attributes.take("registered-number");
-                attributes.finish(reader)?;
-                if let Some(company_name) = company_name {
-                    if company_name.trim().is_empty() {
-                        issues.push(IssueV1::InvalidValue {
-                            element: "identity",
-                            attribute: "name",
-                            value: company_name.clone(),
-                            reason: "must not be empty".to_owned(),
-                        });
-                    }
-                    identity = Some(IdentityV1 {
-                        name: company_name,
-                        jurisdiction,
-                        registered_number,
-                    });
+                repeated(&mut issues, identity.is_some(), "identity");
+                if let Some(parsed) = parse_identity(reader, &child, &mut issues)? {
+                    identity = Some(parsed);
                 }
                 if !is_empty {
                     expect_empty(reader, "identity")?;
                 }
             }
             "incorporation" => {
-                if incorporation.is_some() {
-                    issues.push(IssueV1::RepeatedElement {
-                        parent: "company-genesis",
-                        element: "incorporation",
-                    });
-                }
+                repeated(&mut issues, incorporation.is_some(), "incorporation");
                 let mut attributes = Attributes::of(reader, "incorporation", &child)?;
                 let digest = attributes.take("document-digest");
                 attributes.finish(reader)?;
@@ -453,6 +516,31 @@ fn parse_company_genesis(
                     expect_empty(reader, "incorporation")?;
                 }
             }
+            "share-structure" => {
+                repeated(&mut issues, shares_seen, "share-structure");
+                shares_seen = true;
+                match parse_share_structure(reader, &child, is_empty) {
+                    Ok(parsed) => shares = Some(parsed),
+                    Err(IrenaError::Invalid { issues: found }) => issues.extend(found),
+                    Err(other) => return Err(other),
+                }
+            }
+            "governance" => {
+                repeated(&mut issues, governance_seen, "governance");
+                governance_seen = true;
+                Attributes::of(reader, "governance", &child)?.finish(reader)?;
+                if is_empty {
+                    return Err(malformed_at(
+                        reader,
+                        "<governance> must hold <voting-rules>",
+                    ));
+                }
+                match parse_governance(reader) {
+                    Ok(parsed) => rules = Some(parsed),
+                    Err(IrenaError::Invalid { issues: found }) => issues.extend(found),
+                    Err(other) => return Err(other),
+                }
+            }
             other => {
                 return Err(malformed_at(
                     reader,
@@ -462,11 +550,17 @@ fn parse_company_genesis(
         }
     }
 
-    if identity.is_none() {
-        issues.push(IssueV1::MissingElement {
-            parent: "company-genesis",
-            element: "identity",
-        });
+    for (present, element) in [
+        (identity.is_some(), "identity"),
+        (shares_seen, "share-structure"),
+        (governance_seen, "governance"),
+    ] {
+        if !present {
+            issues.push(IssueV1::MissingElement {
+                parent: "company-genesis",
+                element,
+            });
+        }
     }
     if !issues.is_empty() {
         return Err(IrenaError::invalid(issues));
@@ -474,6 +568,45 @@ fn parse_company_genesis(
     Ok(CompanyGenesisV1 {
         identity: identity.expect("checked"),
         incorporation_digest: incorporation.flatten(),
+        shares: shares.expect("checked"),
+        rules: rules.expect("checked"),
+    })
+}
+
+/// Parses the inside of `<governance>`: exactly one `<voting-rules>`, Bornite's.
+fn parse_governance(
+    reader: &mut XmlReader<'_>,
+) -> Result<bornite_rules::VotingRulesV1, IrenaError> {
+    let mut rules = None;
+    loop {
+        match next_event(reader)? {
+            Event::Text(_) | Event::Comment(_) => {}
+            Event::Start(child) if child.name().as_ref() == "voting-rules" => {
+                if rules.is_some() {
+                    return Err(IrenaError::invalid(vec![IssueV1::RepeatedElement {
+                        parent: "governance",
+                        element: "voting-rules",
+                    }]));
+                }
+                rules = Some(parse_voting_rules(reader, &child)?);
+            }
+            Event::Empty(child) if child.name().as_ref() == "voting-rules" => {
+                return Err(malformed_at(reader, "<voting-rules> must have content"));
+            }
+            Event::End(_) => break,
+            other => {
+                return Err(malformed_at(
+                    reader,
+                    format!("unexpected {} in <governance>", describe(&other)),
+                ));
+            }
+        }
+    }
+    rules.ok_or_else(|| {
+        IrenaError::invalid(vec![IssueV1::MissingElement {
+            parent: "governance",
+            element: "voting-rules",
+        }])
     })
 }
 
