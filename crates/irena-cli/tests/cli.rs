@@ -94,6 +94,7 @@ impl Cli {
         let dir = TempDir::new().expect("temp dir");
         std::fs::write(dir.path().join("genesis.xml"), genesis()).expect("write");
         std::fs::write(dir.path().join("identity2.xml"), IDENTITY_V2).expect("write");
+        std::fs::write(dir.path().join("shares1.xml"), register()).expect("write");
         std::fs::write(
             dir.path().join("shares2.xml"),
             register().replace("id=\"bob\"", "id=\"dave\""),
@@ -1285,4 +1286,632 @@ fn meeting_input_is_checked_and_lifecycle_order_is_enforced() {
 
     let missing = cli.meeting(&["verify", "--tx", &"00".repeat(32)]);
     assert_eq!(missing.code(), 2);
+}
+
+// ---------------------------------------------------------------------------------
+// Resolutions.
+// ---------------------------------------------------------------------------------
+
+impl Cli {
+    fn resolution(&self, args: &[&str]) -> Run {
+        let mut full = vec!["resolution"];
+        full.extend_from_slice(args);
+        self.run(&full)
+    }
+    /// The proposal digest a body must be voted on under.
+    fn digest_of(&self, file: &str) -> String {
+        self.resolution(&["digest", "--file", file, "--json"])
+            .ok()
+            .json()["proposal_digest"]
+            .as_str()
+            .expect("digest")
+            .to_owned()
+    }
+    /// Holds a one-item meeting on `digest` and returns (meeting tx, vote tx).
+    fn decide(&self, title: &str, digest: &str, pass: bool, base: u64) -> (String, String) {
+        self.meeting(&[
+            "new",
+            "--title",
+            "AGM",
+            "--scheduled-at",
+            "2026-06-01T10:00:00Z",
+            "--state",
+            "m.state",
+        ])
+        .ok();
+        self.meeting(&[
+            "add-item",
+            "--state",
+            "m.state",
+            "--title",
+            title,
+            "--proposal-digest",
+            digest,
+        ])
+        .ok();
+        self.with_notary(&[
+            "meeting",
+            "convene",
+            "--state",
+            "m.state",
+            "--signing-key",
+            "k.key",
+            "--timestamp",
+            &base.to_string(),
+        ])
+        .ok();
+        self.meeting(&["open", "--state", "m.state"]).ok();
+        let choice = if pass { "yes" } else { "no" };
+        for (voter, seed) in [("alice", 1u8), ("bob", 2)] {
+            let ballot = format!("{voter}-r.ballot");
+            self.meeting(&[
+                "ballot",
+                "--state",
+                "m.state",
+                "--item",
+                "1",
+                "--voter",
+                voter,
+                "--choice",
+                choice,
+                "--signing-key",
+                &format!("holder{seed}.key"),
+                "--out",
+                &ballot,
+            ])
+            .ok();
+            self.meeting(&[
+                "cast", "--state", "m.state", "--item", "1", "--ballot", &ballot,
+            ])
+            .ok();
+        }
+        self.meeting(&["close", "--state", "m.state"]).ok();
+        let finalized = self
+            .with_notary(&[
+                "meeting",
+                "finalize",
+                "--state",
+                "m.state",
+                "--signing-key",
+                "k.key",
+                "--timestamp",
+                &(base + 100).to_string(),
+                "--json",
+            ])
+            .ok();
+        let meeting_tx = finalized.json()["tx_id"].as_str().unwrap().to_owned();
+        let vote_tx = finalized.json()["record"]["items"][0]["vote_tx_id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        (meeting_tx, vote_tx)
+    }
+}
+
+#[test]
+fn a_passed_vote_becomes_a_resolution_that_changes_the_company() {
+    let cli = Cli::new();
+    cli.founded();
+    let before = cli.run(&["show", "--json"]).ok().json();
+    let approved_base = before["shares"]["tx_id"].as_str().unwrap().to_owned();
+
+    // The shareholders vote on the new register itself.
+    let digest = cli.digest_of("shares2.xml");
+    let (meeting_tx, vote_tx) = cli.decide("Replace the register", &digest, true, 1000);
+
+    let drafted = cli
+        .resolution(&[
+            "create",
+            "--meeting",
+            &meeting_tx,
+            "--item",
+            "1",
+            "--vote",
+            &vote_tx,
+            "--title",
+            "Resolution 1: replace the register",
+            "--target",
+            "share-structure",
+            "--file",
+            "shares2.xml",
+            "--state",
+            "r.state",
+            "--json",
+        ])
+        .ok();
+    assert_eq!(drafted.json()["status"], "draft");
+    assert_eq!(drafted.json()["kind"], "amendment");
+    assert_eq!(drafted.json()["target"], "share-structure");
+    assert_eq!(drafted.json()["approved_digest"], digest);
+
+    let finalized = cli
+        .with_notary(&[
+            "resolution",
+            "finalize",
+            "--state",
+            "r.state",
+            "--signing-key",
+            "k.key",
+            "--timestamp",
+            "2000",
+            "--json",
+        ])
+        .ok();
+    assert_eq!(finalized.json()["status"], "finalized");
+    let resolution_tx = finalized.json()["resolution_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    // Recording it changed nothing.
+    assert_eq!(
+        cli.run(&["show", "--json"]).ok().json()["shares"]["tx_id"],
+        approved_base
+    );
+
+    let executed = cli
+        .with_notary(&[
+            "resolution",
+            "execute",
+            "--state",
+            "r.state",
+            "--signing-key",
+            "k.key",
+            "--timestamp",
+            "3000",
+            "--json",
+        ])
+        .ok();
+    let amendment_tx = executed.json()["amendment_tx"].as_str().unwrap().to_owned();
+    let execution_tx = executed.json()["execution_tx"].as_str().unwrap().to_owned();
+    assert_eq!(executed.json()["replaced_tx"], approved_base);
+
+    // Now the company has changed, through an ordinary amendment.
+    let after = cli.run(&["show", "--json"]).ok().json();
+    assert_eq!(after["shares"]["tx_id"], amendment_tx);
+    assert_eq!(after["shares"]["supersedes"], approved_base);
+    assert_eq!(
+        cli.run(&["shares", "--json"]).ok().json()["holders"][2]["id"],
+        "dave"
+    );
+    // And the amendment appears in the register's history like any other.
+    let history = cli
+        .run(&["history", "--kind", "share-structure", "--json"])
+        .ok()
+        .json();
+    assert_eq!(history.as_array().map(Vec::len), Some(2));
+    assert_eq!(history[1]["tx_id"], amendment_tx);
+
+    // Both records verify from the chain alone.
+    let report = cli.resolution(&["verify", "--tx", &resolution_tx]).ok();
+    assert!(report.out().contains("ok   VotePassed"), "{}", report.out());
+    assert!(
+        report
+            .out()
+            .contains("rests on exactly what the chain says"),
+        "{}",
+        report.out()
+    );
+    let report = cli
+        .resolution(&["verify", "--execution", &execution_tx])
+        .ok();
+    assert!(
+        report.out().contains("ok   AmendmentApplied"),
+        "{}",
+        report.out()
+    );
+    assert!(report.out().contains("authorised"), "{}", report.out());
+    let json = cli
+        .resolution(&["verify", "--execution", &execution_tx, "--json"])
+        .ok()
+        .json();
+    assert_eq!(json["checks"].as_array().map(Vec::len), Some(9));
+    assert_eq!(
+        json["resolution"]["checks"].as_array().map(Vec::len),
+        Some(9)
+    );
+    assert!(
+        json["checks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|c| c["passed"] == true),
+        "{json}"
+    );
+
+    // Executing again is refused.
+    let again = cli.with_notary(&[
+        "resolution",
+        "execute",
+        "--state",
+        "r.state",
+        "--signing-key",
+        "k.key",
+    ]);
+    assert_eq!(again.code(), 2);
+    assert!(
+        again
+            .err()
+            .contains("cannot execute a resolution that is executed"),
+        "{}",
+        again.err()
+    );
+}
+
+#[test]
+fn a_resolution_can_replace_the_voting_rules_and_a_declarative_one_changes_nothing() {
+    let cli = Cli::new();
+    cli.founded();
+
+    // Voting rules.
+    let digest = cli.digest_of("rules2.xml");
+    let (meeting_tx, vote_tx) = cli.decide("Adopt new rules", &digest, true, 1000);
+    cli.resolution(&[
+        "create",
+        "--meeting",
+        &meeting_tx,
+        "--item",
+        "1",
+        "--vote",
+        &vote_tx,
+        "--title",
+        "Resolution 1: new rules",
+        "--target",
+        "voting-rules",
+        "--file",
+        "rules2.xml",
+        "--state",
+        "r.state",
+    ])
+    .ok();
+    cli.with_notary(&[
+        "resolution",
+        "finalize",
+        "--state",
+        "r.state",
+        "--signing-key",
+        "k.key",
+        "--timestamp",
+        "2000",
+    ])
+    .ok();
+    let executed = cli
+        .with_notary(&[
+            "resolution",
+            "execute",
+            "--state",
+            "r.state",
+            "--signing-key",
+            "k.key",
+            "--timestamp",
+            "3000",
+            "--json",
+        ])
+        .ok();
+    let state = cli.run(&["show", "--json"]).ok().json();
+    assert_eq!(state["rules"]["tx_id"], executed.json()["amendment_tx"]);
+    assert_eq!(
+        state["rules"]["value"]["tie"], "accept",
+        "the amended rules are in force"
+    );
+    assert!(
+        cli.resolution(&[
+            "verify",
+            "--execution",
+            executed.json()["execution_tx"].as_str().unwrap()
+        ])
+        .code()
+            == 0
+    );
+
+    // Declarative: a decision recorded, nothing changed.
+    let before = cli.run(&["show", "--json"]).ok().json();
+    let document = "dd".repeat(32);
+    let (meeting_tx, vote_tx) = cli.decide("Receive the report", &document, true, 4000);
+    cli.resolution(&[
+        "create",
+        "--meeting",
+        &meeting_tx,
+        "--item",
+        "1",
+        "--vote",
+        &vote_tx,
+        "--title",
+        "Resolution 2: report received",
+        "--document-digest",
+        &document,
+        "--state",
+        "d.state",
+        "--json",
+    ])
+    .ok();
+    let finalized = cli
+        .with_notary(&[
+            "resolution",
+            "finalize",
+            "--state",
+            "d.state",
+            "--signing-key",
+            "k.key",
+            "--timestamp",
+            "5000",
+            "--json",
+        ])
+        .ok();
+    assert_eq!(finalized.json()["kind"], "declarative");
+    let declarative_tx = finalized.json()["resolution_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(cli.resolution(&["verify", "--tx", &declarative_tx]).code() == 0);
+
+    // There is nothing to execute, and the company is untouched.
+    let nothing = cli.with_notary(&[
+        "resolution",
+        "execute",
+        "--state",
+        "d.state",
+        "--signing-key",
+        "k.key",
+    ]);
+    assert_eq!(nothing.code(), 2);
+    assert!(
+        nothing.err().contains("nothing to execute"),
+        "{}",
+        nothing.err()
+    );
+    let after = cli.run(&["show", "--json"]).ok().json();
+    assert_eq!(after["shares"]["tx_id"], before["shares"]["tx_id"]);
+    assert_eq!(after["rules"]["tx_id"], before["rules"]["tx_id"]);
+    assert_eq!(after["identity"]["tx_id"], before["identity"]["tx_id"]);
+}
+
+#[test]
+fn a_rejected_or_mismatched_vote_authorises_nothing() {
+    let cli = Cli::new();
+    cli.founded();
+    let digest = cli.digest_of("shares2.xml");
+
+    // A rejected motion.
+    let (meeting_tx, vote_tx) = cli.decide("Replace the register", &digest, false, 1000);
+    cli.resolution(&[
+        "create",
+        "--meeting",
+        &meeting_tx,
+        "--item",
+        "1",
+        "--vote",
+        &vote_tx,
+        "--title",
+        "Resolution 1",
+        "--target",
+        "share-structure",
+        "--file",
+        "shares2.xml",
+        "--state",
+        "r.state",
+    ])
+    .ok();
+    let before = cli.run(&["show", "--json"]).ok().json();
+    let refused = cli.with_notary(&[
+        "resolution",
+        "finalize",
+        "--state",
+        "r.state",
+        "--signing-key",
+        "k.key",
+        "--timestamp",
+        "2000",
+    ]);
+    assert_eq!(refused.code(), 2);
+    assert!(
+        refused.err().contains("authorises nothing"),
+        "{}",
+        refused.err()
+    );
+
+    // A passed motion, but the resolution carries a different body.
+    let (meeting_tx, vote_tx) = cli.decide("Replace the register", &digest, true, 3000);
+    cli.resolution(&[
+        "create",
+        "--meeting",
+        &meeting_tx,
+        "--item",
+        "1",
+        "--vote",
+        &vote_tx,
+        "--title",
+        "Resolution 2",
+        "--target",
+        "share-structure",
+        "--file",
+        "shares1.xml",
+        "--state",
+        "w.state",
+    ])
+    .ok();
+    let mismatched = cli.with_notary(&[
+        "resolution",
+        "finalize",
+        "--state",
+        "w.state",
+        "--signing-key",
+        "k.key",
+        "--timestamp",
+        "4000",
+    ]);
+    assert_eq!(mismatched.code(), 2);
+    assert!(
+        mismatched
+            .err()
+            .contains("does not match the approved proposal"),
+        "{}",
+        mismatched.err()
+    );
+
+    // A vote that did not answer that item.
+    let (other_meeting, _) = cli.decide("Something else", &digest, true, 5000);
+    cli.resolution(&[
+        "create",
+        "--meeting",
+        &other_meeting,
+        "--item",
+        "1",
+        "--vote",
+        &vote_tx,
+        "--title",
+        "Resolution 3",
+        "--target",
+        "share-structure",
+        "--file",
+        "shares2.xml",
+        "--state",
+        "x.state",
+    ])
+    .ok();
+    let crossed = cli.with_notary(&[
+        "resolution",
+        "finalize",
+        "--state",
+        "x.state",
+        "--signing-key",
+        "k.key",
+        "--timestamp",
+        "6000",
+    ]);
+    assert_eq!(crossed.code(), 2);
+    assert!(
+        crossed.err().contains("was answered by"),
+        "{}",
+        crossed.err()
+    );
+
+    // Nothing reached the company.
+    let after = cli.run(&["show", "--json"]).ok().json();
+    assert_eq!(after["shares"]["tx_id"], before["shares"]["tx_id"]);
+}
+
+#[test]
+fn a_resolution_whose_base_moved_is_refused_and_input_is_checked() {
+    let cli = Cli::new();
+    cli.founded();
+    let digest = cli.digest_of("shares2.xml");
+    let (meeting_tx, vote_tx) = cli.decide("Replace the register", &digest, true, 1000);
+    cli.resolution(&[
+        "create",
+        "--meeting",
+        &meeting_tx,
+        "--item",
+        "1",
+        "--vote",
+        &vote_tx,
+        "--title",
+        "Resolution 1",
+        "--target",
+        "share-structure",
+        "--file",
+        "shares2.xml",
+        "--state",
+        "r.state",
+    ])
+    .ok();
+    cli.with_notary(&[
+        "resolution",
+        "finalize",
+        "--state",
+        "r.state",
+        "--signing-key",
+        "k.key",
+        "--timestamp",
+        "2000",
+    ])
+    .ok();
+
+    // Someone amends the register directly in between.
+    std::fs::write(
+        cli.dir.path().join("shares3.xml"),
+        register().replace("shares=\"200\"", "shares=\"201\""),
+    )
+    .expect("write");
+    cli.amend("publish-shares", "shares3.xml", "shares", "2500")
+        .ok();
+
+    let stale = cli.with_notary(&[
+        "resolution",
+        "execute",
+        "--state",
+        "r.state",
+        "--signing-key",
+        "k.key",
+        "--timestamp",
+        "3000",
+    ]);
+    assert_eq!(stale.code(), 2);
+    assert!(stale.err().contains("has since changed"), "{}", stale.err());
+
+    // Input checks.
+    assert_eq!(
+        cli.resolution(&[
+            "create",
+            "--meeting",
+            "zz",
+            "--item",
+            "1",
+            "--vote",
+            &vote_tx,
+            "--title",
+            "x",
+            "--document-digest",
+            &digest,
+            "--state",
+            "y.state"
+        ])
+        .code(),
+        2
+    );
+    assert_eq!(
+        cli.resolution(&[
+            "create",
+            "--meeting",
+            &meeting_tx,
+            "--item",
+            "1",
+            "--vote",
+            &vote_tx,
+            "--title",
+            "x",
+            "--state",
+            "y.state"
+        ])
+        .code(),
+        2
+    );
+    assert_eq!(
+        cli.resolution(&[
+            "create",
+            "--meeting",
+            &meeting_tx,
+            "--item",
+            "1",
+            "--vote",
+            &vote_tx,
+            "--title",
+            "x",
+            "--target",
+            "identity",
+            "--file",
+            "shares2.xml",
+            "--state",
+            "y.state"
+        ])
+        .code(),
+        2
+    );
+    assert_eq!(cli.resolution(&["verify"]).code(), 2);
+    assert_eq!(
+        cli.resolution(&["verify", "--tx", &"00".repeat(32)]).code(),
+        2
+    );
+    // The digest command is a pure function of the file.
+    assert_eq!(cli.digest_of("shares2.xml"), digest);
+    assert_ne!(cli.digest_of("shares1.xml"), digest);
 }

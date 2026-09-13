@@ -16,6 +16,7 @@ hex.workspace = true
 irena-core.workspace = true
 irena-ledger.workspace = true
 irena-meeting.workspace = true
+irena-resolution.workspace = true
 irena-vote.workspace = true
 bornite-core.workspace = true
 prunella-canonical.workspace = true
@@ -25,6 +26,7 @@ prunella-store.workspace = true
 serde_json.workspace = true
 
 [dev-dependencies]
+irena-resolution.workspace = true
 irena-meeting.workspace = true
 prunella-canonical.workspace = true
 prunella-xml.workspace = true

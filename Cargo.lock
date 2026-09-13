@@ -460,6 +460,7 @@ dependencies = [
  "irena-core",
  "irena-ledger",
  "irena-meeting",
+ "irena-resolution",
  "irena-vote",
  "prunella-canonical",
  "prunella-core",

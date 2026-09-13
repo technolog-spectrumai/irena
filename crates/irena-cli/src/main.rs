@@ -12,10 +12,12 @@
 //!
 //! Exit codes: `0` success; `1` a finding (a broken amendment chain from
 //! `verify-structure`, a rejected motion from `vote evaluate`, a record that fails
-//! `vote verify`); `2` invalid input or a refused operation.
+//! `vote verify`, `meeting verify` or `resolution verify`); `2` invalid input or a
+//! refused operation.
 
 mod company;
 mod meeting;
+mod resolution;
 mod vote;
 
 use clap::{Parser, Subcommand};
@@ -176,6 +178,9 @@ pub(crate) enum Command {
     /// A shareholder meeting: an agenda, its votes, and the record of both.
     #[command(subcommand)]
     Meeting(meeting::MeetingCommand),
+    /// A resolution: what a passed vote authorised, and the amendment it produced.
+    #[command(subcommand)]
+    Resolution(resolution::ResolutionCommand),
 }
 
 fn main() -> ExitCode {
@@ -183,6 +188,7 @@ fn main() -> ExitCode {
     let outcome = match &cli.command {
         Command::Vote(command) => vote::run(&cli, command),
         Command::Meeting(command) => meeting::run(&cli, command),
+        Command::Resolution(command) => resolution::run(&cli, command),
         _ => company::run(&cli),
     };
     match outcome {

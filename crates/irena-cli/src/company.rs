@@ -222,7 +222,9 @@ pub(crate) fn run(cli: &Cli) -> Result<u8, String> {
                 Err(error) => Err(error.to_string()),
             }
         }
-        Command::Vote(_) | Command::Meeting(_) => unreachable!("dispatched in main"),
+        Command::Vote(_) | Command::Meeting(_) | Command::Resolution(_) => {
+            unreachable!("dispatched in main")
+        }
     }
 }
 
