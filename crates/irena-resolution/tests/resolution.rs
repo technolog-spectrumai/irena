@@ -570,6 +570,12 @@ fn a_resolution_must_name_the_vote_that_answered_its_item() {
         "{error}"
     );
 
+    assert_eq!(
+        chain.store.head().expect("head"),
+        head,
+        "a refused resolution writes nothing"
+    );
+
     // A vote from another meeting entirely.
     let other = hold(&chain, &[("Buy out carol", first, true)]);
     let mut foreign = ResolutionV1::draft(
@@ -595,7 +601,7 @@ fn a_resolution_must_name_the_vote_that_answered_its_item() {
     ));
 
     // An item that does not exist, and a meeting that is not a meeting. Neither of
-    // these reaches the chain.
+    // these reaches the chain either.
     let head = chain.store.head().expect("head");
     let mut absent = ResolutionV1::draft(
         "Resolution 9",
