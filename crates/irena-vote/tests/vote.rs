@@ -2,11 +2,13 @@
 //! refused along the way.
 
 use bornite_core::{BallotSetV1, BallotV1, VoterIdV1};
-use irena_core::{CompanyIdV1, NotarisationV1, NotaryIdV1, NotaryTimeV1, RecordKindV1};
+use irena_core::{
+    ChannelIdV1, CompanyIdV1, NotarisationV1, NotaryIdV1, NotaryTimeV1, RecordKindV1,
+};
 use irena_ledger::{company_now, genesis_with_company, publish, reconstruct};
 use irena_vote::{
     BallotChoiceV1, BallotRejectionV1, COMMITMENT_TAGS, CheckNameV1, FinalVoteRecordV1,
-    SignedBallotV1, VoteError, VoteStatusV1, VoteV1, ballot_commitment, derive_electorate, verify,
+    SignedBallotV1, VoteError, VoteStatusV1, VoteV1, actors_of_register, ballot_commitment, verify,
 };
 use prunella_canonical::Canonical;
 use prunella_core::merkle::{InclusionProof, TreeTags};
@@ -15,12 +17,60 @@ use prunella_crypto::SigningKey;
 use prunella_store::LocalChainStore;
 use tempfile::TempDir;
 
-/// The whole company: alice (500, key 1), bob (300, key 2), carol (200, no key), RULES.
+/// The whole company: alice (500, key 1), bob (300, key 2), carol (200, no key), and
+/// three channels: the shareholders under RULES, a board, a ceo.
 fn genesis_xml() -> String {
     format!(
-        "<company-genesis><identity name=\"Acme Industries Ltd\"/>{}<governance>{RULES}</governance></company-genesis>",
-        register()
+        "<company-genesis><identity name=\"Acme Industries Ltd\"/>{}<governance>{}</governance></company-genesis>",
+        register(),
+        channels(RULES)
     )
+}
+
+/// The channel set: shareholders (share register, collective, `rules`); board (chair
+/// key 5 weight 2, dir-a key 6, dir-b key 7; collective, simple majority, no quorum);
+/// ceo (chair, individual).
+fn channels(rules: &str) -> String {
+    format!(
+        r#"<decision-channels>
+  <channel id="shareholders" mode="collective">
+    <actors source="share-register"/>
+    {rules}
+  </channel>
+  <channel id="board" mode="collective">
+    <actors source="roster">
+      <member id="chair" key="{}" weight="2"/>
+      <member id="dir-a" key="{}"/>
+      <member id="dir-b" key="{}"/>
+    </actors>
+    <voting-rules version="1.0">
+      <weight type="electorate"/>
+      <exclusions enabled="false"/>
+      <quorum type="none"/>
+      <threshold type="simple-majority" basis="votes-cast"/>
+      <abstentions treatment="exclude"/>
+      <tie treatment="reject"/>
+    </voting-rules>
+  </channel>
+  <channel id="ceo" mode="individual">
+    <actors source="roster">
+      <member id="chair" key="{}"/>
+    </actors>
+  </channel>
+</decision-channels>"#,
+        key(5).public_key(),
+        key(6).public_key(),
+        key(7).public_key(),
+        key(5).public_key()
+    )
+}
+
+fn channel(id: &str) -> ChannelIdV1 {
+    ChannelIdV1::new(id).expect("channel id")
+}
+
+fn shareholders() -> ChannelIdV1 {
+    channel("shareholders")
 }
 
 const RULES: &str = r#"<voting-rules version="1.0">
@@ -140,7 +190,8 @@ fn proposal() -> Hash {
 /// A vote frozen at the founding height and open.
 fn open_vote(chain: &Chain) -> VoteV1 {
     let mut vote = VoteV1::draft("Approve the 2026 accounts", proposal());
-    vote.freeze(&chain.store, FOUNDED).expect("freeze");
+    vote.freeze(&chain.store, FOUNDED, &shareholders())
+        .expect("freeze");
     vote.open().expect("open");
     vote
 }
@@ -160,7 +211,10 @@ fn a_vote_runs_from_draft_to_a_verified_record() {
     assert_eq!(vote.status(), VoteStatusV1::Draft);
     assert!(vote.id().is_none());
 
-    let snapshot = vote.freeze(&chain.store, FOUNDED).expect("freeze").clone();
+    let snapshot = vote
+        .freeze(&chain.store, FOUNDED, &shareholders())
+        .expect("freeze")
+        .clone();
     assert_eq!(vote.status(), VoteStatusV1::Frozen);
     assert_eq!(snapshot.height, FOUNDED);
     assert_eq!(snapshot.electorate.len(), 3);
@@ -171,6 +225,11 @@ fn a_vote_runs_from_draft_to_a_verified_record() {
         snapshot.shares_tx_id,
         reconstruct(&chain.store, FOUNDED).unwrap().shares.tx_id
     );
+    assert_eq!(
+        snapshot.channels_tx_id,
+        reconstruct(&chain.store, FOUNDED).unwrap().channels.tx_id
+    );
+    assert_eq!(snapshot.channel, "shareholders");
 
     vote.open().expect("open");
     vote.cast(ballot(&vote, 1, "alice", BallotChoiceV1::Yes))
@@ -210,7 +269,7 @@ fn a_vote_runs_from_draft_to_a_verified_record() {
     // And it verifies from nothing but the chain and the id.
     let report = verify(&chain.store, &finalized.tx_id).expect("verify");
     assert!(report.is_valid(), "{report:#?}");
-    assert_eq!(report.checks.len(), 9);
+    assert_eq!(report.checks.len(), 10);
     assert_eq!(report.record.as_ref().unwrap(), &finalized.record);
 }
 
@@ -238,10 +297,12 @@ fn every_invalid_transition_is_reported_with_both_ends() {
     );
     transition(vote.final_record().map(|_| ()), VoteStatusV1::Draft);
 
-    vote.freeze(&chain.store, FOUNDED).expect("freeze");
+    vote.freeze(&chain.store, FOUNDED, &shareholders())
+        .expect("freeze");
     // Frozen: only open.
     transition(
-        vote.freeze(&chain.store, FOUNDED).map(|_| ()),
+        vote.freeze(&chain.store, FOUNDED, &shareholders())
+            .map(|_| ()),
         VoteStatusV1::Frozen,
     );
     transition(
@@ -301,7 +362,7 @@ fn every_invalid_transition_is_reported_with_both_ends() {
     transition(vote.open(), VoteStatusV1::Finalized);
     assert!(vote.final_record().is_ok());
     let error = vote
-        .freeze(&chain.store, FOUNDED)
+        .freeze(&chain.store, FOUNDED, &shareholders())
         .map(|_| ())
         .expect_err("frozen for ever");
     assert_eq!(error.to_string(), "cannot freeze a vote that is finalized");
@@ -317,7 +378,7 @@ fn a_vote_needs_a_company_on_the_chain() {
     .expect("create");
     let mut vote = VoteV1::draft("x", proposal());
     let error = vote
-        .freeze(&store, BlockHeight::GENESIS)
+        .freeze(&store, BlockHeight::GENESIS, &shareholders())
         .map(|_| ())
         .expect_err("no company");
     assert!(
@@ -348,7 +409,8 @@ fn the_vote_state_round_trips_through_canonical_bytes_between_steps() {
     let reload =
         |vote: &VoteV1| VoteV1::from_canonical_bytes(&vote.canonical_bytes()).expect("decode");
     assert_eq!(reload(&vote), vote);
-    vote.freeze(&chain.store, FOUNDED).expect("freeze");
+    vote.freeze(&chain.store, FOUNDED, &shareholders())
+        .expect("freeze");
     let mut vote = reload(&vote);
     vote.open().expect("open");
     vote.cast(ballot(&vote, 1, "alice", BallotChoiceV1::Yes))
@@ -385,8 +447,8 @@ fn amendments_after_freezing_change_nothing() {
     );
     amend(
         &chain,
-        RecordKindV1::VotingRules,
-        RULES_STRICT,
+        RecordKindV1::DecisionChannels,
+        &channels(RULES_STRICT),
         "2026-02-01T10:05:00Z",
         2000,
     );
@@ -429,7 +491,9 @@ fn amendments_after_freezing_change_nothing() {
 
     // A vote frozen now sees the amended company and the stricter rules.
     let mut later = VoteV1::draft("x", proposal());
-    later.freeze(&chain.store, BlockHeight(3)).expect("freeze");
+    later
+        .freeze(&chain.store, BlockHeight(3), &shareholders())
+        .expect("freeze");
     assert_ne!(later.id(), Some(frozen_id));
     later.open().unwrap();
     later
@@ -458,7 +522,7 @@ fn the_same_inputs_freeze_to_the_same_vote_on_another_machine() {
     assert_eq!(va.snapshot(), vb.snapshot());
     // A different proposal is a different vote.
     let mut other = VoteV1::draft("Approve the 2026 accounts", Hash::from_bytes([0xd1; 32]));
-    other.freeze(&a.store, FOUNDED).unwrap();
+    other.freeze(&a.store, FOUNDED, &shareholders()).unwrap();
     assert_ne!(other.id(), va.id());
 }
 
@@ -542,7 +606,9 @@ fn a_ballot_from_one_vote_cannot_be_replayed_in_another() {
     let chain = founded();
     let first = open_vote(&chain);
     let mut second = VoteV1::draft("Something else", Hash::from_bytes([0x02; 32]));
-    second.freeze(&chain.store, FOUNDED).unwrap();
+    second
+        .freeze(&chain.store, FOUNDED, &shareholders())
+        .unwrap();
     second.open().unwrap();
     let replay = ballot(&first, 1, "alice", BallotChoiceV1::Yes);
     assert!(matches!(
@@ -627,7 +693,7 @@ fn evaluation_matches_bornite_run_on_the_same_inputs_directly() {
 
     let rules = bornite_xml::read_rules_document(RULES).unwrap();
     let register = irena_core::read_share_structure_document(&register()).unwrap();
-    let electorate = derive_electorate(&register).unwrap().electorate;
+    let electorate = actors_of_register(&register).unwrap().electorate;
     let ballots = BallotSetV1::new(vec![
         BallotV1 {
             voter: voter("bob"),
@@ -792,7 +858,7 @@ fn every_tampered_field_is_caught_by_a_named_check() {
                 r.evaluation.outcome = irena_vote::EvaluationSummaryV1::of(
                     &bornite_eval::evaluate(
                         &bornite_xml::read_rules_document(RULES).unwrap(),
-                        &derive_electorate(
+                        &actors_of_register(
                             &irena_core::read_share_structure_document(&register()).unwrap(),
                         )
                         .unwrap()
@@ -945,18 +1011,18 @@ fn a_broken_chain_stops_evaluation_rather_than_guessing() {
     vote.cast(ballot(&vote, 1, "alice", BallotChoiceV1::Yes))
         .unwrap();
     vote.close().unwrap();
-    // Write a rules record around Irena that supersedes nothing; the snapshot is at
-    // the founding height, so the pinned rules still resolve — the freeze holds even
-    // against a later break.
+    // Write a channel-set record around Irena that supersedes nothing; the snapshot
+    // is at the founding height, so the pinned channel set still resolves — the freeze
+    // holds even against a later break.
     let payload = irena_core::compose_record(
-        RecordKindV1::VotingRules,
+        RecordKindV1::DecisionChannels,
         &acme(),
         None,
         &notary("2026-05-01T00:00:00Z"),
-        RULES_STRICT,
+        &channels(RULES_STRICT),
     )
     .unwrap();
-    append_raw(&chain.store, "irena.rules.v1", payload.into_bytes());
+    append_raw(&chain.store, "irena.channels.v1", payload.into_bytes());
     assert!(
         vote.evaluate(&chain.store).is_ok(),
         "resolution at height 2 is unaffected"
@@ -967,9 +1033,164 @@ fn a_broken_chain_stops_evaluation_rather_than_guessing() {
     // But a vote frozen after the break cannot exist: the company does not resolve.
     let mut later = VoteV1::draft("x", proposal());
     assert!(matches!(
-        later.freeze(&chain.store, BlockHeight(2)),
+        later.freeze(&chain.store, BlockHeight(2), &shareholders()),
         Err(VoteError::Ledger(
             irena_ledger::LedgerError::BrokenAmendmentChain { .. }
         ))
     ));
+}
+
+// ---------------------------------------------------------------------------------
+// Channels: the same vote through a roster, and not through an individual.
+// ---------------------------------------------------------------------------------
+
+#[test]
+fn a_board_vote_is_the_same_vote_with_a_roster() {
+    let chain = founded();
+    let mut vote = VoteV1::draft("Approve the budget", proposal());
+    let snapshot = vote
+        .freeze(&chain.store, FOUNDED, &channel("board"))
+        .expect("freeze")
+        .clone();
+    assert_eq!(snapshot.channel, "board");
+    let weights: Vec<(&str, u64)> = snapshot
+        .electorate
+        .iter()
+        .map(|e| (e.id.as_str(), e.weight))
+        .collect();
+    assert_eq!(
+        weights,
+        [("chair", 2), ("dir-a", 1), ("dir-b", 1)],
+        "the roster's declared weights, nothing about shares"
+    );
+
+    vote.open().unwrap();
+    // A shareholder is not on the board.
+    let alice = SignedBallotV1::sign(
+        &key(1),
+        vote.id().unwrap(),
+        &voter("alice"),
+        BallotChoiceV1::Yes,
+    );
+    assert!(matches!(
+        vote.cast(alice),
+        Err(VoteError::Ballot(BallotRejectionV1::NotInElectorate { .. }))
+    ));
+    vote.cast(ballot(&vote, 5, "chair", BallotChoiceV1::Yes))
+        .expect("chair");
+    vote.cast(ballot(&vote, 6, "dir-a", BallotChoiceV1::No))
+        .expect("dir-a");
+    vote.cast(ballot(&vote, 7, "dir-b", BallotChoiceV1::No))
+        .expect("dir-b");
+    vote.close().unwrap();
+    let evaluation = vote.evaluate(&chain.store).expect("evaluate");
+    assert!(
+        !evaluation.accepted(),
+        "2 yes against 2 no is a tie, and the board's rules reject ties: {evaluation:?}"
+    );
+    assert_eq!(evaluation.tally.yes_weight.value(), 2);
+    assert_eq!(evaluation.tally.no_weight.value(), 2);
+
+    let finalized = vote
+        .finalize(&chain.store, &key(9), 3000)
+        .expect("finalize");
+    let report = verify(&chain.store, &finalized.tx_id).expect("verify");
+    assert!(report.is_valid(), "{report:#?}");
+    assert!(
+        report
+            .checks
+            .iter()
+            .any(|c| c.name == CheckNameV1::ChannelIsCollective && c.passed)
+    );
+
+    // The chair's weight carries a 2–1 division.
+    let mut second = VoteV1::draft("Approve the revised budget", proposal());
+    second
+        .freeze(&chain.store, FOUNDED, &channel("board"))
+        .unwrap();
+    second.open().unwrap();
+    second
+        .cast(ballot(&second, 5, "chair", BallotChoiceV1::Yes))
+        .unwrap();
+    second
+        .cast(ballot(&second, 6, "dir-a", BallotChoiceV1::No))
+        .unwrap();
+    second.close().unwrap();
+    assert!(second.evaluate(&chain.store).unwrap().accepted());
+}
+
+#[test]
+fn a_vote_needs_a_collective_channel() {
+    let chain = founded();
+    let error = VoteV1::draft("x", proposal())
+        .freeze(&chain.store, FOUNDED, &channel("ceo"))
+        .expect_err("individual");
+    assert!(
+        matches!(error, VoteError::NotCollective { ref channel } if channel == "ceo"),
+        "{error}"
+    );
+    let error = VoteV1::draft("x", proposal())
+        .freeze(&chain.store, FOUNDED, &channel("treasury"))
+        .expect_err("unknown");
+    assert!(
+        matches!(
+            error,
+            VoteError::Decision(irena_decision::DecisionError::NoSuchChannel { .. })
+        ),
+        "{error}"
+    );
+}
+
+#[test]
+fn a_record_claiming_another_channel_fails_where_the_channels_differ() {
+    let chain = founded();
+    let genuine = finalized_record(&chain);
+
+    // The shareholders' record relabelled as the board's, id recomputed: the board
+    // resolves to different people, so the electorate no longer derives.
+    let mut snapshot = genuine.snapshot.clone();
+    snapshot.channel = "board".to_owned();
+    let tampered = FinalVoteRecordV1::assemble(
+        snapshot,
+        genuine.ballots.clone(),
+        genuine.evaluation.clone(),
+    );
+    let tx = append_raw(&chain.store, "irena.vote.v1", tampered.canonical_bytes());
+    let report = verify(&chain.store, &tx).unwrap();
+    assert!(!report.is_valid());
+    let failed: Vec<CheckNameV1> = report.failures().map(|c| c.name).collect();
+    assert!(
+        failed.contains(&CheckNameV1::ElectorateDerives),
+        "{failed:?}"
+    );
+    assert!(
+        report
+            .checks
+            .iter()
+            .any(|c| c.name == CheckNameV1::ChannelIsCollective && c.passed),
+        "the board is a real collective channel; what fails is who it resolves to"
+    );
+
+    // Relabelled as the ceo's: not a collective channel at all, and no rules to rerun.
+    let mut snapshot = genuine.snapshot.clone();
+    snapshot.channel = "ceo".to_owned();
+    let tampered = FinalVoteRecordV1::assemble(
+        snapshot,
+        genuine.ballots.clone(),
+        genuine.evaluation.clone(),
+    );
+    let tx = append_raw(&chain.store, "irena.vote.v1", tampered.canonical_bytes());
+    let report = verify(&chain.store, &tx).unwrap();
+    let failed: Vec<CheckNameV1> = report.failures().map(|c| c.name).collect();
+    assert!(
+        failed.contains(&CheckNameV1::ChannelIsCollective),
+        "{failed:?}"
+    );
+    assert!(
+        !report
+            .checks
+            .iter()
+            .any(|c| c.name == CheckNameV1::ResultReproduces),
+        "no rules, so the rerun is absent rather than reported: {report:#?}"
+    );
 }

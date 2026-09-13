@@ -1,11 +1,11 @@
 //! Independent verification of a final record from the chain alone.
 
 use crate::ballot::ballot_commitment;
-use crate::derive::derive_electorate;
 use crate::error::VoteError;
 use crate::lifecycle::bornite_ballots;
 use crate::record::{EvaluationSummaryV1, FinalVoteRecordV1, RECORD_VERSION, VOTE_NAMESPACE};
 use crate::snapshot::ElectorateEntryV1;
+use irena_decision::resolve_channel;
 use irena_ledger::reconstruct;
 use prunella_canonical::Canonical;
 use prunella_core::{BlockHeight, TxId};
@@ -23,10 +23,12 @@ pub enum CheckNameV1 {
     VoteIdDerives,
     /// The snapshot height precedes the record's own height.
     SnapshotPrecedesRecord,
-    /// The founding record, register and rules in force at the snapshot height are
-    /// exactly the transactions the snapshot pinned.
+    /// The founding record, register and channel set in force at the snapshot height
+    /// are exactly the transactions the snapshot pinned.
     RecordsResolve,
-    /// The electorate re-derived from the pinned register equals the frozen one.
+    /// The pinned channel exists in that channel set and is collective.
+    ChannelIsCollective,
+    /// The electorate re-resolved from the pinned channel equals the frozen one.
     ElectorateDerives,
     /// Every ballot is for this vote, from a frozen voter with a key, and its
     /// signature verifies against that key.
@@ -35,8 +37,8 @@ pub enum CheckNameV1 {
     BallotsOrdered,
     /// The commitment is the Merkle root over the ballots as stored.
     CommitmentDerives,
-    /// Bornite, rerun on the pinned rules, the frozen electorate and the stored
-    /// ballots, produces the stored result.
+    /// Bornite, rerun on the pinned channel's rules, the frozen electorate and the
+    /// stored ballots, produces the stored result.
     ResultReproduces,
 }
 
@@ -208,7 +210,11 @@ pub fn verify(store: &LocalChainStore, tx_id: &TxId) -> Result<VerificationV1, V
             record.snapshot.genesis_tx_id,
         ),
         ("shares", state.shares.tx_id, record.snapshot.shares_tx_id),
-        ("rules", state.rules.tx_id, record.snapshot.rules_tx_id),
+        (
+            "channels",
+            state.channels.tx_id,
+            record.snapshot.channels_tx_id,
+        ),
     ];
     let moved: Vec<String> = pinned
         .iter()
@@ -220,7 +226,7 @@ pub fn verify(store: &LocalChainStore, tx_id: &TxId) -> Result<VerificationV1, V
         moved.is_empty(),
         if moved.is_empty() {
             format!(
-                "genesis, register and rules at height {} are the pinned records",
+                "genesis, register and channel set at height {} are the pinned records",
                 record.snapshot.height
             )
         } else {
@@ -230,40 +236,64 @@ pub fn verify(store: &LocalChainStore, tx_id: &TxId) -> Result<VerificationV1, V
         return Ok(report);
     }
 
-    // 5. Electorate derives.
-    match derive_electorate(&state.shares.value) {
-        Ok(derived) => {
-            let expected: Vec<ElectorateEntryV1> = derived
-                .holders
-                .iter()
-                .map(|holder| ElectorateEntryV1 {
-                    id: holder.id.as_str().to_owned(),
-                    weight: holder.weight.value(),
-                    excluded: false,
-                    key: holder.key,
-                })
-                .collect();
-            let same = expected == record.snapshot.electorate;
-            report.check(
-                CheckNameV1::ElectorateDerives,
-                same,
-                if same {
-                    format!(
-                        "{} voter(s), total weight {}",
-                        expected.len(),
-                        derived.total_weight
-                    )
-                } else {
-                    "the frozen electorate is not what the pinned register derives".to_owned()
-                },
-            );
-        }
+    // 5. The channel is collective, and 6. its actors are the frozen electorate.
+    let resolved = record
+        .snapshot
+        .channel()
+        .map_err(VoteError::Company)
+        .and_then(|channel| Ok(resolve_channel(&state, &channel)?));
+    let rules = match resolved {
+        Ok(resolved) => match resolved.rules() {
+            Some(rules) => {
+                report.check(
+                    CheckNameV1::ChannelIsCollective,
+                    true,
+                    format!("channel {} is collective", record.snapshot.channel),
+                );
+                let expected: Vec<ElectorateEntryV1> = resolved
+                    .actors
+                    .actors
+                    .iter()
+                    .map(|actor| ElectorateEntryV1 {
+                        id: actor.id.as_str().to_owned(),
+                        weight: actor.weight.value(),
+                        excluded: false,
+                        key: actor.key,
+                    })
+                    .collect();
+                let same = expected == record.snapshot.electorate;
+                report.check(
+                    CheckNameV1::ElectorateDerives,
+                    same,
+                    if same {
+                        format!(
+                            "{} voter(s), total weight {}",
+                            expected.len(),
+                            resolved.actors.total_weight
+                        )
+                    } else {
+                        "the frozen electorate is not what the pinned channel resolves to"
+                            .to_owned()
+                    },
+                );
+                Some(rules.clone())
+            }
+            None => {
+                report.check(
+                    CheckNameV1::ChannelIsCollective,
+                    false,
+                    format!("channel {} is individual", record.snapshot.channel),
+                );
+                None
+            }
+        },
         Err(error) => {
-            report.check(CheckNameV1::ElectorateDerives, false, error.to_string());
+            report.check(CheckNameV1::ChannelIsCollective, false, error.to_string());
+            None
         }
-    }
+    };
 
-    // 6. Ballots verify, each against the frozen snapshot.
+    // 7. Ballots verify, each against the frozen snapshot.
     let mut bad = Vec::new();
     for ballot in &record.ballots {
         if let Err(rejection) = ballot.check(&record.snapshot) {
@@ -280,7 +310,7 @@ pub fn verify(store: &LocalChainStore, tx_id: &TxId) -> Result<VerificationV1, V
         },
     );
 
-    // 7. Ballots ordered.
+    // 8. Ballots ordered.
     report.check(
         CheckNameV1::BallotsOrdered,
         record.ballots_are_sorted(),
@@ -291,7 +321,7 @@ pub fn verify(store: &LocalChainStore, tx_id: &TxId) -> Result<VerificationV1, V
         },
     );
 
-    // 8. Commitment.
+    // 9. Commitment.
     let commitment = ballot_commitment(&record.ballots);
     report.check(
         CheckNameV1::CommitmentDerives,
@@ -299,18 +329,18 @@ pub fn verify(store: &LocalChainStore, tx_id: &TxId) -> Result<VerificationV1, V
         format!("stored {} derived {commitment}", record.ballot_commitment),
     );
 
-    // 9. Result reproduces.
+    // 10. Result reproduces. Without the channel's rules there is nothing to rerun,
+    // and the check is absent rather than reported either way.
+    let Some(rules) = rules else {
+        return Ok(report);
+    };
     let rerun = record
         .snapshot
         .electorate()
         .map_err(VoteError::Derivation)
         .and_then(|electorate| {
             let ballots = bornite_ballots(record.ballots.iter())?;
-            Ok(bornite_eval::evaluate(
-                &state.rules.value,
-                &electorate,
-                &ballots,
-            )?)
+            Ok(bornite_eval::evaluate(&rules, &electorate, &ballots)?)
         });
     match rerun {
         Ok(evaluation) => {

@@ -1,6 +1,6 @@
 [package]
 name = "irena-vote"
-description = "A company vote on the ledger: electorate derivation, lifecycle, signed ballots, the final record and its independent verification"
+description = "A collective decision on the ledger: a vote through a decision channel — lifecycle, signed ballots, the final record and its independent verification"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -12,6 +12,7 @@ bornite-eval.workspace = true
 bornite-rules.workspace = true
 borsh.workspace = true
 irena-core.workspace = true
+irena-decision.workspace = true
 irena-ledger.workspace = true
 prunella-canonical.workspace = true
 prunella-core.workspace = true

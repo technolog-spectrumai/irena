@@ -2,7 +2,7 @@
 
 use bornite_core::VoterIdV1;
 use borsh::{BorshDeserialize, BorshSerialize};
-use irena_core::CompanyIdV1;
+use irena_core::{ChannelIdV1, CompanyIdV1};
 use prunella_canonical::{Canonical, hash_canonical};
 use prunella_core::{BlockHeight, Hash, PublicKey, TxId};
 
@@ -57,7 +57,8 @@ pub struct ElectorateEntryV1 {
     pub id: String,
     /// Voting weight.
     pub weight: u64,
-    /// Whether the rules may exclude this voter. Always false for a share register.
+    /// Whether the rules may exclude this voter. Always false: neither a share
+    /// register nor a roster has a notion of exclusion.
     pub excluded: bool,
     /// The registered signing key, if any.
     pub key: Option<PublicKey>,
@@ -66,9 +67,10 @@ pub struct ElectorateEntryV1 {
 /// Everything a vote is decided against, fixed at freeze time.
 ///
 /// Records are pinned by transaction id: a Prunella transaction id commits to the
-/// payload bytes, so pinning the id pins the exact register and rules. The electorate
-/// is included in full so the snapshot can be evaluated and audited on its own, and
-/// re-derived from the pinned register by a verifier.
+/// payload bytes, so pinning the id pins the exact register and channel set, and the
+/// channel id picks the rules out of that set. The electorate is included in full so
+/// the snapshot can be evaluated and audited on its own, and re-resolved from the
+/// pinned channel by a verifier.
 #[derive(BorshSerialize, BorshDeserialize, Clone, Debug, PartialEq, Eq, serde::Serialize)]
 pub struct VoteSnapshotV1 {
     /// Which company.
@@ -83,8 +85,10 @@ pub struct VoteSnapshotV1 {
     pub genesis_tx_id: TxId,
     /// The share register in force at that height.
     pub shares_tx_id: TxId,
-    /// The voting rules in force at that height.
-    pub rules_tx_id: TxId,
+    /// The channel set in force at that height.
+    pub channels_tx_id: TxId,
+    /// The channel voted through: a collective one, whose rules decide.
+    pub channel: String,
     /// The derived electorate, in voter id order.
     pub electorate: Vec<ElectorateEntryV1>,
 }
@@ -106,6 +110,16 @@ impl VoteSnapshotV1 {
     /// is not one.
     pub fn company(&self) -> Result<CompanyIdV1, irena_core::IrenaError> {
         CompanyIdV1::new(self.company.clone())
+    }
+
+    /// The channel id, validated.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`irena_core::IrenaError`] if a decoded snapshot carries a label that
+    /// is not one.
+    pub fn channel(&self) -> Result<ChannelIdV1, irena_core::IrenaError> {
+        ChannelIdV1::new(self.channel.clone())
     }
 
     /// Finds a frozen voter by id.

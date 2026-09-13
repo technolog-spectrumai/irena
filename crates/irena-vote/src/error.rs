@@ -74,9 +74,18 @@ pub enum VoteError {
     /// The company could not be resolved at the requested height.
     #[error(transparent)]
     Ledger(#[from] irena_ledger::LedgerError),
-    /// The electorate could not be derived from the register.
+    /// The frozen electorate could not be rebuilt for Bornite.
     #[error("cannot derive an electorate: {0}")]
     Derivation(bornite_core::CoreError),
+    /// The channel could not be resolved.
+    #[error(transparent)]
+    Decision(#[from] irena_decision::DecisionError),
+    /// A vote was asked of a channel that decides by one signature.
+    #[error("channel {channel} is individual; it decides by one signature, not by vote")]
+    NotCollective {
+        /// The channel.
+        channel: String,
+    },
     /// Bornite could not evaluate the vote.
     #[error(transparent)]
     Evaluation(#[from] bornite_eval::EvaluationErrorV1),
@@ -108,11 +117,11 @@ pub enum VoteError {
         /// The id asked for.
         tx_id: TxId,
     },
-    /// The frozen rules record no longer resolves to what the snapshot pinned.
+    /// The frozen channel set no longer resolves to what the snapshot pinned.
     #[error(
-        "the rules in force at height {height} are {found}, but the snapshot pinned {expected}"
+        "the channel set in force at height {height} is {found}, but the snapshot pinned {expected}"
     )]
-    RulesMoved {
+    ChannelsMoved {
         /// The snapshot height.
         height: BlockHeight,
         /// What the snapshot pinned.

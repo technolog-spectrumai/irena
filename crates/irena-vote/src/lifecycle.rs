@@ -1,13 +1,14 @@
 //! The vote as a process.
 
 use crate::ballot::SignedBallotV1;
-use crate::derive::derive_electorate;
 use crate::error::VoteError;
 use crate::record::{EvaluationSummaryV1, FinalVoteRecordV1, VOTE_NAMESPACE, VOTE_SCHEMA_VERSION};
 use crate::snapshot::{ElectorateEntryV1, VoteIdV1, VoteSnapshotV1};
 use bornite_core::{BallotSetV1, BallotV1, VoterIdV1};
 use bornite_eval::VoteEvaluationV1;
 use borsh::{BorshDeserialize, BorshSerialize};
+use irena_core::ChannelIdV1;
+use irena_decision::resolve_channel;
 use irena_ledger::reconstruct;
 use prunella_canonical::Canonical;
 use prunella_core::{BlockHeight, Hash, Namespace, SchemaVersion, TransactionDraft, TxId};
@@ -161,35 +162,42 @@ impl VoteV1 {
         }
     }
 
-    /// Freezes the vote against the company as it is at `at`.
+    /// Freezes the vote against the company as it is at `at`, through `channel`.
     ///
-    /// Resolves the founding record, the share register and the voting rules in force
-    /// at exactly that height, derives the electorate from the register, and records
-    /// everything in the snapshot. From here on nothing appended to the chain can
-    /// change what this vote is decided against.
+    /// Resolves the channel at exactly that height — its actors from its source as the
+    /// company then stands, its rules from the channel set then in force — requires it
+    /// to be collective, and records everything in the snapshot. From here on nothing
+    /// appended to the chain can change what this vote is decided against.
     ///
     /// # Errors
     ///
     /// [`VoteError::InvalidTransition`] unless the vote is a draft; the ledger's errors
-    /// if the company is not complete at `at`; [`VoteError::Derivation`] if the
-    /// register cannot become an electorate.
+    /// if the company is not complete at `at`; [`VoteError::Decision`] if the channel
+    /// does not exist or resolve; [`VoteError::NotCollective`] for an individual one.
     pub fn freeze(
         &mut self,
         store: &LocalChainStore,
         at: BlockHeight,
+        channel: &ChannelIdV1,
     ) -> Result<&VoteSnapshotV1, VoteError> {
         self.expect_status(VoteStatusV1::Draft, "freeze")?;
         let state = reconstruct(store, at)?;
+        let resolved = resolve_channel(&state, channel)?;
+        if resolved.rules().is_none() {
+            return Err(VoteError::NotCollective {
+                channel: channel.to_string(),
+            });
+        }
         self.company = state.company.as_str().to_owned();
-        let derived = derive_electorate(&state.shares.value)?;
-        let electorate = derived
-            .holders
+        let electorate = resolved
+            .actors
+            .actors
             .iter()
-            .map(|holder| ElectorateEntryV1 {
-                id: holder.id.as_str().to_owned(),
-                weight: holder.weight.value(),
+            .map(|actor| ElectorateEntryV1 {
+                id: actor.id.as_str().to_owned(),
+                weight: actor.weight.value(),
                 excluded: false,
-                key: holder.key,
+                key: actor.key,
             })
             .collect();
         self.snapshot = Some(VoteSnapshotV1 {
@@ -199,7 +207,8 @@ impl VoteV1 {
             height: at,
             genesis_tx_id: state.genesis_tx_id,
             shares_tx_id: state.shares.tx_id,
-            rules_tx_id: state.rules.tx_id,
+            channels_tx_id: state.channels.tx_id,
+            channel: channel.as_str().to_owned(),
             electorate,
         });
         self.status = VoteStatusV1::Frozen;
@@ -256,16 +265,16 @@ impl VoteV1 {
 
     /// Counts the vote.
     ///
-    /// The rules are the record the snapshot pinned, re-read from the chain at the
-    /// snapshot height and checked to be that exact transaction; the electorate and
-    /// ballots are the frozen ones. Bornite's full result is returned for reporting;
+    /// The rules are the frozen channel's, re-read from the channel set the snapshot
+    /// pinned at the snapshot height and checked to be that exact transaction; the
+    /// electorate and ballots are the frozen ones. Bornite's full result is returned for reporting;
     /// its numeric summary is what the vote keeps and what the final record carries.
     ///
     /// # Errors
     ///
-    /// [`VoteError::InvalidTransition`] unless closed; [`VoteError::RulesMoved`] if the
-    /// chain no longer resolves the pinned rules at that height (a broken chain);
-    /// Bornite's own error if it refuses the inputs.
+    /// [`VoteError::InvalidTransition`] unless closed; [`VoteError::ChannelsMoved`] if
+    /// the chain no longer resolves the pinned channel set at that height (a broken
+    /// chain); Bornite's own error if it refuses the inputs.
     pub fn evaluate(&mut self, store: &LocalChainStore) -> Result<VoteEvaluationV1, VoteError> {
         self.expect_status(VoteStatusV1::Closed, "evaluate")?;
         let evaluation = self.evaluate_now(store)?;
@@ -278,17 +287,22 @@ impl VoteV1 {
     fn evaluate_now(&self, store: &LocalChainStore) -> Result<VoteEvaluationV1, VoteError> {
         let snapshot = self.snapshot.as_ref().expect("past draft implies frozen");
         let state = reconstruct(store, snapshot.height)?;
-        let rules = state.rules;
-        if rules.tx_id != snapshot.rules_tx_id || state.company.as_str() != snapshot.company {
-            return Err(VoteError::RulesMoved {
+        if state.channels.tx_id != snapshot.channels_tx_id
+            || state.company.as_str() != snapshot.company
+        {
+            return Err(VoteError::ChannelsMoved {
                 height: snapshot.height,
-                expected: snapshot.rules_tx_id,
-                found: rules.tx_id,
+                expected: snapshot.channels_tx_id,
+                found: state.channels.tx_id,
             });
         }
+        let resolved = resolve_channel(&state, &snapshot.channel()?)?;
+        let rules = resolved.rules().ok_or_else(|| VoteError::NotCollective {
+            channel: snapshot.channel.clone(),
+        })?;
         let electorate = snapshot.electorate().map_err(VoteError::Derivation)?;
         let ballots = bornite_ballots(self.ballots.values())?;
-        Ok(bornite_eval::evaluate(&rules.value, &electorate, &ballots)?)
+        Ok(bornite_eval::evaluate(rules, &electorate, &ballots)?)
     }
 
     /// The record this vote would leave on the chain.
