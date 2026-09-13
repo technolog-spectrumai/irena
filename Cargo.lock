@@ -144,6 +144,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "bornite-xml"
+version = "0.1.0"
+dependencies = [
+ "bornite-core",
+ "bornite-rules",
+ "proptest",
+ "quick-xml",
+ "serde",
+ "tempfile",
+ "thiserror",
+]
+
+[[package]]
 name = "borsh"
 version = "1.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"

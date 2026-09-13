@@ -53,6 +53,11 @@ impl FractionV1 {
     ///
     /// Returns [`CoreError::ZeroDenominator`] or [`CoreError::ImproperFraction`].
     pub const fn proportion(numerator: u64, denominator: u64) -> Result<Self, CoreError> {
+        // A zero denominator is the more fundamental defect, so it is reported first:
+        // 1/0 is not "improper", it is not a fraction at all.
+        if denominator == 0 {
+            return Err(CoreError::ZeroDenominator);
+        }
         if numerator > denominator {
             return Err(CoreError::ImproperFraction {
                 numerator,

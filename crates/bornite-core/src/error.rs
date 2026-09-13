@@ -6,7 +6,7 @@ use crate::VoterIdV1;
 ///
 /// Every variant is a refusal to build something invalid. None describe an evaluation
 /// outcome: a vote that fails is a result, not an error.
-#[derive(Debug, thiserror::Error, Clone, PartialEq, Eq, serde::Serialize)]
+#[derive(Debug, thiserror::Error, Clone, PartialEq, Eq, PartialOrd, Ord, serde::Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum CoreError {
