@@ -1,7 +1,7 @@
 # Irena CLI
 
-The `irena` binary is a thin front end over `irena-ledger`, `irena-vote` and
-`irena-core`. It reads files, calls the libraries, and renders what comes back; no
+The `irena` binary is a thin front end over `irena-ledger`, `irena-vote`,
+`irena-meeting` and `irena-core`. It reads files, calls the libraries, and renders what comes back; no
 validation, reconstruction or counting lives here. `--json` on any command prints the
 same information as JSON.
 
@@ -15,7 +15,7 @@ every other Prunella command work on it unchanged.
 | Code | Meaning |
 |---|---|
 | `0` | Success |
-| `1` | A finding: `verify-structure` cannot reconstruct the company; `vote evaluate` rejected the motion; `vote verify` found a record that does not hold |
+| `1` | A finding: `verify-structure` cannot reconstruct the company; `vote evaluate` rejected the motion; `vote verify` or `meeting verify` found a record that does not hold |
 | `2` | Invalid input or a refused operation (a stale amendment, an invalid body, a bad notary field, no company on the chain) |
 
 ## Notarisation arguments
@@ -210,3 +210,99 @@ the record is exactly what the chain says it should be
 A record with one byte of a ballot signature changed exits `1` with `FAIL
 BallotsVerify` and `FAIL CommitmentDerives` — the ballot's digest moved with its
 signature — and every other check still reported. See [IRENA_V1.md §7.6](../IRENA_V1.md).
+
+## `meeting`
+
+A shareholder meeting groups agenda items and the votes among them. Like a vote it is
+carried as a **state file**, and like a vote only formal facts reach the chain: the
+convening (the agenda) and the finalisation (the outcomes). Everything between is
+local.
+
+```console
+$ irena meeting new --title "Annual General Meeting 2026" \
+      --scheduled-at 2026-06-01T10:00:00Z --notice-digest a0a0… --state m.state
+$ irena meeting add-item --state m.state --title "Report of the directors" \
+      --document-digest 1111…                                  # informational
+$ irena meeting add-item --state m.state --title "Approve the 2026 accounts" \
+      --proposal-digest 2222…                                  # a vote
+$ irena meeting add-item --state m.state --title "Re-appoint the auditor" \
+      --proposal-digest 3333…
+```
+
+An item is informational or a vote — exactly one of `--document-digest` and
+`--proposal-digest`. Items are numbered from 1 in the order added.
+
+```console
+$ irena meeting convene --state m.state --signing-key k.key \
+      --notary-id notary-07 --notary-name "Jane Roe" --notary-at 2026-05-01T09:00:00Z
+convened for acme at height 1
+meeting id: 0b8739ae…
+```
+
+Convening puts the agenda on the chain and fixes it; `add-item` afterwards is refused.
+The meeting id is the convening transaction.
+
+```console
+$ irena meeting open --state m.state
+opened; 2 vote(s) frozen at height 1
+  item 2: vote bba0a937…
+  item 3: vote f54d6ac6…
+```
+
+Each vote item freezes the company **on its own** at the current head. Amendments after
+that reach none of them: a holder removed mid-meeting still votes, one added still
+cannot.
+
+```console
+$ irena meeting ballot --state m.state --item 2 --voter alice --choice yes \
+      --signing-key alice.key --out a2.ballot
+$ irena meeting cast --state m.state --item 2 --ballot a2.ballot
+accepted a yes ballot from alice on item 2; 1 ballot(s) so far
+```
+
+A ballot names its item. Casting it against another item is refused (the vote ids
+differ), as is casting against an informational item.
+
+```console
+$ irena meeting close --state m.state
+closed and counted
+  item 2: accepted (yes 500 no 300 abstain 0)
+  item 3: rejected (yes 0 no 500 abstain 0)
+$ irena meeting finalize --state m.state --signing-key k.key \
+      --notary-id notary-07 --notary-name "Jane Roe" --notary-at 2026-06-01T12:00:00Z
+finalized at height 5 as transaction e214ee97…
+meeting 0b8739ae…, 3 item(s)
+  item 2: accepted as eb39c5f2…
+  item 3: rejected as c7ea6f59…
+```
+
+`finalize` writes every vote to the chain first, each its own transaction, then the
+meeting record; an interrupted finalisation is resumed, not repeated. `show` prints the
+agenda and where the meeting is at any point.
+
+### `meeting verify`
+
+Re-establishes the whole meeting from the chain and its transaction id — its own nine
+checks, then every referenced vote's nine:
+
+```console
+$ irena meeting verify --tx e214ee97…
+verification of meeting record e214ee97… at height 5
+  ok   Decodes                final record of meeting 0b8739ae…
+  ok   ConveningExists        convened at height 1 for acme
+  ok   HeightsOrdered         convened at 1, opened at 1, finalised at 5
+  ok   AgendaMatches          3 item(s), as convened
+  ok   MetadataMatches        "Annual General Meeting 2026", scheduled 2026-06-01T10:00:00Z
+  ok   CompanyReconstructs    acme at height 1: 3 holder(s)
+  ok   VotesVerify            2 vote(s), each verified from the chain
+  ok   VotesBelong            2 vote(s) match their agenda items
+  ok   ItemsConsistent        3 item(s): 2 vote, 1 informational
+  ok   item 2 vote eb39c5f2… (9 check(s))
+  ok   item 3 vote c7ea6f59… (9 check(s))
+the meeting is exactly what the chain says it was
+```
+
+A record whose agenda differs from the one convened fails `AgendaMatches`; one pointing
+at another item's or another meeting's vote fails `VotesBelong` while that vote itself
+still passes — the forgery a per-vote check cannot see. See
+[IRENA_V1.md §8.5](../IRENA_V1.md).

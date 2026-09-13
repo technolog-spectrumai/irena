@@ -21,7 +21,8 @@ greps every engine source file for the words `irena`, `bornite` and `prunella` t
 it so. There is no bridge crate: a layer that only passes things through is a layer
 that should not exist.
 
-Sections 1–6 are the company on the chain; §7 is a vote on it; §8 is what comes next.
+Sections 1–6 are the company on the chain; §7 is a vote on it; §8 is a meeting that
+groups votes; §9 is what comes next.
 
 ## 1. What a company is, to Irena
 
@@ -216,6 +217,7 @@ who both were and imposes no policy on either.
 | `irena-core` | `CompanyIdV1`, `CompanyGenesisV1`, `IdentityV1`, `ShareStructureV1`, `HolderV1`, `NotarisationV1`, `NotaryIdV1`, `NotaryTimeV1`, `IrenaRecordV1`, `RecordKindV1`, `RecordBodyV1`; `read_record`, `compose_record`, `read_company_genesis_document`, `read_identity_document`, `read_share_structure_document`, `read_voting_rules_document`; `IrenaError`, `IssueV1` |
 | `irena-ledger` | `genesis_with_company`, `publish`, `reconstruct`, `company_now`, `history`; `CompanyStateV1` (`provider_of`, `history_of`), `InForceV1<T>`, `RecordRefV1`; `LedgerError` |
 | `irena-vote` | `derive_electorate`, `ElectorateDerivationV1`; `VoteV1` (`draft`, `freeze`, `open`, `cast`, `close`, `evaluate`, `finalize`, `final_record`), `VoteStatusV1`, `VoteSnapshotV1`, `VoteIdV1`; `SignedBallotV1`, `BallotBodyV1`, `BallotChoiceV1`, `ballot_commitment`, `COMMITMENT_TAGS`; `FinalVoteRecordV1`, `EvaluationSummaryV1`; `verify`, `VerificationV1`, `CheckV1`, `CheckNameV1`; `VoteError`, `BallotRejectionV1` |
+| `irena-meeting` | `MeetingIdV1`, `MeetingStatusV1`, `MeetingMetadataV1`, `AgendaV1`, `AgendaItemV1`, `AgendaBodyV1`; `ShareholderMeetingV1` (`draft`, `add_item`, `convene`, `open`, `cast`, `close`, `finalize`, `final_record`); `MeetingFinalRecordV1`, `FinalItemV1`, `MeetingRecordV1`, `compose_convened`, `compose_final`, `read_meeting_record`; `verify_meeting`, `MeetingVerificationV1`, `MeetingCheckV1`, `MeetingCheckNameV1`; `MeetingError` |
 | `irena-cli` | The `irena` binary — [docs/irena-cli.md](docs/irena-cli.md) |
 
 Every reader is strict (unknown elements and attributes refused, never skipped) and
@@ -370,14 +372,123 @@ that the register named the real owners, that the proposal document says what an
 believes, or that a key was used by the person it was registered to. Those are the
 notary's (§3) and the company's business, and the boundary is drawn on purpose.
 
-## 8. Not in V1 — the road ahead
+## 8. A shareholder meeting
+
+`irena-meeting` is a company-level container for agenda items and the votes among
+them. It adds no arithmetic and no new kind of company truth: Bornite still counts,
+Prunella still stores, §7 still runs every vote, §4 still says what the company is.
+What a meeting adds is **grouping and formality** — which items were put before the
+shareholders, when, by whom, and which final vote records answered them.
+
+```text
+Draft ──convene──▶ Convened ──open──▶ Open ──close──▶ Closed ──finalize──▶ Finalized
+```
+
+A runtime state machine, like a vote: `InvalidTransition { from, to }` names both ends.
+The whole state, including each item's `VoteV1`, is canonical Borsh, so a meeting lives
+in a file between steps.
+
+### 8.1 The agenda
+
+An item is a number (from 1, in order), a title, and one of two bodies:
+
+| Kind | Carries | Means |
+|---|---|---|
+| `informational` | `document-digest` | Something shareholders are shown |
+| `vote` | `proposal-digest` | Something shareholders decide |
+
+The agenda is assembled while the meeting is a draft and **fixed by convening**: what
+was put before the shareholders is what they were called to decide. An agenda needs at
+least one item; titles are non-empty; both digests are opaque and never interpreted.
+
+### 8.2 Two records, and only two
+
+Only formal facts reach the chain, both as notarised XML under namespace
+`irena.meeting.v1`, both readable inside their block:
+
+```xml
+<irena-meeting version="1.0" kind="final" company="acme" meeting="0b87…">
+  <notarisation id="notary-07" name="Jane Roe" at="2026-06-01T12:00:00Z"/>
+  <meeting title="Annual General Meeting 2026" scheduled-at="2026-06-01T10:00:00Z"
+           notice-digest="a0a0…" opened-at-height="1">
+    <agenda>
+      <item number="1" kind="informational" title="Report of the directors" document-digest="1111…"/>
+      <item number="2" kind="vote" title="Approve the 2026 accounts" proposal-digest="2222…"
+            vote-tx="eb39…" outcome="accepted"/>
+    </agenda>
+  </meeting>
+</irena-meeting>
+```
+
+* **convened** (`kind="convened"`) — metadata and the full agenda. **Its transaction id
+  is the [`MeetingIdV1`]**: a convening is unique and immutable once on the chain, so
+  nothing else is needed to name a meeting, and nothing can claim to be a meeting that
+  was never convened. It carries no `vote-tx`, no `outcome`, no `opened-at-height`.
+* **final** (`kind="final"`) — the meeting id, the metadata and agenda repeated so the
+  record is self-contained (verification checks they agree), the height the votes were
+  frozen at, and for each vote item the transaction carrying its final vote record and
+  the outcome that record states.
+
+Everything between the two — adding an item, opening, casting, closing — is local. A
+meeting's UI state is not the company's business.
+
+Meetings are **events, not company parts**: a meeting record carries no `supersedes`,
+and §4's reconstruction ignores this namespace entirely, so no meeting can change what
+the company is. (Turning a passed motion *into* an amendment is stage 2, §9.)
+
+### 8.3 Opening: every vote freezes on its own
+
+`open` creates one §7 vote per vote item, each freezing the company at the current head
+**independently**: its own snapshot, its own electorate, its own id. The vote's subject
+is `item <n>: <title>`, so two items with the same proposal are still two different
+votes and a vote can be traced back to its item.
+
+Amendments to the register or the rules after that height reach **none** of them: a
+holder removed mid-meeting still votes, one added still cannot, and the quorum is
+measured against the electorate as it was. A meeting whose items are all informational
+opens too; there is simply nothing to decide.
+
+`cast(item, ballot)` routes a ballot to that item's vote, which applies §7.3's checks
+unchanged. A ballot for item 2 is not a ballot for item 3: the subjects differ, so the
+vote ids differ, and the wrong vote refuses it.
+
+### 8.4 Finalising
+
+`finalize` writes **every vote to the chain first**, each in its own transaction as §7.5
+describes, then the final meeting record. A vote already finalised is left alone, so an
+interrupted finalisation is resumed rather than repeated. Because each vote is its own
+record, a shareholder can verify one vote without the meeting, and the meeting record
+is only the index over them.
+
+### 8.5 Verification
+
+`verify_meeting(store, tx_id)` re-establishes a meeting from the chain alone. Every
+check is named; a check that could not run because an earlier one failed is absent, not
+counted as passed. The whole thing is valid only when every check *and* every
+referenced vote's own nine checks (§7.6) pass:
+
+| Check | Holds when |
+|---|---|
+| `Decodes` | The transaction is in `irena.meeting.v1` and holds a **final** meeting record |
+| `ConveningExists` | The meeting id names a transaction that is a **convening** record for the same company |
+| `HeightsOrdered` | convened ≤ opened < finalised |
+| `AgendaMatches` | The agenda in the final record is exactly the agenda convened |
+| `MetadataMatches` | Title, schedule and notice are exactly those convened |
+| `CompanyReconstructs` | The company reconstructs at the convening height and is the record's company |
+| `VotesVerify` | Every vote item names a transaction `irena_vote::verify` accepts |
+| `VotesBelong` | Each vote is the one *this* item called for: right company, right subject, right proposal digest, frozen at the declared opening height, finalised before the meeting, and the outcome the record claims |
+| `ItemsConsistent` | Informational items carry no vote; vote items carry one |
+
+`VotesVerify` and `VotesBelong` are separate on purpose. A real, valid vote from
+another item or another meeting passes the first and fails the second — the forgery
+that a per-vote check cannot see.
+
+## 9. Not in V1 — the road ahead
 
 Recorded here so they are decisions, not omissions. The stages are planned, in this
 order, and none is started:
 
-1. **Shareholder meetings and votes.** A meeting as a ledger record — notice, agenda,
-   a set of motions — each motion a vote of §7 frozen at the meeting's height. The
-   vote lifecycle already exists; the meeting is what groups and schedules it.
+1. ~~Shareholder meetings and votes.~~ **Done** — §8.
 2. **Resolutions and resulting company-state changes.** A passed motion whose subject
    *is* a company change (a new register, new rules) becomes the amendment, with the
    final vote record as its authority, so the notary attests to the resolution rather

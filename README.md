@@ -14,7 +14,7 @@ which know nothing about the third:
 |---|---|---|
 | **Prunella** | An immutable, organisation-agnostic ledger | What any payload means |
 | **Bornite** | A deterministic voting engine | Who is voting, or why |
-| **Irena** | The company — genesis, share register, voting rules — notarised on the ledger, and its votes: frozen, signed, counted, recorded, verifiable | Whether the register names the real owners |
+| **Irena** | The company — genesis, share register, voting rules — notarised on the ledger; its votes, frozen, signed, counted, recorded, verifiable; and the shareholder meetings that group them | Whether the register names the real owners |
 
 Irena imports both engines directly. Neither imports Irena; no Prunella crate mentions
 Bornite and no Bornite crate mentions Prunella; a test greps every engine source file
@@ -44,7 +44,7 @@ deployment democratically. So:
 
 | Document | Covers |
 |---|---|
-| [IRENA_V1.md](IRENA_V1.md) | The company model, the record envelope, notarisation, amendment and reconstruction, the vote lifecycle and its verification, the road ahead |
+| [IRENA_V1.md](IRENA_V1.md) | The company model, the record envelope, notarisation, amendment and reconstruction, the vote lifecycle, shareholder meetings, and the road ahead |
 | [BORNITE_V1.md](BORNITE_V1.md) | **Normative.** The frozen voting types, rules grammar and evaluation algorithm |
 | [PROTOCOL_V1.md](PROTOCOL_V1.md) | **Normative.** The frozen ledger wire protocol |
 | [docs/irena-cli.md](docs/irena-cli.md) | The `irena` binary |
@@ -74,6 +74,18 @@ $ irena --chain acme.chain vote close --state v.state
 $ irena --chain acme.chain vote evaluate --state v.state  # Bornite counts
 $ irena --chain acme.chain vote finalize --state v.state --signing-key k.key
 $ irena --chain acme.chain vote verify --tx f9e5…         # from the chain alone
+
+$ irena --chain acme.chain meeting new --title "AGM 2026" \
+      --scheduled-at 2026-06-01T10:00:00Z --state m.state
+$ irena --chain acme.chain meeting add-item --state m.state \
+      --title "Approve the accounts" --proposal-digest 2222…
+$ irena --chain acme.chain meeting convene --state m.state --signing-key k.key …
+$ irena --chain acme.chain meeting open --state m.state    # one frozen vote per item
+$ irena --chain acme.chain meeting cast --state m.state --item 2 --ballot a2.ballot
+$ irena --chain acme.chain meeting close --state m.state
+$ irena --chain acme.chain meeting finalize --state m.state --signing-key k.key …
+$ irena --chain acme.chain meeting verify --tx e214…      # the meeting and every vote
+
 $ bornite evaluate --rules rules.xml --vote vote.xml     # the same rules, no ledger at all
 ```
 
@@ -82,6 +94,7 @@ $ bornite evaluate --rules rules.xml --vote vote.xml     # the same rules, no le
 | [`irena-core`](crates/irena-core) | The company model — a genesis that is the whole company (identity, flat share register with signing keys, nested voting rules), notarisation, the record envelope — and its strict XML |
 | [`irena-ledger`](crates/irena-ledger) | Prunella integration: found, amend, and **reconstruct** the company at any height from the genesis and the amendments in chain order |
 | [`irena-vote`](crates/irena-vote) | Electorate derivation, the vote lifecycle, signed ballots, the final record and its verification from the chain alone |
+| [`irena-meeting`](crates/irena-meeting) | Shareholder meetings: an agenda of informational and vote items, convened and finalised on the ledger, every vote frozen on its own |
 | [`irena-cli`](crates/irena-cli) | The `irena` binary |
 
 ## Decisions
@@ -104,7 +117,13 @@ before they are re-argued.
 | **Notarisation required on every record** — id, name, optional address, `at` in canonical UTC | Real-world authority enters in one place; `at` is attested metadata and never orders anything | Stage 4 can bind notary ids to keys; a notarisation could carry more attestations without changing the envelope |
 | **Bornite's `<voting-rules>` nested unchanged** | The same rules bytes mean the same rules in a file, a genesis or an amendment; Bornite never sees a company | Board rules (stage 3) are another `<voting-rules>` under another part |
 | **Records pinned by transaction id, never by height or time** | A vote snapshot pins the exact bytes it was decided against; amendments after the freeze cannot reach it | — |
-| **Vote state as a canonical Borsh file; ballots as files** | Every lifecycle step is one command; a holder signs on their own machine | Stage 5 UI drives the same `VoteV1` in memory; stage 1 meetings hold several |
+| **Vote state as a canonical Borsh file; ballots as files** | Every lifecycle step is one command; a holder signs on their own machine | Stage 5 UI drives the same `VoteV1` in memory; a meeting holds several |
+| **A meeting is a container, not a company part** | Meeting records carry no `supersedes` and reconstruction ignores their namespace, so no meeting can silently change the company | Turning a passed motion into an amendment is stage 2, and adds a record kind rather than changing this one |
+| **The meeting id is its convening transaction** | Unique and unforgeable without a nonce or a registry; nothing can claim to be a meeting that was never convened | — |
+| **Each vote item freezes independently at `meeting open`** | Every vote has its own snapshot, electorate and id, and verifies alone without the meeting; one command fixes them all at one height | Per-item opening, or freezing at a scheduled height, are both additions to `open` rather than changes to a vote |
+| **A vote's subject is `item <n>: <title>`** | Two items with the same proposal are still two votes, and a vote traces back to its item; `VotesBelong` can detect a swapped reference | A structured item reference would replace the string without touching the vote |
+| **Only convening and finalisation reach the chain** | The formal facts are on the ledger; drafting, casting and counting stay local, so a UI cannot fill the chain with noise | Intermediate attestations (a quorum roll call) would be new record kinds |
+| **`VotesVerify` and `VotesBelong` are separate checks** | A real, valid vote from another meeting passes the first and fails the second — a forgery a per-vote check cannot see | — |
 | **Ballots are not secret and live in the final record** | A record is verifiable from the chain alone, nine named checks | Secret ballots would need a different commitment scheme and are explicitly out of scope |
 | **Final vote record as canonical Borsh, not XML** | Byte-exact re-encoding is one of the verification checks; the export shows it as base64 | An XML rendering for readers is a projection that can be added without changing what is verified |
 | **Strict readers, issues collected and sorted** | Unknown elements refused; a document with three problems is fixed in one round | — |
@@ -112,9 +131,10 @@ before they are re-argued.
 
 ## Road ahead
 
-Planned, in order, none started — see [IRENA_V1.md §8](IRENA_V1.md):
+Planned, in order — see [IRENA_V1.md §9](IRENA_V1.md):
 
-1. shareholder meetings and votes using Bornite;
+1. ~~shareholder meetings and votes using Bornite~~ — **done**, see
+   [IRENA_V1.md §8](IRENA_V1.md);
 2. resolutions and the company-state changes they cause;
 3. board membership, meetings and decisions;
 4. identities and authorisation;
