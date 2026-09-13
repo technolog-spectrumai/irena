@@ -1,0 +1,29 @@
+[package]
+name = "irena-cli"
+description = "Command line interface for Irena: a company and its votes on a ledger"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "irena"
+path = "src/main.rs"
+
+[dependencies]
+clap.workspace = true
+hex.workspace = true
+irena-core.workspace = true
+irena-ledger.workspace = true
+prunella-core.workspace = true
+prunella-crypto.workspace = true
+prunella-store.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+prunella-xml.workspace = true
+serde_json.workspace = true
+tempfile.workspace = true
+
+[lints]
+workspace = true
