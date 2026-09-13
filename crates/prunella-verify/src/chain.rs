@@ -95,7 +95,7 @@ impl core::fmt::Display for VerificationReport {
             writeln!(f, "checked:     heights {start}..={end}")?;
         }
         writeln!(f, "blocks:      {}", self.blocks_checked)?;
-        writeln!(f, "transactions: {}", self.transactions_checked)?;
+        writeln!(f, "txs:         {}", self.transactions_checked)?;
         if self.findings.is_empty() {
             write!(f, "result:      valid")
         } else {

@@ -1,0 +1,30 @@
+[package]
+name = "prunella-cli"
+description = "Command line interface for Prunella chains"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "prunella"
+path = "src/main.rs"
+
+[dependencies]
+prunella-canonical.workspace = true
+prunella-core.workspace = true
+prunella-crypto.workspace = true
+prunella-store.workspace = true
+prunella-verify.workspace = true
+prunella-xml.workspace = true
+base64.workspace = true
+clap.workspace = true
+hex.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+redb.workspace = true
+tempfile.workspace = true
+
+[lints]
+workspace = true
