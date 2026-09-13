@@ -22,7 +22,8 @@ it so. There is no bridge crate: a layer that only passes things through is a la
 that should not exist.
 
 Sections 1–6 are the company on the chain; §7 is a vote on it; §8 is a meeting that
-groups votes; §9 is what comes next.
+groups votes; §9 is the resolution that turns a passed vote into company change; §10
+is what comes next.
 
 ## 1. What a company is, to Irena
 
@@ -218,6 +219,7 @@ who both were and imposes no policy on either.
 | `irena-ledger` | `genesis_with_company`, `publish`, `reconstruct`, `company_now`, `history`; `CompanyStateV1` (`provider_of`, `history_of`), `InForceV1<T>`, `RecordRefV1`; `LedgerError` |
 | `irena-vote` | `derive_electorate`, `ElectorateDerivationV1`; `VoteV1` (`draft`, `freeze`, `open`, `cast`, `close`, `evaluate`, `finalize`, `final_record`), `VoteStatusV1`, `VoteSnapshotV1`, `VoteIdV1`; `SignedBallotV1`, `BallotBodyV1`, `BallotChoiceV1`, `ballot_commitment`, `COMMITMENT_TAGS`; `FinalVoteRecordV1`, `EvaluationSummaryV1`; `verify`, `VerificationV1`, `CheckV1`, `CheckNameV1`; `VoteError`, `BallotRejectionV1` |
 | `irena-meeting` | `MeetingIdV1`, `MeetingStatusV1`, `MeetingMetadataV1`, `AgendaV1`, `AgendaItemV1`, `AgendaBodyV1`; `ShareholderMeetingV1` (`draft`, `add_item`, `convene`, `open`, `cast`, `close`, `finalize`, `final_record`); `MeetingFinalRecordV1`, `FinalItemV1`, `MeetingRecordV1`, `compose_convened`, `compose_final`, `read_meeting_record`; `verify_meeting`, `MeetingVerificationV1`, `MeetingCheckV1`, `MeetingCheckNameV1`; `MeetingError` |
+| `irena-resolution` | `ResolutionIdV1`, `ResolutionKindV1`, `AmendmentTargetV1`, `ResolutionStatusV1`, `AuthorityV1`, `proposal_digest`; `ResolutionV1` (`draft`, `finalize`, `execute`), `ExecutedV1`; `ResolutionRecordV1`, `ResolutionExecutionV1`, `compose_resolution`, `compose_execution`, `read_resolution_record`, `read_execution_record`; `verify_resolution`, `verify_execution`, `ResolutionVerificationV1`, `ExecutionVerificationV1`, `ResolutionCheckV1`; `ResolutionError` |
 | `irena-cli` | The `irena` binary — [docs/irena-cli.md](docs/irena-cli.md) |
 
 Every reader is strict (unknown elements and attributes refused, never skipped) and
@@ -483,16 +485,146 @@ referenced vote's own nine checks (§7.6) pass:
 another item or another meeting passes the first and fails the second — the forgery
 that a per-vote check cannot see.
 
-## 9. Not in V1 — the road ahead
+## 9. A resolution, and the loop it closes
+
+```text
+company state → meeting → vote → passed result → resolution → amendment → new company state
+```
+
+Every arrow is a separate record, and the separation is the whole point:
+
+* A **vote** (§7) never changes the company. It counts ballots against a frozen
+  electorate and says what the shareholders decided.
+* A **resolution** never changes it either. It is the formal record that a decision
+  *was* taken, pinned to the exact meeting agenda item and the exact finalised vote
+  that authorised it. It describes **authority**, nothing more.
+* An **amendment** (§4) is what actually changes reconstructed state, and it is the
+  same ordinary record it has always been. An **execution** record links the two, so
+  the chain says which resolution authorised which amendment.
+
+Reconstruction (§4) ignores the resolution and execution namespaces entirely. A
+resolution cannot change the company even in principle; only the amendment it
+authorises can, and that amendment is published through the same `publish` path, with
+the same `supersedes` rule, as any other.
+
+### 9.1 Two kinds
+
+| Kind | Carries | Changes reconstructed state |
+|---|---|---|
+| `declarative` | `document-digest` — the decision document the shareholders voted on | no |
+| `amendment` | `target` (`share-structure` or `voting-rules`) and the **amendment body, verbatim** | yes, through one ordinary amendment |
+
+### 9.2 What the shareholders approved
+
+The agenda item's `proposal-digest` (§8.1) is where the loop closes. For an amendment
+resolution it is
+
+```text
+proposal_digest(body) = hash(IRENA/resolution/v1/proposal, normalise_body(body))
+```
+
+— the digest of **exactly the bytes that will be published**, normalised the way
+`compose_record` normalises a body before embedding it, so a declaration or
+surrounding whitespace is not a difference but a single changed share count is. The
+shareholders vote on the register or the rules themselves; an execution can only
+publish a body that digests to what they approved. `irena resolution digest --file`
+prints the value to put on the agenda.
+
+For a declarative resolution the digest is the external decision document's, and must
+equally be the agenda item's: the resolution points at the same document the
+shareholders saw. Irena never reads it.
+
+### 9.3 Recording a resolution
+
+`finalize` checks the authority **against the chain** before anything is written. Not
+one of these is taken on trust from the draft:
+
+1. the meeting's final record verifies, every check, including its votes (§8.5);
+2. the named agenda item exists on it and is a vote item;
+3. that item was answered by exactly the vote the resolution names;
+4. that vote verifies, every check (§7.6);
+5. **Bornite accepted it** — a rejected motion authorises nothing;
+6. what the resolution carries is what was approved (§9.2).
+
+Only then is the `<irena-resolution>` record published, under namespace
+`irena.resolution.v1`. Its transaction id is the [`ResolutionIdV1`].
+
+### 9.4 Executing an amendment resolution
+
+`execute` publishes two transactions, in this order:
+
+1. the **amendment** — `irena_ledger::publish` with the target's record kind, the
+   resolution's body, and `supersedes` = the record the voters saw;
+2. the **execution record** (`irena.execution.v1`), pinning the resolution, the
+   amendment, the target, the replaced record and the approved digest.
+
+The amendment first, so the execution record can pin it by transaction id. Because the
+amendment is an ordinary company record, a reader who knows nothing about resolutions
+still reconstructs the right company.
+
+Two things are refused:
+
+* **A stale base.** The shareholders approved replacing one exact record. If that
+  record no longer provides its part — someone amended it in between — executing would
+  replace something they never saw, so it is refused (`StaleBase`) and the resolution
+  must go back to a meeting. This is what "pin everything by transaction id, never by
+  mutable current state" means in practice. A resolution on the *rules* still executes
+  if only the register moved: each part is judged on its own.
+* **A second execution.** The chain is scanned for an existing execution of the same
+  resolution (`AlreadyExecuted`); and even without that check `publish` would refuse
+  the second amendment as a stale amendment, because the first moved the provider.
+
+A declarative resolution has nothing to execute and says so (`NothingToExecute`).
+
+### 9.5 Verification
+
+`verify_resolution` and `verify_execution` re-establish everything from the chain. The
+execution verifier runs the resolution's nine checks first and reports them alongside
+its own nine:
+
+| Resolution check | Holds when |
+|---|---|
+| `Decodes` | The transaction is in `irena.resolution.v1` and holds a V1 resolution |
+| `MeetingVerifies` | The meeting it names verifies, every check |
+| `ItemIsAVote` | The agenda item exists on that meeting and is a vote item |
+| `VoteAnsweredTheItem` | The vote it names is the one that answered that item |
+| `VoteVerifies` | That vote verifies, every check |
+| `VotePassed` | Bornite accepted the motion |
+| `ProposalMatches` | What the resolution carries digests to the item's proposal digest |
+| `CompanyMatches` | Resolution, vote and chain are the same company |
+| `HeightsOrdered` | The meeting was finalised before the resolution was recorded |
+
+| Execution check | Holds when |
+|---|---|
+| `Decodes` | The transaction is in `irena.execution.v1` and holds a V1 execution |
+| `ResolutionVerifies` | The resolution it names passes all nine above |
+| `ResolutionAuthorisesThis` | That resolution is an amendment resolution, for this target |
+| `AmendmentExists` | The amendment is an ordinary company record of that kind, for this company |
+| `AmendmentMatchesResolution` | Its body is byte for byte the resolution's, and digests to what the vote approved |
+| `AmendmentReplacedApprovedBase` | It superseded exactly the record the shareholders approved for replacement |
+| `AmendmentApplied` | It is in the company's history for that part at the execution's height: it took effect |
+| `HeightsOrdered` | resolution < amendment ≤ execution |
+| `ExecutedOnce` | No earlier execution of the same resolution exists |
+
+### 9.6 What a verified execution does and does not say
+
+It says: these shareholders, with these weights, under these rules, passed this exact
+proposal at this meeting; a notary attested to the resolution; and the company record
+now in force is byte for byte what they approved, replacing exactly what they saw.
+
+It does not say that the register named the real owners (§3), that anyone was entitled
+to *propose* the resolution, or that the key that published it belonged to anyone in
+particular. **There are no authorisation roles in V1**: any key may publish a
+resolution, and the notarisation is the only authority, exactly as for a company
+record. Stage 4 (§10) is where that changes.
+
+## 10. Not in V1 — the road ahead
 
 Recorded here so they are decisions, not omissions. The stages are planned, in this
 order, and none is started:
 
 1. ~~Shareholder meetings and votes.~~ **Done** — §8.
-2. **Resolutions and resulting company-state changes.** A passed motion whose subject
-   *is* a company change (a new register, new rules) becomes the amendment, with the
-   final vote record as its authority, so the notary attests to the resolution rather
-   than to the change itself.
+2. ~~Resolutions and resulting company-state changes.~~ **Done** — §9.
 3. **Board membership, meetings and decisions.** A board register as a fourth part of
    the company, and board decisions as votes under board rules — the same Bornite, a
    different electorate.

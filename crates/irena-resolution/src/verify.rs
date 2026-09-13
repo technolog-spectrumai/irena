@@ -493,10 +493,11 @@ pub fn verify_execution(
                 record.kind(),
                 execution.target.record_kind()
             ),
-            Some(record) => format!(
+            Some(record) if !right_company => format!(
                 "the amendment is for company {}, the resolution for {}",
                 record.company, resolution.company
             ),
+            Some(record) => format!("a {} record for {}", record.kind(), record.company),
         },
     ) {
         return Ok(report);

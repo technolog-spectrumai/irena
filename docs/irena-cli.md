@@ -1,7 +1,7 @@
 # Irena CLI
 
 The `irena` binary is a thin front end over `irena-ledger`, `irena-vote`,
-`irena-meeting` and `irena-core`. It reads files, calls the libraries, and renders what comes back; no
+`irena-meeting`, `irena-resolution` and `irena-core`. It reads files, calls the libraries, and renders what comes back; no
 validation, reconstruction or counting lives here. `--json` on any command prints the
 same information as JSON.
 
@@ -15,7 +15,7 @@ every other Prunella command work on it unchanged.
 | Code | Meaning |
 |---|---|
 | `0` | Success |
-| `1` | A finding: `verify-structure` cannot reconstruct the company; `vote evaluate` rejected the motion; `vote verify` or `meeting verify` found a record that does not hold |
+| `1` | A finding: `verify-structure` cannot reconstruct the company; `vote evaluate` rejected the motion; `vote verify`, `meeting verify` or `resolution verify` found a record that does not hold |
 | `2` | Invalid input or a refused operation (a stale amendment, an invalid body, a bad notary field, no company on the chain) |
 
 ## Notarisation arguments
@@ -306,3 +306,81 @@ A record whose agenda differs from the one convened fails `AgendaMatches`; one p
 at another item's or another meeting's vote fails `VotesBelong` while that vote itself
 still passes — the forgery a per-vote check cannot see. See
 [IRENA_V1.md §8.5](../IRENA_V1.md).
+
+## `resolution`
+
+A resolution turns a passed vote into company change. It is carried as a **state
+file** like a vote or a meeting. Two things reach the chain: the resolution record at
+`finalize`, and — for an amendment resolution — the amendment plus its execution
+record at `execute`.
+
+### `resolution digest`
+
+Prints the proposal digest of an amendment body. This is what the meeting's agenda
+item must carry, so the vote commits to exactly the body the resolution will execute.
+
+```console
+$ irena resolution digest --file new-register.xml
+52a16af9…
+use this as the agenda item's --proposal-digest so the vote commits to this body
+```
+
+### `create`, `finalize`
+
+```console
+$ irena resolution create --meeting cd547983… --item 1 --vote 864aa72d… \
+      --title "Resolution 1: buy out carol" \
+      --target share-structure --file new-register.xml --state r.state
+$ irena resolution finalize --state r.state --signing-key k.key \
+      --notary-id notary-07 --notary-name "Jane Roe" --notary-at 2026-06-02T09:00:00Z
+recorded for acme at height 4
+resolution: dc5a5ec4…
+```
+
+`--target share-structure|voting-rules` with `--file` makes an amendment resolution;
+`--document-digest` alone makes a declarative one. `finalize` checks the whole chain of
+authority before writing anything — the meeting verifies, the item is a vote item, the
+named vote answered it, that vote verifies, **Bornite accepted it**, and what the
+resolution carries digests to what was approved. A rejected motion exits `2` with
+`the vote … was rejected (threshold_not_met); a rejected motion authorises nothing`.
+
+Recording a resolution changes nothing: `irena show` is identical afterwards.
+
+### `execute`
+
+```console
+$ irena resolution execute --state r.state --signing-key k.key \
+      --notary-id notary-07 --notary-name "Jane Roe" --notary-at 2026-06-02T10:00:00Z
+executed at height 6
+share-structure amendment: 73464c3a… (height 5, replacing 005e7492…)
+execution record: c2ca894b…
+```
+
+The amendment is an ordinary company record — it appears in `irena history --kind
+share-structure` like any other, and `irena show` now reports the new register.
+
+Refused: a **declarative** resolution (nothing to execute); a **stale base**, where the
+record the shareholders approved for replacement is no longer the one in force
+(`the … approved for replacement was …, but … provides it now`); and a **second
+execution**, which the state machine and the chain both reject.
+
+### `resolution verify`
+
+```console
+$ irena resolution verify --tx dc5a5ec4…          # the resolution's authority
+  ok   VotePassed                   accepted (threshold_met)
+  ok   ProposalMatches              the share-structure body approved, 52a16af9… (248 bytes)
+  …
+the resolution rests on exactly what the chain says
+
+$ irena resolution verify --execution c2ca894b…   # the resolution and the amendment
+  resolution dc5a5ec4…:
+    ok   …                          (the nine checks above)
+  ok   AmendmentMatchesResolution   the share-structure the shareholders approved, 52a16af9…
+  ok   AmendmentReplacedApprovedBase replaced 005e7492…, the record the voters saw
+  ok   AmendmentApplied             the amendment is in the company's share-structure history at height 6
+  ok   ExecutedOnce                 the only execution of this resolution
+the amendment is exactly what the shareholders authorised
+```
+
+See [IRENA_V1.md §9.5](../IRENA_V1.md) for every check and what it proves.
