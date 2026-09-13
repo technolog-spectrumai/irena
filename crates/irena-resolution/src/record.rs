@@ -338,7 +338,8 @@ pub fn read_resolution_record(xml: &str) -> Result<ResolutionRecordV1, Resolutio
                     ));
                 }
                 let _ = before;
-                body = Some(capture_element(&mut reader, xml)?);
+                let inner_start = position(&reader)?;
+                body = Some(capture_body(&mut reader, xml, inner_start)?);
             }
             other => {
                 return Err(malformed_at(
@@ -499,60 +500,48 @@ pub fn read_execution_record(xml: &str) -> Result<ExecutionRecordV1, ResolutionE
     })
 }
 
-/// Recovers the exact source bytes of the one element inside `<amendment>`, and
-/// consumes the amendment's end tag.
+/// Recovers the exact source bytes inside `<amendment>` — the body as it was
+/// embedded, comments and all — and consumes the amendment's end tag.
 ///
 /// Nothing is rebuilt from parse events: a parser normalises line endings, attribute
-/// quoting and entity spelling, and the digest the shareholders approved is over the
-/// original bytes. The reader is used only to find where the element starts and ends;
-/// the body is the slice of the document between those positions, trimmed.
-fn capture_element(reader: &mut XmlReader<'_>, source: &str) -> Result<String, ResolutionError> {
+/// quoting and entity spelling, and the digest the actors approved is over the
+/// original bytes. The reader is used only to find where the end tag begins; the body
+/// is the slice of the document from just after `<amendment>` to just before
+/// `</amendment>`, trimmed — which is exactly what [`compose_resolution`] embedded.
+/// Whether that slice is one valid document of the target's kind is the target
+/// reader's decision, made by the caller.
+fn capture_body(
+    reader: &mut XmlReader<'_>,
+    source: &str,
+    inner_start: usize,
+) -> Result<String, ResolutionError> {
     let mut depth = 0usize;
-    let mut start = 0usize;
-    let mut range: Option<(usize, usize)> = None;
     loop {
         let before = position(reader)?;
-        let event = next_event(reader).map_err(IrenaError::from)?;
-        match event {
-            Event::Start(_) => {
-                if depth == 0 {
-                    if range.is_some() {
-                        return Err(malformed_at(
-                            reader,
-                            "<amendment> must hold exactly one element",
-                        ));
-                    }
-                    start = before;
-                }
-                depth += 1;
-            }
-            Event::Empty(_) => {
-                if depth == 0 {
-                    if range.is_some() {
-                        return Err(malformed_at(
-                            reader,
-                            "<amendment> must hold exactly one element",
-                        ));
-                    }
-                    range = Some((before, position(reader)?));
-                }
-            }
+        match next_event(reader).map_err(IrenaError::from)? {
+            Event::Start(_) => depth += 1,
             Event::End(_) => {
                 if depth == 0 {
-                    break;
+                    let body = source
+                        .get(inner_start..before)
+                        .ok_or_else(|| ResolutionError::Chain {
+                            detail: "amendment positions do not lie on character boundaries"
+                                .to_owned(),
+                        })?
+                        .trim();
+                    if body.is_empty() {
+                        return Err(malformed_at(reader, "<amendment> must hold a body element"));
+                    }
+                    return Ok(body.to_owned());
                 }
                 depth -= 1;
-                if depth == 0 {
-                    range = Some((start, position(reader)?));
-                }
             }
-            Event::Text(_)
+            Event::Empty(_)
+            | Event::Text(_)
             | Event::CData(_)
             | Event::Comment(_)
             | Event::PI(_)
-            | Event::GeneralRef(_)
-                if depth > 0 => {}
-            Event::Text(_) if depth == 0 => {}
+            | Event::GeneralRef(_) => {}
             Event::Eof => {
                 return Err(malformed_at(reader, "document ends inside an amendment"));
             }
@@ -564,25 +553,8 @@ fn capture_element(reader: &mut XmlReader<'_>, source: &str) -> Result<String, R
             }
         }
     }
-    let (from, to) =
-        range.ok_or_else(|| malformed_at(reader, "<amendment> must hold exactly one element"))?;
-    let body = source
-        .get(from..to)
-        .ok_or_else(|| ResolutionError::Chain {
-            detail: "amendment element positions fall outside the document".to_owned(),
-        })?
-        .trim();
-    if !body.starts_with('<') || !body.ends_with('>') {
-        return Err(malformed_at(
-            reader,
-            "the bytes cut out for the amendment are not one element",
-        ));
-    }
-    Ok(body.to_owned())
 }
 
-/// Whether a body digests to what a proposal approved.
-#[must_use]
 pub(crate) fn body_matches(body: &str, approved: Hash) -> bool {
     proposal_digest(body) == approved
 }

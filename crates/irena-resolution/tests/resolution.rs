@@ -2338,3 +2338,70 @@ fn self_demotion_is_enforced_at_execution_and_reverified_from_the_chain() {
         "the channel is gone"
     );
 }
+
+#[test]
+fn an_amendment_body_with_comments_round_trips_byte_for_byte() {
+    // The example documents carry a comment before the root element and comments
+    // inside it. The body is embedded and recovered as bytes, so the digest the
+    // actors approved covers the comments too, and reading back returns them.
+    let commented = format!(
+        "<!-- the register after the buy-out -->\n{}",
+        register_v2().replace(
+            "<holder id=\"bob\"",
+            "<!-- bob keeps his 300 --><holder id=\"bob\""
+        )
+    );
+    let digest = proposal_digest(&commented);
+    let chain = founded();
+    let held = hold(&chain, &[("Buy out carol", digest, true)]);
+    let payload = compose_resolution(
+        &acme(),
+        &notary("2026-06-02T09:00:00Z"),
+        "Resolution 1",
+        &authority(&chain, &held, 1),
+        &ResolutionKindV1::Amendment {
+            target: AmendmentTargetV1::ShareStructure,
+            body: format!("<?xml version=\"1.0\"?>\n{commented}\n"),
+        },
+    )
+    .expect("compose");
+    let read = read_resolution_record(&payload).expect("read back");
+    assert_eq!(read.kind.body(), Some(commented.as_str()));
+    assert_eq!(read.kind.approved_digest(), digest);
+
+    // And such a resolution executes: the published amendment is the commented body.
+    let resolution = carry(
+        &chain,
+        authority(&chain, &held, 1),
+        AmendmentTargetV1::ShareStructure,
+        &commented,
+    );
+    let report =
+        verify_execution(&chain.store, &resolution.executed().unwrap().execution_tx).unwrap();
+    assert!(report.is_valid(), "{report:#?}");
+    let every_example =
+        std::fs::read_dir(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples"))
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .filter(|p| {
+                p.file_name()
+                    .is_some_and(|n| n.to_string_lossy().starts_with("channels-"))
+            });
+    for example in every_example {
+        let body = std::fs::read_to_string(&example).unwrap();
+        let payload = compose_resolution(
+            &acme(),
+            &notary("2026-06-02T09:00:00Z"),
+            "Resolution",
+            &authority(&chain, &held, 1),
+            &ResolutionKindV1::Amendment {
+                target: AmendmentTargetV1::DecisionChannels,
+                body: body.clone(),
+            },
+        )
+        .unwrap_or_else(|e| panic!("{}: {e}", example.display()));
+        let read = read_resolution_record(&payload).unwrap();
+        assert_eq!(read.kind.body(), Some(irena_core::normalise_body(&body)));
+    }
+}
