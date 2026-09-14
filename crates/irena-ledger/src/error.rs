@@ -1,7 +1,7 @@
 //! Why the ledger layer refused.
 
-use irena_core::RecordKindV1;
-use prunella_core::{BlockHeight, TxId};
+use irena_core::{RecordFamilyV1, RecordKindV1};
+use prunella_core::{BlockHeight, PublicKey, TxId};
 
 /// Failure modes of the ledger layer.
 #[derive(Debug, thiserror::Error)]
@@ -69,6 +69,61 @@ pub enum LedgerError {
         expected: String,
         /// What the record claims to supersede, rendered.
         found: String,
+    },
+    /// The key about to sign is not an authorised signer's for this family of record.
+    ///
+    /// Refused before anything is written. The person is looked up in the identities
+    /// in force and their row in the authorisation in force, both at the chain head.
+    #[error("unauthorised signer for {family} records: key {signer}: {detail}")]
+    UnauthorisedSigner {
+        /// The family the record belongs to.
+        family: RecordFamilyV1,
+        /// The key.
+        signer: PublicKey,
+        /// Why it does not qualify.
+        detail: String,
+    },
+    /// The record about to be published would leave no `company` signer with a key.
+    ///
+    /// Refused before anything is written: a company that cannot be amended by anyone
+    /// is a company nobody meant to create.
+    #[error("the record would lock the company out: {detail}")]
+    LockedOut {
+        /// Which signers were named and why none counts.
+        detail: String,
+    },
+    /// The ledger holds a company record whose transaction signer was not authorised
+    /// when it was written.
+    ///
+    /// This can only happen if a record was written around this crate. Like a broken
+    /// amendment link it is reported, never repaired, and stops reconstruction at that
+    /// height: an unauthorised amendment is not part of the company.
+    #[error(
+        "unauthorised record at height {height}, transaction {tx_id}: a {kind} record signed by {signer}: {detail}"
+    )]
+    UnauthorisedRecord {
+        /// Where it is.
+        height: BlockHeight,
+        /// Which transaction.
+        tx_id: TxId,
+        /// What it amends.
+        kind: RecordKindV1,
+        /// The transaction signer.
+        signer: PublicKey,
+        /// Why the key did not qualify under the company as it then was.
+        detail: String,
+    },
+    /// The ledger holds a record after which no `company` signer holds a key.
+    ///
+    /// Written around this crate; reported, never repaired.
+    #[error("lockout at height {height}, transaction {tx_id}: {detail}")]
+    Lockout {
+        /// Where it is.
+        height: BlockHeight,
+        /// The record that did it.
+        tx_id: TxId,
+        /// Which signers were named and why none counts.
+        detail: String,
     },
     /// The ledger holds a record whose amendment link does not hold.
     ///

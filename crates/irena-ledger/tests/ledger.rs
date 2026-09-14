@@ -12,17 +12,17 @@ use std::path::PathBuf;
 use tempfile::TempDir;
 
 const SHARES_V1: &str = r#"<share-structure>
-  <holder id="alice" key="4e9c4e9c4e9c4e9c4e9c4e9c4e9c4e9c4e9c4e9c4e9c4e9c4e9c4e9c4e9c4e9c" name="Alice Smith" shares="500"/>
-  <holder id="bob" key="7b217b217b217b217b217b217b217b217b217b217b217b217b217b217b217b21" shares="300"/>
+  <holder id="alice" name="Alice Smith" shares="500"/>
+  <holder id="bob" shares="300"/>
   <holder id="carol" shares="200"/>
 </share-structure>"#;
 
 /// Bob sells half his shares to Dave, who registers a key.
 const SHARES_V2: &str = r#"<share-structure>
-  <holder id="alice" key="4e9c4e9c4e9c4e9c4e9c4e9c4e9c4e9c4e9c4e9c4e9c4e9c4e9c4e9c4e9c4e9c" name="Alice Smith" shares="500"/>
-  <holder id="bob" key="7b217b217b217b217b217b217b217b217b217b217b217b217b217b217b217b21" shares="150"/>
+  <holder id="alice" name="Alice Smith" shares="500"/>
+  <holder id="bob" shares="150"/>
   <holder id="carol" shares="200"/>
-  <holder id="dave" key="d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0" shares="150"/>
+  <holder id="dave" shares="150"/>
 </share-structure>"#;
 
 const RULES_V1: &str = r#"<voting-rules version="1.0">
@@ -74,7 +74,7 @@ const CHANNELS_V2: &str = r#"<decision-channels>
   </channel>
   <channel id="ceo" mode="individual">
     <actors source="roster">
-      <member id="chen" key="c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1"/>
+      <member id="chen"/>
     </actors>
   </channel>
 </decision-channels>"#;
@@ -93,6 +93,44 @@ fn rules_of(channels: &irena_core::DecisionChannelsV1) -> &bornite_rules::Voting
         .expect("collective")
 }
 
+/// Jane (key seed 1) is the company secretary and signs both families; the registrar's
+/// robot (seed 9) may publish company records; alice (seed 2) holds shares and a key
+/// but may sign nothing. Seed 3 belongs to nobody.
+const IDENTITIES_V1: &str = r#"<identities>
+  <person id="alice" name="Alice Smith" key="8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394"/>
+  <person id="bob" key="7b217b217b217b217b217b217b217b217b217b217b217b217b217b217b217b21"/>
+  <person id="carol"/>
+  <person id="jane" name="Jane Roe" key="8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c"/>
+  <person id="bot" name="Registrar robot" key="fd1724385aa0c75b64fb78cd602fa1d991fdebf76b13c58ed702eac835e9f618"/>
+</identities>"#;
+
+/// Jane rotates her key to seed 4.
+const IDENTITIES_V2: &str = r#"<identities>
+  <person id="alice" name="Alice Smith" key="8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394"/>
+  <person id="bob" key="7b217b217b217b217b217b217b217b217b217b217b217b217b217b217b217b21"/>
+  <person id="carol"/>
+  <person id="jane" name="Jane Roe" key="ca93ac1705187071d67b83c7ff0efe8108e8ec4530575d7726879333dbdabe7c"/>
+  <person id="bot" name="Registrar robot" key="fd1724385aa0c75b64fb78cd602fa1d991fdebf76b13c58ed702eac835e9f618"/>
+</identities>"#;
+
+/// Every company signer loses their key.
+const IDENTITIES_LOCKOUT: &str = r#"<identities>
+  <person id="alice" name="Alice Smith" key="8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394"/>
+  <person id="jane" name="Jane Roe"/>
+  <person id="bot" name="Registrar robot"/>
+</identities>"#;
+
+const AUTHORISATION_V1: &str = r#"<authorisation>
+  <signer person="jane" records="company"/>
+  <signer person="jane" records="governance"/>
+  <signer person="bot" records="company"/>
+</authorisation>"#;
+
+/// Only a keyless person may publish: valid as a document, a lockout on this company.
+const AUTHORISATION_LOCKOUT: &str = r#"<authorisation>
+  <signer person="carol" records="company"/>
+</authorisation>"#;
+
 const IDENTITY_V2: &str =
     r#"<identity name="Acme Industries plc" jurisdiction="gb" registered-number="01234567"/>"#;
 
@@ -103,9 +141,11 @@ fn genesis_xml() -> String {
   <identity name="Acme Industries Ltd" jurisdiction="gb" registered-number="01234567"/>
   <incorporation document-digest="9a3f9a3f9a3f9a3f9a3f9a3f9a3f9a3f9a3f9a3f9a3f9a3f9a3f9a3f9a3f9a3f"/>
   {SHARES_V1}
+  {IDENTITIES_V1}
   <governance>
   {CHANNELS_V1}
   </governance>
+  {AUTHORISATION_V1}
 </company-genesis>"#
     )
 }
@@ -196,6 +236,18 @@ fn the_genesis_founds_the_whole_company_at_height_zero() {
     assert!(state.identity.supersedes.is_none());
     assert_eq!(state.identity.notarisation, notary("2026-01-10T09:00:00Z"));
     assert_eq!(state.applied.len(), 1);
+    assert_eq!(state.identities.value.len(), 5);
+    let jane = bornite_core::VoterIdV1::new("jane").unwrap();
+    assert_eq!(
+        state.identities.value.key_of(&jane),
+        Some(key(1).public_key())
+    );
+    assert!(
+        state
+            .authorisation
+            .value
+            .allows(&jane, irena_core::RecordFamilyV1::Company)
+    );
 
     // The genesis block is a plain Prunella block: its one transaction is the record.
     let block = chain
@@ -461,7 +513,12 @@ fn a_stale_amendment_is_refused_and_the_ledger_is_untouched() {
 }
 
 fn append_raw(store: &LocalChainStore, namespace: &str, payload: Vec<u8>) -> TxId {
-    let signer = key(9);
+    append_raw_signed(store, 9, namespace, payload)
+}
+
+/// Appends a block holding one transaction, bypassing every Irena check.
+fn append_raw_signed(store: &LocalChainStore, seed: u8, namespace: &str, payload: Vec<u8>) -> TxId {
+    let signer = key(seed);
     let head = store.head().unwrap();
     let parent = store.get_block(head.height).unwrap().unwrap();
     let transaction = signer.sign_transaction(TransactionDraft {
@@ -736,6 +793,243 @@ fn founding_and_publishing_need_valid_bodies() {
     .expect_err("zero shares");
     assert!(matches!(error, LedgerError::Record(_)), "{error}");
     assert_eq!(chain.store.head().unwrap(), head);
+}
+
+// ---------------------------------------------------------------------------------
+// Who may write.
+// ---------------------------------------------------------------------------------
+
+#[test]
+fn an_unauthorised_key_cannot_publish_and_nothing_is_written() {
+    let chain = founded();
+    let head = chain.store.head().unwrap();
+    let genesis = company_now(&chain.store).unwrap().genesis_tx_id;
+    let attempt = |seed: u8| {
+        publish(
+            &chain.store,
+            &key(seed),
+            RecordKindV1::ShareStructure,
+            SHARES_V2,
+            Some(genesis),
+            &notary("2026-02-01T10:00:00Z"),
+            1000,
+        )
+    };
+    // Alice is a person with a key, but not a company signer.
+    let error = attempt(2).expect_err("alice");
+    assert!(
+        matches!(
+            &error,
+            LedgerError::UnauthorisedSigner {
+                family: irena_core::RecordFamilyV1::Company,
+                ..
+            }
+        ),
+        "{error}"
+    );
+    assert!(
+        error.to_string().contains("alice holds this key"),
+        "{error}"
+    );
+    // Seed 3 is nobody's key.
+    let error = attempt(3).expect_err("nobody");
+    assert!(error.to_string().contains("no person"), "{error}");
+    assert_eq!(chain.store.head().unwrap(), head, "nothing was written");
+    // The robot may.
+    attempt(9).expect("bot publishes");
+    assert_eq!(chain.store.head().unwrap().height, BlockHeight(1));
+}
+
+#[test]
+fn an_unauthorised_record_written_around_irena_breaks_the_chain() {
+    let chain = founded();
+    let genesis = company_now(&chain.store).unwrap().genesis_tx_id;
+    let payload = irena_core::compose_record(
+        RecordKindV1::ShareStructure,
+        &acme(),
+        Some(genesis),
+        &notary("2026-02-01T10:00:00Z"),
+        SHARES_V2,
+    )
+    .unwrap();
+    // A well-formed amendment with the right link, signed by nobody's key.
+    let rogue = append_raw_signed(&chain.store, 3, "irena.shares.v1", payload.into_bytes());
+    let error = company_now(&chain.store).expect_err("unauthorised");
+    assert!(
+        matches!(&error, LedgerError::UnauthorisedRecord { height: BlockHeight(1), tx_id, kind: RecordKindV1::ShareStructure, signer, .. } if *tx_id == rogue && *signer == key(3).public_key()),
+        "{error}"
+    );
+    // Before the break the company is intact; at and past it, it is not reconstructed.
+    let before = reconstruct(&chain.store, BlockHeight::GENESIS).expect("before");
+    assert_eq!(before.shares.value.total_shares(), 1000);
+    // Authorising that key afterwards changes nothing: the record was unauthorised when
+    // written, and the chain is not read past it.
+    let authorise = irena_core::compose_record(
+        RecordKindV1::Authorisation,
+        &acme(),
+        Some(genesis),
+        &notary("2026-02-02T10:00:00Z"),
+        r#"<authorisation><signer person="jane" records="company"/><signer person="alice" records="company"/></authorisation>"#,
+    )
+    .unwrap();
+    append_raw_signed(
+        &chain.store,
+        9,
+        "irena.authorisation.v1",
+        authorise.into_bytes(),
+    );
+    let error = company_now(&chain.store).expect_err("still broken");
+    assert!(
+        matches!(&error, LedgerError::UnauthorisedRecord { tx_id, .. } if *tx_id == rogue),
+        "{error}"
+    );
+}
+
+#[test]
+fn rotating_a_key_moves_who_may_publish_from_that_height_on() {
+    let chain = founded();
+    let rotated = amend(
+        &chain,
+        RecordKindV1::Identities,
+        IDENTITIES_V2,
+        "2026-02-01T10:00:00Z",
+        1000,
+    );
+    let state = company_now(&chain.store).unwrap();
+    assert_eq!(state.identities.tx_id, rotated.tx_id);
+    let jane = bornite_core::VoterIdV1::new("jane").unwrap();
+    assert_eq!(
+        state.identities.value.key_of(&jane),
+        Some(key(4).public_key())
+    );
+    // The old key is nobody's now.
+    let error = publish(
+        &chain.store,
+        &key(1),
+        RecordKindV1::Identity,
+        IDENTITY_V2,
+        Some(state.provider_of(RecordKindV1::Identity)),
+        &notary("2026-02-02T10:00:00Z"),
+        2000,
+    )
+    .expect_err("old key");
+    assert!(
+        matches!(error, LedgerError::UnauthorisedSigner { .. }),
+        "{error}"
+    );
+    // The new key is jane's, and jane may still publish.
+    let renamed = publish(
+        &chain.store,
+        &key(4),
+        RecordKindV1::Identity,
+        IDENTITY_V2,
+        Some(state.provider_of(RecordKindV1::Identity)),
+        &notary("2026-02-02T10:00:00Z"),
+        2000,
+    )
+    .expect("new key");
+    assert_eq!(renamed.signer, key(4).public_key());
+    // At height 1 the rotation record itself was signed by the key in force before it.
+    let at_one = reconstruct(&chain.store, BlockHeight(1)).unwrap();
+    assert_eq!(at_one.applied[1].signer, key(1).public_key());
+    let at_zero = reconstruct(&chain.store, BlockHeight::GENESIS).unwrap();
+    assert_eq!(
+        at_zero.identities.value.key_of(&jane),
+        Some(key(1).public_key()),
+        "the past keeps its key"
+    );
+    let ids: Vec<RecordKindV1> = history(&chain.store, RecordKindV1::Identities, BlockHeight(2))
+        .unwrap()
+        .iter()
+        .map(|r| r.record.kind())
+        .collect();
+    assert_eq!(
+        ids,
+        [RecordKindV1::CompanyGenesis, RecordKindV1::Identities]
+    );
+}
+
+#[test]
+fn a_lockout_is_refused_at_publish_and_is_a_break_when_written_around_irena() {
+    let chain = founded();
+    let head = chain.store.head().unwrap();
+    let genesis = company_now(&chain.store).unwrap().genesis_tx_id;
+    for (label, kind, body) in [
+        ("identities", RecordKindV1::Identities, IDENTITIES_LOCKOUT),
+        (
+            "authorisation",
+            RecordKindV1::Authorisation,
+            AUTHORISATION_LOCKOUT,
+        ),
+    ] {
+        let error = publish(
+            &chain.store,
+            &key(1),
+            kind,
+            body,
+            Some(genesis),
+            &notary("2026-02-01T10:00:00Z"),
+            1000,
+        )
+        .expect_err(label);
+        assert!(
+            matches!(error, LedgerError::LockedOut { .. }),
+            "{label}: {error}"
+        );
+        assert!(
+            error.to_string().contains("no company signer holds a key"),
+            "{label}: {error}"
+        );
+    }
+    assert_eq!(chain.store.head().unwrap(), head, "nothing was written");
+
+    let payload = irena_core::compose_record(
+        RecordKindV1::Authorisation,
+        &acme(),
+        Some(genesis),
+        &notary("2026-02-01T10:00:00Z"),
+        AUTHORISATION_LOCKOUT,
+    )
+    .unwrap();
+    let locked = append_raw_signed(
+        &chain.store,
+        1,
+        "irena.authorisation.v1",
+        payload.into_bytes(),
+    );
+    let error = company_now(&chain.store).expect_err("locked out");
+    assert!(
+        matches!(&error, LedgerError::Lockout { height: BlockHeight(1), tx_id, .. } if *tx_id == locked),
+        "{error}"
+    );
+    assert!(error.to_string().contains("carol (no key)"), "{error}");
+    assert!(reconstruct(&chain.store, BlockHeight::GENESIS).is_ok());
+}
+
+#[test]
+fn a_company_born_locked_out_is_never_founded() {
+    let xml = genesis_xml().replace(AUTHORISATION_V1, AUTHORISATION_LOCKOUT);
+    assert_ne!(xml, genesis_xml());
+    let error = genesis_with_company(
+        NetworkId::new("acme-net").expect("n"),
+        &key(1),
+        &acme(),
+        &xml,
+        &notary("2026-01-10T09:00:00Z"),
+        0,
+    )
+    .expect_err("born locked out");
+    assert!(matches!(error, LedgerError::LockedOut { .. }), "{error}");
+    // The founding key itself is not checked: the chain's founder is whoever holds it.
+    genesis_with_company(
+        NetworkId::new("acme-net").expect("n"),
+        &key(3),
+        &acme(),
+        &genesis_xml(),
+        &notary("2026-01-10T09:00:00Z"),
+        0,
+    )
+    .expect("any key founds");
 }
 
 // ---------------------------------------------------------------------------------

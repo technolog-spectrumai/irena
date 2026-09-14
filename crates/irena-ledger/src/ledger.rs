@@ -1,9 +1,11 @@
 //! Putting records on the chain: founding a company and amending it.
 
+use crate::authority::{authorised_signer, lockout_after};
 use crate::error::LedgerError;
 use crate::state::{CompanyStateV1, RecordRefV1, reconstruct};
 use irena_core::{
-    CompanyIdV1, NotarisationV1, RECORD_SCHEMA_VERSION, RecordKindV1, compose_record, read_record,
+    CompanyIdV1, NotarisationV1, RECORD_SCHEMA_VERSION, RecordBodyV1, RecordFamilyV1, RecordKindV1,
+    compose_record, read_company_genesis_document, read_record,
 };
 use prunella_core::{
     BlockHeight, GenesisSpec, Namespace, NetworkId, SchemaVersion, Transaction, TransactionDraft,
@@ -30,11 +32,13 @@ fn transaction_for(
 ///
 /// The genesis body is the whole company (`irena_core::CompanyGenesisV1`). The
 /// company exists from height 0, and two parties given the same inputs derive the
-/// same genesis hash.
+/// same genesis hash. `key` founds the chain and is not checked against anything: the
+/// authorisation inside the genesis applies from the next record on.
 ///
 /// # Errors
 ///
-/// Returns [`LedgerError::Record`] if the genesis body or notarisation is not valid.
+/// Returns [`LedgerError::Record`] if the genesis body or notarisation is not valid,
+/// or [`LedgerError::LockedOut`] if no `company` signer it names holds a key.
 pub fn genesis_with_company(
     network: NetworkId,
     key: &SigningKey,
@@ -43,6 +47,10 @@ pub fn genesis_with_company(
     notarisation: &NotarisationV1,
     timestamp_millis: u64,
 ) -> Result<GenesisSpec, LedgerError> {
+    let genesis = read_company_genesis_document(genesis_xml)?;
+    if let Some(detail) = lockout_after(&genesis.identities, &genesis.authorisation) {
+        return Err(LedgerError::LockedOut { detail });
+    }
     let payload = compose_record(
         RecordKindV1::CompanyGenesis,
         company,
@@ -70,14 +78,17 @@ pub fn company_now(store: &LocalChainStore) -> Result<CompanyStateV1, LedgerErro
 /// Publishes an amendment to one part of the company, in its own block.
 ///
 /// `kind` must be an amendment kind — a company is founded once, by
-/// [`genesis_with_company`]. `supersedes` must name the transaction currently
+/// [`genesis_with_company`]. `key` must be the current key of a `company` signer
+/// under the company at the head. `supersedes` must name the transaction currently
 /// providing that part (the genesis, or the last amendment of the part), or the record
-/// is a stale amendment and is refused before the ledger is touched. The body is
-/// validated and embedded verbatim (`irena_core::compose_record`).
+/// is a stale amendment. An identities or authorisation body must leave at least one
+/// `company` signer holding a key. Each is refused before the ledger is touched. The
+/// body is validated and embedded verbatim (`irena_core::compose_record`).
 ///
 /// # Errors
 ///
-/// [`LedgerError::StaleAmendment`]; [`LedgerError::Record`] for an invalid body or
+/// [`LedgerError::UnauthorisedSigner`], [`LedgerError::StaleAmendment`],
+/// [`LedgerError::LockedOut`]; [`LedgerError::Record`] for an invalid body or
 /// notarisation; the reconstruction errors if the chain is not a company; or a
 /// ledger error.
 pub fn publish(
@@ -96,6 +107,7 @@ pub fn publish(
         });
     }
     let state = company_now(store)?;
+    authorised_signer(&state, RecordFamilyV1::Company, &key.public_key())?;
     let expected = state.provider_of(kind);
     if supersedes != Some(expected) {
         return Err(LedgerError::StaleAmendment {
@@ -106,6 +118,18 @@ pub fn publish(
     }
 
     let payload = compose_record(kind, &state.company, supersedes, notarisation, body_xml)?;
+    let lockout = match &read_record(&payload)?.body {
+        RecordBodyV1::Identities(identities) => {
+            lockout_after(identities, &state.authorisation.value)
+        }
+        RecordBodyV1::Authorisation(authorisation) => {
+            lockout_after(&state.identities.value, authorisation)
+        }
+        _ => None,
+    };
+    if let Some(detail) = lockout {
+        return Err(LedgerError::LockedOut { detail });
+    }
     let head = store.head()?;
     let parent = store
         .get_block(head.height)?
