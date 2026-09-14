@@ -61,18 +61,33 @@ mode         := individual | collective(<voting-rules>)
   </channel>
   <channel id="board" mode="collective">             <!-- three directors vote, weighted -->
     <actors source="roster">
-      <member id="chen"   key="ca93…" weight="2"/>
-      <member id="okafor" key="6e7a…"/>
-      <member id="vance"/>                            <!-- no key: counts, cannot sign -->
+      <member id="chen"   weight="2"/>
+      <member id="okafor"/>
+      <member id="vance"/>
     </actors>
     <voting-rules version="1.0">…</voting-rules>
   </channel>
   <channel id="ceo" mode="individual">               <!-- one director signs -->
     <actors source="roster">
-      <member id="chen" key="ca93…"/>
+      <member id="chen"/>
     </actors>
   </channel>
 </decision-channels>
+```
+
+Nobody carries a key here. A holder or a member is an **id**, and the key that id
+signs with lives once, in the identities record:
+
+```xml
+<identities>
+  <person id="chen" name="M. Chen" document-id="SG-S8811234K" key="ca93…"/>
+  <person id="vance" name="R. Vance"/>            <!-- no key: counts, cannot sign -->
+  <person id="jane" name="Jane Roe" key="fd17…"/> <!-- holds nothing, writes everything -->
+</identities>
+<authorisation>
+  <signer person="jane" records="company"/>       <!-- amendments to any part -->
+  <signer person="jane" records="governance"/>    <!-- meetings, votes, decisions… -->
+</authorisation>
 ```
 
 `shareholders`, `board` and `ceo` are labels a notary chose. Irena knows four words —
@@ -99,10 +114,37 @@ One person rewriting who decides is held to the **self-demotion rule**: a channe
 amendment executed on an individual decision must leave its signer with no seat they
 did not already hold, and every seat they keep unchanged. A sole director may abolish
 their own channel or hand the company to a collective; they may not add themselves
-anywhere or thin out a board they sit on. Irena refuses at execution and any reader
-re-checks it from the chain. What it does *not* do, stated plainly: stop an individual
-channel from rewriting a channel its actor is not part of — that is a configuration
-hazard the notary attests to, and `irena channels` marks every individual channel.
+anywhere or thin out a board they sit on. The same rule guards the two other ways one
+person could take the company: on an individual decision only the signer's **own**
+identity entry may change — persons may be added, nobody else may be changed or
+removed, so a sole director rotates their own key and never anyone else's — and the
+signer's own **authorisation** rows may only shrink, so nobody may make themselves a
+publisher. Irena refuses at execution and any reader re-checks it from the chain. What
+it does *not* do, stated plainly: stop an individual channel from rewriting a channel
+its actor is not part of, registering a new person, or authorising somebody else —
+configuration hazards the notary attests to, and `irena channels` marks every
+individual channel.
+
+### Who may write to the chain
+
+Every record reaches the ledger as a transaction signed by some key, and the company
+itself says whose key that may be. The **identities** record is the one key table: a
+person has a stable id — the same id they hold shares or a seat under — an optional
+name, an optional opaque document number (a passport, a national id), and at most one
+current key. Rotating a key is one identities amendment, and every channel that person
+sits on sees the new key from that height on, while anything frozen earlier keeps the
+key it froze. The **authorisation** record says which family of record each person may
+sign: `company` (amendments to any part) or `governance` (meetings, votes, decisions,
+resolutions, executions). Publishing refuses an unauthorised key before writing;
+reconstruction stops at a company record an unauthorised key signed, exactly as it
+stops at a broken amendment link; and every governance verifier reports a named
+`SignerAuthorised` check.
+
+Two consequences, stated plainly. **Bare publishing is real power**: a `company`
+signer rewrites the register with no channel deciding anything. That is the notary's
+route by design, and the authorisation record is exactly *who* may take it. And a
+company must always keep one `company` signer holding a key — the **lockout rule** —
+so no record can leave a company nobody can ever amend again.
 
 Real, validated documents for each configuration are under
 [examples/](examples/README.md); the [governance.md](governance.md) walk-through runs
@@ -190,7 +232,10 @@ before they are re-argued.
 | **Reconstruction, not resolution per kind** | The company at height *h* is genesis + amendments applied in order; each part knows which transaction provides it | Deltas (add a holder) instead of full replacements are a new record kind applied by the same walk |
 | **Full-replacement amendments** | Simple to verify and to read; a register change repeats the whole register | A delta kind if registers grow large; the reconstruction walk does not change |
 | **Flat shares: one share, one vote** | `weight = shares` in one function; a keyless holder counts towards quorum but cannot sign | Share classes are a new `<share-structure>` body version and one extra factor in that function |
-| **Signing keys live in the share register** | No key table anywhere else; keys are amended like any company data | Stage 4 identities can add key rotation as an `identity`-like part without touching votes |
+| **One key table: identities own the keys** | A holder or a member is an id; their key is whatever their identity holds at the frozen height, so one amendment rotates a key everywhere at once and a person appearing in three channels has one key, not three. Cost: a second format break — `<holder key>` and `<member key>` are gone, and a genesis needs `<identities>` and `<authorisation>` (Irena's format is not frozen; only PROTOCOL_V1 and BORNITE_V1 are) | A person could carry more attested attributes without touching any channel; `document-id` is already there, stored and never interpreted |
+| **Authorisation governs record transactions, by family** | Two families, `company` and `governance`; publishing refuses an unauthorised key, reconstruction breaks at one, every governance verifier names `SignerAuthorised`. Cost: a `company` signer may rewrite the register with no channel deciding — the notary's route, by design | Scoped channels (what a channel may decide) are the next step; per-kind rather than per-family signing is one wider enum |
+| **Refuse at reconstruction, not just at publish** | An unauthorised company record written around Irena stops the walk at that transaction, reported and never repaired, so a rogue key cannot quietly become part of the company | — |
+| **The lockout rule is mechanical** | An identities or authorisation record leaving no `company` signer with a key is refused at publish and is a break at reconstruction, so a company can never lose the ability to amend itself. The genesis signer itself is unchecked: whoever founds the chain founds the company, and the authorisation inside applies from the next record on | — |
 | **Notarisation required on every record** — id, name, optional address, `at` in canonical UTC | Real-world authority enters in one place; `at` is attested metadata and never orders anything | Stage 4 can bind notary ids to keys; a notarisation could carry more attestations without changing the envelope |
 | **Bornite's `<voting-rules>` nested unchanged, once per collective channel** | The same rules bytes mean the same rules in a file, a genesis or an amendment; Bornite never sees a company; a board's rules and the shareholders' sit side by side in one channel set | — |
 | **Decision channels: `id + actor source + mode`, no organ types** | `shareholders`, `board`, `ceo` are configurations; Irena knows `share-register`, `roster`, `individual`, `collective` and no legal system; a test runs all three through the same `execute`. Cost: nothing says *what* a channel may decide | Scoped channels — a `scope` attribute checked at `execute` — are the next step, deliberately short of a permissions language; more sources are one `match` arm each |
@@ -213,7 +258,7 @@ before they are re-argued.
 | **A resolution carries the body, not just its digest** | The chain is self-contained: an auditor reads what was decided without any external file | — |
 | **Execution refuses a stale base** | A resolution passed against a company that has since changed cannot land on one the voters never saw; the second of two competing resolutions must be re-voted | Per-part judgement already softens it (a channel-set resolution survives a register change); a rebase-and-reconfirm step could soften it further |
 | **The execution record is the only link from amendment to authority** | The company record format is untouched, so every existing amendment stays valid and readable | An optional `authority` attribute on the amendment envelope would make the link visible from the amendment's side too |
-| **No authorisation roles in V1 beyond the channels** | Any key may publish a resolution; the channel decides whether it verifies, and the notarisation is the only authority on who the channels are, exactly as for company records | Stage 4 adds who may sign which *record transaction*, checked at reconstruction |
+| **Identity siblings of self-demotion** | On an individual decision only the signer's own identity entry may change, and their own authorisation rows may only shrink — so one person cannot rotate another's key (voting as them) or make themselves a publisher. Two more set comparisons, no policy language | Widen either rule if the remaining gaps matter |
 | **Ballots are not secret and live in the final record** | A record is verifiable from the chain alone, ten named checks | Secret ballots would need a different commitment scheme and are explicitly out of scope |
 | **Final vote record as canonical Borsh, not XML** | Byte-exact re-encoding is one of the verification checks; the export shows it as base64 | An XML rendering for readers is a projection that can be added without changing what is verified |
 | **Strict readers, issues collected and sorted** | Unknown elements refused; a document with three problems is fixed in one round | — |
@@ -229,11 +274,13 @@ Planned, in order — see [IRENA_V1.md §11](IRENA_V1.md):
    [IRENA_V1.md §10](IRENA_V1.md);
 3. ~~board membership, meetings and decisions~~ — **done without a board type**: a
    board is a collective channel over a roster, see [IRENA_V1.md §1.3](IRENA_V1.md);
-4. identities and authorisation;
+4. ~~identities and authorisation~~ — **done**: one key table and who may sign which
+   family of record, see [IRENA_V1.md §1.4–§1.5](IRENA_V1.md);
 5. Placidia coordination and UI.
 
 Next to the channels, recorded rather than built: scoped channels, per-channel
-supersession, more actor sources, a wider self-demotion rule.
+supersession, more actor sources, a wider self-demotion rule, notary ids bound to
+identities.
 
 Also deliberately absent: share classes (the company has flat shares), secret ballots,
 delegation, proxies, networking, consensus.

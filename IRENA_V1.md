@@ -39,10 +39,12 @@ through a real chain, see [governance.md](governance.md); for the documents them
 | Identity | `<identity>` | the genesis | `identity` | `irena.company.v1` |
 | Share register | `<share-structure>` | the genesis | `share-structure` | `irena.shares.v1` |
 | Decision channels | `<decision-channels>` (nested in `<governance>`) | the genesis | `decision-channels` | `irena.channels.v1` |
+| Identities | `<identities>` | the genesis | `identities` | `irena.identities.v1` |
+| Authorisation | `<authorisation>` | the genesis | `authorisation` | `irena.authorisation.v1` |
 
 **The company at height `h`** is its genesis plus every amendment up to `h`, applied
 in chain order (`irena_ledger::reconstruct`, §4). Every part is always present — the
-genesis carries all three — so there is never a partial company, and each part knows
+genesis carries all five — so there is never a partial company, and each part knows
 which transaction currently provides it.
 
 ### 1.1 `<company-genesis>` — the whole company
@@ -52,9 +54,13 @@ which transaction currently provides it.
   <identity name="Acme Industries Ltd" jurisdiction="gb" registered-number="01234567"/>
   <incorporation document-digest="9a3f…"/>
   <share-structure>
-    <holder id="alice" key="4e9c…" name="Alice Smith" shares="500"/>
+    <holder id="alice" name="Alice Smith" shares="500"/>
     …
   </share-structure>
+  <identities>
+    <person id="alice" name="Alice Smith" document-id="GB-P-540027183" key="4e9c…"/>
+    …
+  </identities>
   <governance>
     <decision-channels>
       <channel id="shareholders" mode="collective">
@@ -64,14 +70,19 @@ which transaction currently provides it.
       …
     </decision-channels>
   </governance>
+  <authorisation>
+    <signer person="jane" records="company"/>
+    <signer person="jane" records="governance"/>
+  </authorisation>
 </company-genesis>
 ```
 
 One document founds a company. `<identity>` (required; `name` non-empty, the rest
 free text) says who it is; `<incorporation>` (optional) names the document that
 created it by digest; `<share-structure>` (required, §1.2) is the initial register;
-`<governance>` (required) holds the active governance configuration: exactly one
-`<decision-channels>` element, the channel set (§1.3). Irena stores and reproduces the
+`<identities>` (required, §1.4) is the one key table; `<governance>` (required) holds
+the active governance configuration: exactly one `<decision-channels>` element, the
+channel set (§1.3); `<authorisation>` (required, §1.5) says who may sign records. Irena stores and reproduces the
 identity and compares none of it: on the ledger a company is its `company` label (§2),
 and this is what the label stands for. An `identity` amendment carries a standalone
 `<identity …/>` element with the same attributes.
@@ -80,9 +91,9 @@ and this is what the label stands for. An `identity` amendment carries a standal
 
 ```xml
 <share-structure>
-  <holder id="alice" key="4e9c…" name="Alice Smith" shares="500"/>
-  <holder id="bob"   key="7b21…"                    shares="300"/>
-  <holder id="carol"                                shares="200"/>   <!-- no key -->
+  <holder id="alice" name="Alice Smith" shares="500"/>
+  <holder id="bob"                      shares="300"/>
+  <holder id="carol"                    shares="200"/>
 </share-structure>
 ```
 
@@ -91,27 +102,24 @@ There are no share classes in V1 (§11).
 
 | Attribute | | |
 |---|---|---|
-| `id` | required | The holder's id, which is also their Bornite voter id — same grammar (1–128 bytes of `A-Z a-z 0-9 . _ : + @ -`, byte-for-byte comparison), so a holder becomes a voter with no translation |
-| `key` | optional | The Ed25519 public key the holder signs ballots with, 64 lowercase hex characters |
+| `id` | required | The holder's id, which is also their Bornite voter id and their id in `<identities>` — same grammar (1–128 bytes of `A-Z a-z 0-9 . _ : + @ -`, byte-for-byte comparison), so a holder becomes a voter, or a person, with no translation |
 | `name` | optional | Opaque |
 | `shares` | required | A decimal integer ≥ 1 |
 
-**The register carries the holders' signing keys.** That is what lets a vote check that
-a ballot came from a registered holder without any key table of its own: keys are
-company data, on the chain, amended through the same chain as everything else. A
-holder without a key owns their shares and counts towards quorum, but can never cast a
-valid ballot.
+**A holder carries no key.** Whatever a holder signs is checked against the key their
+identity holds in the identities record in force at the frozen height (§1.4). A holder
+whose identity holds no key — or who has no identity at all — owns their shares and
+counts towards quorum, but can never cast a valid ballot.
 
 Refused, with every issue collected and reported together:
 
 | | |
 |---|---|
 | Duplicate holder id | Two entries for one holder |
-| Duplicate signing key across holders | One key voting for two holders would let one person cast two ballots Bornite cannot tell apart |
 | `shares="0"` | A holder of nothing is a mistake, not a zero-weight member |
 | Total shares past `u64::MAX` | Checked arithmetic, reported not wrapped |
-| An `id` outside the voter-id grammar, a `key` that is not 64 hex characters, `shares` that is not a plain decimal | Value issues |
-| An unknown attribute or child element | Structural: refused, never skipped |
+| An `id` outside the voter-id grammar, `shares` that is not a plain decimal | Value issues |
+| An unknown attribute or child element | Structural: refused, never skipped. A `key` attribute is one of these: keys moved to `<identities>` and a document written for the older shape is refused outright, not read with the key dropped |
 
 The register is sorted by id from the moment it is built, so nothing downstream can
 observe an order that depends on how the document listed the holders. An empty register
@@ -135,15 +143,15 @@ mode         := individual | collective(<voting-rules>)
   </channel>
   <channel id="board" mode="collective">
     <actors source="roster">
-      <member id="chen"   key="ca93…" name="M. Chen" weight="2"/>
-      <member id="okafor" key="6e7a…"/>
-      <member id="vance"/>                                  <!-- no key -->
+      <member id="chen"   name="M. Chen" weight="2"/>
+      <member id="okafor"/>
+      <member id="vance"/>
     </actors>
     <voting-rules version="1.0">…</voting-rules>
   </channel>
   <channel id="ceo" mode="individual">
     <actors source="roster">
-      <member id="chen" key="ca93…"/>
+      <member id="chen"/>
     </actors>
   </channel>
 </decision-channels>
@@ -162,8 +170,7 @@ actors may decide; scoping a channel to a kind of decision is deliberately not i
 | `channel/@id` | required | A label: same grammar as a company id (1–64 bytes, `a-z0-9` first, then `a-z0-9._-`). Compared for equality, never interpreted |
 | `channel/@mode` | required | `individual` — one actor signs; `collective` — the actors form a Bornite electorate under the nested rules |
 | `actors/@source` | required | `share-register` — the holders of the register in force when a decision is frozen, weight = shares (§1.2); `roster` — the `<member>`s listed inline |
-| `member/@id` | required | A Bornite voter id, exactly as a holder's (§1.2): a member becomes a voter with no translation |
-| `member/@key` | optional | The Ed25519 key the member signs with; absent, they cannot sign |
+| `member/@id` | required | A Bornite voter id, exactly as a holder's (§1.2): a member becomes a voter, or a person (§1.4), with no translation |
 | `member/@name` | optional | Opaque |
 | `member/@weight` | optional | A decimal integer ≥ 1; default `1` |
 | `voting-rules` | exactly when `collective` | Bornite's element, **unchanged** — see [BORNITE_V1.md](BORNITE_V1.md). Its schema is reused by `xs:include` and its bytes parsed by `bornite_xml::parse_voting_rules`, so the same bytes mean the same rules in a file, a genesis or an amendment. Nothing about a company appears inside it |
@@ -182,12 +189,73 @@ is a recorded future upgrade (§11).
 **Resolution** (`irena_decision::resolve_channel`) is where a channel meets the company:
 given the company reconstructed at a height, it finds the channel in the set in force,
 resolves its actors from its source *as the company then stands*, and hands back ids,
-integer weights, keys and — for a collective channel — the rules. For an `individual`
+integer weights, each actor's key **as the identities then held it** (§1.4) and — for a
+collective channel — the rules. For an `individual`
 channel it additionally requires that **exactly one actor resolved**. That check can
 only be made at resolution: a `share-register` source in individual mode is one actor
 in a single-member company and two the day a second holder is admitted, and the
 document alone cannot say which. `irena channels --at h` shows every channel resolved
 at a height and marks the individual ones.
+
+### 1.4 `<identities>` — the one key table
+
+```xml
+<identities>
+  <person id="alice" name="Alice Smith" document-id="GB-P-540027183" key="8a88…"/>
+  <person id="carol" name="Carol White"/>                    <!-- registered, cannot sign -->
+  <person id="jane"  name="Jane Roe" key="fd17…"/>
+</identities>
+```
+
+A **person** has a stable id, an optional name, an optional external document number
+and at most one current key. The id is the actor-id grammar (§1.2), so a person *is*
+the holder, the roster member and the signer of that id — no translation, no mapping
+table.
+
+| Attribute | | |
+|---|---|---|
+| `id` | required | Also their id as a holder, a member or a signer |
+| `name` | optional | Opaque |
+| `document-id` | optional | An external identity document number — a national id, a passport — in whatever form the notary uses. **Opaque**: stored, reproduced, never interpreted, never compared |
+| `key` | optional | The Ed25519 public key this person currently signs with, 64 lowercase hex characters. Absent: registered, and unable to sign anything |
+
+Refused, every issue collected: two persons with one id; **one key on two persons** (a
+signature must name exactly one person); more persons than the reader accepts; a bad
+id or key. An empty `<identities/>` is a valid document.
+
+**Why one table.** A person's key is their voice in every channel they sit on. With
+keys inline on holders and members, one person in three channels had three copies and
+no way to rotate without amending every place at once. Here, rotation is one
+identities amendment: every channel sees the new key from that height on, and anything
+frozen earlier keeps the key it froze — a vote frozen before the rotation still
+verifies with the old key, because its snapshot pins the identities record it was
+frozen against.
+
+### 1.5 `<authorisation>` — who may sign records
+
+```xml
+<authorisation>
+  <signer person="jane" records="company"/>
+  <signer person="jane" records="governance"/>
+</authorisation>
+```
+
+Every record reaches the ledger as a Prunella transaction signed by some key. This
+record says whose key that may be, per **family**:
+
+| `records` | Covers |
+|---|---|
+| `company` | Amendments to any company part: identity, register, channel set, identities, authorisation |
+| `governance` | Meetings, votes, decisions, resolutions and executions |
+
+A row names a person (by identity id) and a family. Refused: a duplicate row; **no
+`company` row at all** — the document half of the lockout rule (§4).
+
+**Bare publishing is real power.** A `company` signer may rewrite the register with no
+channel deciding anything. That is the notary's route by design — a registrar filing a
+transfer, a secretary correcting a name — and this record is exactly *who* may take
+it. What a channel decides and what a signer may write are two separate questions in
+V1; scoping a channel to a kind of decision is still not in it (§11).
 
 ## 2. The record envelope
 
@@ -205,7 +273,7 @@ Every record on the ledger is one `<irena-record>` element:
 | Attribute | | |
 |---|---|---|
 | `version` | required | `1.0`. Anything else is refused |
-| `kind` | required | `company-genesis`, `identity`, `share-structure` or `voting-rules`; must match the element carried |
+| `kind` | required | `company-genesis`, `identity`, `share-structure`, `decision-channels`, `identities` or `authorisation`; must match the element carried |
 | `company` | required | An opaque label: 1–64 bytes, `a-z0-9` first, then `a-z0-9._-`. Compared for equality, never interpreted |
 | `supersedes` | optional | The transaction id of the record currently providing the part this one amends: the genesis, or the last amendment of that part. Absent on the genesis (§4) |
 
@@ -258,10 +326,23 @@ Nothing is ever edited. The company is **reconstructed** from the chain:
   block from genesis to `at`. The first transaction in an Irena namespace must be a
   `company-genesis` (normally in block 0, where `irena init` puts it; a company may
   also be founded later on an existing chain). It sets all three parts.
-* **Every later record amends one part.** An `identity`, `share-structure` or
-  `decision-channels` record replaces that part in full and must name in `supersedes`
-  exactly the transaction currently providing it — the genesis, or the last
-  amendment of the same part. Amending the register never touches the channel set.
+* **Every later record amends one part.** An `identity`, `share-structure`,
+  `decision-channels`, `identities` or `authorisation` record replaces that part in
+  full and must name in `supersedes` exactly the transaction currently providing it —
+  the genesis, or the last amendment of the same part. Amending the register never
+  touches the channel set.
+* **A company record must be signed by a `company` signer.** The transaction signer is
+  looked up in the identities in force and their row in the authorisation in force,
+  both taken from the company **as it was before the record**: a record cannot
+  authorise its own signer. `publish` refuses an unauthorised key before writing
+  (`UnauthorisedSigner`); reconstruction stops at one written around Irena
+  (`UnauthorisedRecord`), reported and never repaired, exactly like a broken link.
+  The **genesis signer is unchecked**: whoever founds the chain founds the company,
+  and the authorisation inside the genesis applies from the next record on.
+* **The lockout rule.** No record may leave the company without at least one `company`
+  signer holding a key. An identities or authorisation record that would is refused at
+  publish (`LockedOut`) and is a break at reconstruction (`Lockout`); a genesis born
+  that way is refused outright. A company can never lose the ability to amend itself.
 * **A stale amendment is refused before the ledger is touched.** `publish` reconstructs
   the company at the head and checks `supersedes` against it; naming a version that no
   longer provides the part is how two editors clobber each other.
@@ -278,22 +359,23 @@ Nothing is ever edited. The company is **reconstructed** from the chain:
   heights before the break still reconstruct; nothing can be published on a broken
   chain. `irena verify-structure` reconstructs and reports.
 * **Transactions in other namespaces are not Irena's business.** A Prunella chain can
-  carry anything else alongside a company; Irena reads only its three namespaces.
+  carry anything else alongside a company; Irena reads only its five namespaces.
 
 The signer of the transaction and the notary inside the record are two different
-things: the signer put the record on the chain, the notary vouched for it. V1 records
-who both were and imposes no policy on either.
+things: the signer put the record on the chain, the notary vouched for it. V1 checks
+the signer against the company's own authorisation (§1.5) and imposes no policy on the
+notary beyond recording who they said they were.
 
 ## 5. Public API
 
 | Crate | |
 |---|---|
-| `irena-core` | `CompanyIdV1`, `CompanyGenesisV1`, `IdentityV1`, `ShareStructureV1`, `HolderV1`; `DecisionChannelsV1`, `DecisionChannelV1`, `ChannelIdV1`, `ActorSourceV1`, `RosterV1`, `MemberV1`, `ChannelModeV1`; `NotarisationV1`, `NotaryIdV1`, `NotaryTimeV1`, `IrenaRecordV1`, `RecordKindV1`, `RecordBodyV1`; `read_record`, `compose_record`, `read_company_genesis_document`, `read_identity_document`, `read_share_structure_document`, `read_decision_channels_document`; `IrenaError`, `IssueV1` |
-| `irena-ledger` | `genesis_with_company`, `publish`, `reconstruct`, `company_now`, `history`; `CompanyStateV1` (`provider_of`, `history_of`), `InForceV1<T>`, `RecordRefV1`; `LedgerError` |
-| `irena-decision` | `resolve_channel`, `ResolvedChannelV1`, `ActorSetV1`, `ActorV1`, `actors_of`, `actors_of_register`, `actors_of_roster`; `DecisionV1` (`draft`, `freeze`, `sign`, `finalize`, `final_record`), `DecisionStatusV1`, `DecisionSnapshotV1`, `DecisionIdV1`; `FinalDecisionRecordV1`; `verify_decision`, `DecisionVerificationV1`, `DecisionCheckV1`, `DecisionCheckNameV1`; `DecisionError` |
+| `irena-core` | `CompanyIdV1`, `CompanyGenesisV1`, `IdentityV1`, `ShareStructureV1`, `HolderV1`; `DecisionChannelsV1`, `DecisionChannelV1`, `ChannelIdV1`, `ActorSourceV1`, `RosterV1`, `MemberV1`, `ChannelModeV1`; `IdentitiesV1`, `PersonV1`, `AuthorisationV1`, `SignerV1`, `RecordFamilyV1`; `NotarisationV1`, `NotaryIdV1`, `NotaryTimeV1`, `IrenaRecordV1`, `RecordKindV1`, `RecordBodyV1`; `read_record`, `compose_record`, `read_company_genesis_document`, `read_identity_document`, `read_share_structure_document`, `read_decision_channels_document`, `read_identities_document`, `read_authorisation_document`; `IrenaError`, `IssueV1` |
+| `irena-ledger` | `genesis_with_company`, `publish`, `reconstruct`, `company_now`, `history`; `authorised_signer`, `signer_of`, `lockout_after`; `CompanyStateV1` (`provider_of`, `history_of`), `InForceV1<T>`, `RecordRefV1`; `LedgerError` |
+| `irena-decision` | `resolve_channel`, `ResolvedChannelV1`, `ActorSetV1`, `ActorV1`, `actors_of`, `actors_of_register`, `actors_of_roster`; `DecisionV1` (`draft`, `freeze`, `sign`, `finalize`, `final_record`), `DecisionStatusV1`, `DecisionSnapshotV1`, `DecisionIdV1`; `FinalDecisionRecordV1`; `verify_decision`, `signer_authorised_at`, `check_signer_authorised`, `DecisionVerificationV1`, `DecisionCheckV1`, `DecisionCheckNameV1`; `DecisionError` |
 | `irena-vote` | `VoteV1` (`draft`, `freeze`, `open`, `cast`, `close`, `evaluate`, `finalize`, `final_record`), `VoteStatusV1`, `VoteSnapshotV1`, `VoteIdV1`; `SignedBallotV1`, `BallotBodyV1`, `BallotChoiceV1`, `ballot_commitment`, `COMMITMENT_TAGS`; `FinalVoteRecordV1`, `EvaluationSummaryV1`; `verify`, `VerificationV1`, `CheckV1`, `CheckNameV1`; `VoteError`, `BallotRejectionV1`; re-exports `irena-decision`'s resolution |
 | `irena-meeting` | `MeetingIdV1`, `MeetingStatusV1`, `MeetingMetadataV1`, `AgendaV1`, `AgendaItemV1`, `AgendaBodyV1`; `MeetingV1` (`draft`, `add_item`, `convene`, `open`, `cast`, `close`, `finalize`, `final_record`); `MeetingFinalRecordV1`, `FinalItemV1`, `MeetingRecordV1`, `compose_convened`, `compose_final`, `read_meeting_record`; `verify_meeting`, `MeetingVerificationV1`, `MeetingCheckV1`, `MeetingCheckNameV1`; `MeetingError` |
-| `irena-resolution` | `ResolutionIdV1`, `ResolutionKindV1`, `AmendmentTargetV1`, `ResolutionStatusV1`, `AuthorityV1` (`Collective`, `Individual`), `ApprovalV1`, `proposal_digest`; `ResolutionV1` (`draft`, `finalize`, `execute`), `ExecutedV1`; `self_demotion`, `SelfDemotionV1`; `ResolutionRecordV1`, `ResolutionExecutionV1`, `compose_resolution`, `compose_execution`, `read_resolution_record`, `read_execution_record`; `verify_resolution`, `verify_execution`, `ResolutionVerificationV1`, `ExecutionVerificationV1`, `ResolutionCheckV1`; `ResolutionError` |
+| `irena-resolution` | `ResolutionIdV1`, `ResolutionKindV1`, `AmendmentTargetV1`, `ResolutionStatusV1`, `AuthorityV1` (`Collective`, `Individual`), `ApprovalV1`, `proposal_digest`; `ResolutionV1` (`draft`, `finalize`, `execute`), `ExecutedV1`; `self_demotion`, `identity_demotion`, `authorisation_demotion`, `SelfDemotionV1`; `ResolutionRecordV1`, `ResolutionExecutionV1`, `compose_resolution`, `compose_execution`, `read_resolution_record`, `read_execution_record`; `verify_resolution`, `verify_execution`, `ResolutionVerificationV1`, `ExecutionVerificationV1`, `ResolutionCheckV1`; `ResolutionError` |
 | `irena-cli` | The `irena` binary — [docs/irena-cli.md](docs/irena-cli.md) |
 
 Every reader is strict (unknown elements and attributes refused, never skipped) and
@@ -731,10 +813,10 @@ Three things are refused:
 * **A second execution.** The chain is scanned for an existing execution of the same
   resolution (`AlreadyExecuted`); and even without that check `publish` would refuse
   the second amendment as a stale amendment, because the first moved the provider.
-* **Self-promotion.** A `decision-channels` amendment resting on an **individual**
-  decision must satisfy the **self-demotion rule**. With `signer` the channel's sole
-  actor, `old` the channel set superseded and `new` the body, and *seats(set, id)* the
-  ids of the channels whose resolved actors include `id`:
+* **Self-promotion.** An amendment resting on an **individual** decision must satisfy
+  the **self-demotion rule for its target**. With `signer` the channel's sole actor,
+  `old` the part superseded and `new` the body — for a `decision-channels` amendment,
+  and *seats(set, id)* the ids of the channels whose resolved actors include `id`:
   * **R1** — *seats(new, signer)* ⊆ *seats(old, signer)*: the signer gains no seat;
   * **R2** — every channel in *seats(new, signer)* is identical in `old` and `new`:
     same mode, same actors, same rules.
@@ -744,12 +826,24 @@ Three things are refused:
   anywhere, widen their own channel, thin out a collective they sit on, or change its
   rules. Two set comparisons, no scoring, no ordering, no expressions
   (`SelfPromotion`, and `irena_resolution::self_demotion` to ask beforehand). Sources
-  resolve against the register in force where the amendment lands. **Stated plainly**:
-  the rule bounds the signer's *own* reach. It does not stop an individual channel
-  from rewriting a channel its actor is not part of, and a channel-set amendment
-  carried by a meeting is unrestricted. Both are configuration hazards the
-  notarisation attests to; `irena channels` marks every individual channel so a reader
-  knows to look.
+  resolve against the register and identities in force where the amendment lands.
+
+  Two parts beside the channel set can hand one person the same power by another
+  route, so each has its own rule, applied the same way and reported the same way:
+  * **identities** (`identity_demotion`) — every person other than the signer is
+    identical in `old` and `new`; persons may be added, none removed or changed. *Only
+    your own key rotates on your own signature*: rewriting somebody else's key is
+    voting as them, in every channel they sit on.
+  * **authorisation** (`authorisation_demotion`) — the signer's own rows in `new` are a
+    subset of their rows in `old`. *You may drop your own publishing right, never grant
+    yourself one.*
+
+  **Stated plainly**: the rules bound the signer's *own* reach. They do not stop an
+  individual channel from rewriting a channel its actor is not part of, registering a
+  new person, or authorising somebody else, and an amendment carried by a meeting is
+  unrestricted. All are configuration hazards the notarisation attests to; `irena
+  channels` marks every individual channel and `irena identities` shows who may sign
+  what, so a reader knows to look.
 
 A declarative resolution has nothing to execute and says so (`NothingToExecute`).
 
@@ -757,7 +851,8 @@ A declarative resolution has nothing to execute and says so (`NothingToExecute`)
 
 `verify_resolution` and `verify_execution` re-establish everything from the chain. The
 execution verifier runs the resolution's checks first and reports them alongside its
-own ten. Which resolution checks run depends on the authority; the last four are common:
+own eleven. Which resolution checks run depends on the authority; the last five are
+common:
 
 | Resolution check | Holds when |
 |---|---|
@@ -772,6 +867,7 @@ own ten. Which resolution checks run depends on the authority; the last four are
 | `ProposalMatches` | What the resolution carries digests to what was approved |
 | `CompanyMatches` | Resolution, approval and chain are the same company |
 | `HeightsOrdered` | The meeting or decision was recorded before the resolution was |
+| `SignerAuthorised` | The transaction signer is a `governance` signer's current key under the company at the resolution's own height |
 
 | Execution check | Holds when |
 |---|---|
@@ -781,9 +877,10 @@ own ten. Which resolution checks run depends on the authority; the last four are
 | `AmendmentExists` | The amendment is an ordinary company record of that kind, for this company |
 | `AmendmentMatchesResolution` | Its body is byte for byte the resolution's, and digests to what the channel approved |
 | `AmendmentReplacedApprovedBase` | It superseded exactly the record the actors approved for replacement |
-| `SelfDemotionHolds` | A `decision-channels` amendment on an individual decision satisfies R1 and R2, re-applied against the company just before the amendment; for any other amendment it passes and says *not applicable* |
+| `SelfDemotionHolds` | An amendment on an individual decision satisfies the rule for its target — channel set (R1 and R2), identities or authorisation — re-applied against the company just before the amendment; for a collective decision or a register amendment it passes and says *not applicable* |
 | `AmendmentApplied` | It is in the company's history for that part at the execution's height: it took effect |
 | `HeightsOrdered` | resolution < amendment ≤ execution |
+| `SignerAuthorised` | The execution's transaction signer is a `governance` signer's current key under the company at the execution's own height |
 | `ExecutedOnce` | No earlier execution of the same resolution exists |
 
 ### 10.6 What a verified execution does and does not say
@@ -796,10 +893,11 @@ what they saw — and, if one person rewrote who decides, only downwards.
 
 It does not say that the register named the real owners (§3), that the configured
 channels are the ones the law recognises, that anyone was entitled to *propose* the
-resolution, or that the key that published it belonged to anyone in particular.
-**There are no authorisation roles in V1** beyond the channels themselves: any key
-may publish a resolution, and the notarisation is the only authority, exactly as for a
-company record. Stage 4 (§11) is where that changes.
+resolution, or that the channels the company configured are the ones an outside body
+would recognise. It does say that the key that published each record was, at that
+height, a `governance` signer's current key under the company's own authorisation
+(§1.5) — who may *write* is now company data, checked like everything else; what a
+channel may *decide* is still unscoped (§11).
 
 ## 11. Not in V1 — the road ahead
 
@@ -811,9 +909,9 @@ order, and none is started:
 3. ~~Board membership, meetings and decisions.~~ **Done, without a board type** —
    §1.3: a board is a collective channel over a roster, a sole executive an individual
    one, and both decide through §7–§10 unchanged.
-4. **Identities and authorisation.** Who may sign which record transaction; today any
-   key may, and the notarisation is the only authority. Likely: a signer policy as a
-   company part, checked at reconstruction.
+4. ~~Identities and authorisation.~~ **Done** — §1.4 and §1.5: one key table, and who
+   may sign which family of record, checked at publish, at reconstruction and by every
+   governance verifier.
 5. **Placidia coordination and UI.** The Tauri front end and whatever coordinates
    several instances; nothing in the crates below assumes either.
 
@@ -823,8 +921,10 @@ register" is not expressible; the natural shape is a `scope` on the channel chec
 `execute`, deliberately not a permissions language. **Per-channel supersession**, if
 rewriting the whole set on every change proves costly. **More actor sources** (a
 register of another company, an external roster by digest) as one more `match` arm.
-**A wider self-demotion rule**, if the documented gap — an individual channel
-rewriting a channel it is not part of — turns out to matter in practice.
+**A wider self-demotion rule**, if the documented gaps — an individual channel
+rewriting a channel it is not part of, registering a new person, or authorising
+somebody else — turn out to matter in practice. **Notary ids bound to identities**, so
+the person attesting and the person signing can be checked against each other.
 
 Also deliberately absent from V1: **share classes** with votes-per-share (the company
 this is built for has flat shares; when classes arrive they are a new version of the
