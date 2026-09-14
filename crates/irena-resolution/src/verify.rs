@@ -9,7 +9,7 @@ use crate::record::{
 };
 use crate::resolution::{AmendmentTargetV1, ApprovalV1, AuthorityV1, ResolutionKindV1};
 use bornite_core::VoterIdV1;
-use irena_core::{RecordBodyV1, read_record};
+use irena_core::{ChannelIdV1, RecordBodyV1, read_record};
 use irena_decision::verify_decision;
 use irena_meeting::verify_meeting;
 use prunella_core::{BlockHeight, Transaction, TxId};
@@ -40,6 +40,9 @@ pub enum ResolutionCheckNameV1 {
     DecisionVerifies,
     /// The vote or decision was through the channel the resolution names.
     ChannelMatches,
+    /// The channel was scoped to the part this resolution amends, in the channel set
+    /// it decided under. A declarative resolution passes and says so.
+    WithinChannelScope,
     /// What the resolution carries is what was approved: its digest is the proposal
     /// digest the channel decided on.
     ProposalMatches,
@@ -336,6 +339,51 @@ fn verify_authority(
             )
         },
     );
+
+    // What that channel was allowed to decide, as the set it decided under had it.
+    match record.kind.target() {
+        None => {
+            report.check(
+                ResolutionCheckNameV1::WithinChannelScope,
+                true,
+                "not applicable: a declarative resolution amends nothing".to_owned(),
+            );
+        }
+        Some(target) => {
+            let scoped = ChannelIdV1::new(approval.channel.clone())
+                .map_err(ResolutionError::from)
+                .and_then(|id| Ok((company_at(store, approval.height)?, id)))
+                .map(|(frozen, id)| match frozen.channels.value.get(&id) {
+                    None => (
+                        false,
+                        format!(
+                            "channel {id} is not in the set in force at height {}",
+                            approval.height
+                        ),
+                    ),
+                    Some(channel) => (
+                        channel.may_amend(target.record_kind()),
+                        format!(
+                            "channel {id} may amend {} at height {}",
+                            channel.scope_text(),
+                            approval.height
+                        ),
+                    ),
+                });
+            match scoped {
+                Ok((passed, detail)) => {
+                    report.check(ResolutionCheckNameV1::WithinChannelScope, passed, detail);
+                }
+                Err(error) => {
+                    report.check(
+                        ResolutionCheckNameV1::WithinChannelScope,
+                        false,
+                        error.to_string(),
+                    );
+                }
+            }
+        }
+    }
 
     // What was approved.
     let approved = approval.proposal_digest;

@@ -154,6 +154,13 @@ fn channels(rules: &str) -> String {
         r#"<decision-channels>
   <channel id="shareholders" mode="collective">
     <actors source="share-register"/>
+    <scope>
+      <amend part="identity"/>
+      <amend part="share-structure"/>
+      <amend part="decision-channels"/>
+      <amend part="identities"/>
+      <amend part="authorisation"/>
+    </scope>
     {rules}
   </channel>
   <channel id="board" mode="collective">
@@ -162,6 +169,13 @@ fn channels(rules: &str) -> String {
       <member id="dir-a"/>
       <member id="dir-b"/>
     </actors>
+    <scope>
+      <amend part="identity"/>
+      <amend part="share-structure"/>
+      <amend part="decision-channels"/>
+      <amend part="identities"/>
+      <amend part="authorisation"/>
+    </scope>
     <voting-rules version="1.0">
       <weight type="electorate"/>
       <exclusions enabled="false"/>
@@ -175,6 +189,13 @@ fn channels(rules: &str) -> String {
     <actors source="roster">
       <member id="chair"/>
     </actors>
+    <scope>
+      <amend part="identity"/>
+      <amend part="share-structure"/>
+      <amend part="decision-channels"/>
+      <amend part="identities"/>
+      <amend part="authorisation"/>
+    </scope>
   </channel>
 </decision-channels>"#
     )
@@ -429,7 +450,7 @@ fn a_passed_vote_becomes_a_resolution_that_replaces_the_share_register() {
     // And both records verify from the chain alone.
     let report = verify_resolution(&chain.store, &id.tx_id()).expect("verify");
     assert!(report.is_valid(), "{report:#?}");
-    assert_eq!(report.checks.len(), 11);
+    assert_eq!(report.checks.len(), 12);
     let report = verify_execution(&chain.store, &executed.execution_tx).expect("verify");
     assert!(report.is_valid(), "{report:#?}");
     assert_eq!(report.checks.len(), 11);
@@ -2023,6 +2044,7 @@ fn the_same_execution_serves_shareholders_board_and_ceo() {
             "Decodes",
             "DecisionVerifies",
             "ChannelMatches",
+            "WithinChannelScope",
             "ProposalMatches",
             "CompanyMatches",
             "HeightsOrdered",
@@ -2243,6 +2265,181 @@ fn a_decision_must_match_what_it_authorises_and_carries_once() {
     assert_eq!(
         company_now(&chain.store).unwrap().shares.tx_id,
         first.executed().unwrap().amendment_tx
+    );
+}
+
+/// The three-channel set with the `ceo` channel scoped to nothing at all: it may
+/// record declarative decisions and amend no part of the company.
+fn channels_ceo_unscoped() -> String {
+    let full = channels(RULES);
+    let scoped = full.replace(
+        r#"    <actors source="roster">
+      <member id="chair"/>
+    </actors>
+    <scope>
+      <amend part="identity"/>
+      <amend part="share-structure"/>
+      <amend part="decision-channels"/>
+      <amend part="identities"/>
+      <amend part="authorisation"/>
+    </scope>"#,
+        r#"    <actors source="roster">
+      <member id="chair"/>
+    </actors>"#,
+    );
+    assert_ne!(scoped, full, "fixture edited");
+    scoped
+}
+
+#[test]
+fn a_channel_decides_only_what_its_scope_allows() {
+    let chain = founded();
+
+    // Narrow the ceo channel to nothing: the shareholders carry that amendment, and
+    // the change itself is within their own scope.
+    let narrowed = channels_ceo_unscoped();
+    let digest = proposal_digest(&narrowed);
+    let held = hold(&chain, &[("Scope the ceo channel", digest, true)]);
+    let authority = authority_through(&chain, &held, 1, "shareholders");
+    carry(
+        &chain,
+        authority,
+        AmendmentTargetV1::DecisionChannels,
+        &narrowed,
+    );
+    let state = company_now(&chain.store).unwrap();
+    let ceo = state
+        .channels
+        .value
+        .get(&irena_core::ChannelIdV1::new("ceo").unwrap())
+        .expect("ceo");
+    assert!(ceo.scope.is_none(), "the ceo now amends nothing");
+    assert_eq!(ceo.scope_text(), "nothing: declarative decisions only");
+
+    // A declarative decision still works: the chair may record what they decided.
+    let document = Hash::from_bytes([0xd1; 32]);
+    let decision_tx = decide_alone(&chain, document);
+    let mut declared = ResolutionV1::draft(
+        "Resolution: appoint auditors",
+        AuthorityV1::Individual {
+            channel: "ceo".to_owned(),
+            decision_tx,
+        },
+        ResolutionKindV1::Declarative {
+            document_digest: document,
+        },
+    );
+    declared
+        .finalize(
+            &chain.store,
+            &key(9),
+            &notary("2026-07-01T09:00:00Z"),
+            chain.next_timestamp(),
+        )
+        .expect("a declarative decision is always in scope");
+
+    // Rewriting the register is not. The decision is genuine and the digest matches;
+    // the channel simply may not decide this.
+    let digest = proposal_digest(&register_v2());
+    let decision_tx = decide_alone(&chain, digest);
+    let mut grab = ResolutionV1::draft(
+        "Resolution: buy out carol",
+        AuthorityV1::Individual {
+            channel: "ceo".to_owned(),
+            decision_tx,
+        },
+        ResolutionKindV1::Amendment {
+            target: AmendmentTargetV1::ShareStructure,
+            body: register_v2(),
+        },
+    );
+    let before = chain.store.head().unwrap();
+    let error = grab
+        .finalize(
+            &chain.store,
+            &key(9),
+            &notary("2026-07-02T09:00:00Z"),
+            chain.next_timestamp(),
+        )
+        .expect_err("out of scope");
+    assert!(
+        matches!(&error, ResolutionError::OutOfScope { channel, target, .. } if channel == "ceo" && *target == AmendmentTargetV1::ShareStructure),
+        "{error}"
+    );
+    assert!(
+        error
+            .to_string()
+            .contains("nothing: declarative decisions only"),
+        "{error}"
+    );
+    assert_eq!(
+        chain.store.head().unwrap(),
+        before,
+        "an out-of-scope resolution is not even recorded"
+    );
+
+    // The shareholders carry the same amendment without trouble.
+    let held = hold(&chain, &[("Buy out carol", digest, true)]);
+    let authority = authority_through(&chain, &held, 1, "shareholders");
+    let resolution = carry(
+        &chain,
+        authority,
+        AmendmentTargetV1::ShareStructure,
+        &register_v2(),
+    );
+    let done = resolution.executed().expect("executed");
+    assert!(
+        verify_execution(&chain.store, &done.execution_tx)
+            .unwrap()
+            .is_valid()
+    );
+}
+
+#[test]
+fn an_out_of_scope_resolution_planted_on_the_chain_fails_one_named_check() {
+    let chain = founded();
+    let narrowed = channels_ceo_unscoped();
+    let digest = proposal_digest(&narrowed);
+    let held = hold(&chain, &[("Scope the ceo channel", digest, true)]);
+    let authority = authority_through(&chain, &held, 1, "shareholders");
+    carry(
+        &chain,
+        authority,
+        AmendmentTargetV1::DecisionChannels,
+        &narrowed,
+    );
+
+    // Composed and appended around Irena, so the refusal at finalize never ran.
+    let digest = proposal_digest(&register_v2());
+    let decision_tx = decide_alone(&chain, digest);
+    let payload = compose_resolution(
+        &acme(),
+        &notary("2026-07-02T09:00:00Z"),
+        "Resolution: buy out carol",
+        &AuthorityV1::Individual {
+            channel: "ceo".to_owned(),
+            decision_tx,
+        },
+        &ResolutionKindV1::Amendment {
+            target: AmendmentTargetV1::ShareStructure,
+            body: register_v2(),
+        },
+    )
+    .expect("compose");
+    let planted = append_raw(&chain.store, "irena.resolution.v1", payload.into_bytes());
+    let report = verify_resolution(&chain.store, &planted).expect("verify");
+    assert!(!report.is_valid());
+    let failed: Vec<String> = report.failures().map(|check| check.name.clone()).collect();
+    assert_eq!(failed, ["WithinChannelScope"], "{report:#?}");
+    let detail = &report
+        .checks
+        .iter()
+        .find(|c| c.name == "WithinChannelScope")
+        .unwrap()
+        .detail;
+    assert!(
+        detail.contains("nothing: declarative decisions only"),
+        "{detail}"
     );
 }
 

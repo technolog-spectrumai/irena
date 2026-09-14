@@ -77,6 +77,20 @@ pub enum ResolutionError {
         /// The vote or decision record.
         through: TxId,
     },
+    /// The channel is not scoped to the part this resolution amends.
+    ///
+    /// A channel with no scope may carry declarative resolutions and amend nothing;
+    /// one with a scope may amend exactly the parts it lists. Refused when the
+    /// resolution is recorded and re-checked by anyone verifying it.
+    #[error("channel {channel} may not amend the {target}; it may amend {allowed}")]
+    OutOfScope {
+        /// The channel.
+        channel: String,
+        /// What the resolution would amend.
+        target: AmendmentTargetV1,
+        /// What the channel may amend, rendered.
+        allowed: String,
+    },
     /// An individual channel tried to amend the channel set in its own favour.
     ///
     /// The self-demotion rule (`crate::self_demotion`): the signer's reach must not

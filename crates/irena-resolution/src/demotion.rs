@@ -313,6 +313,15 @@ mod tests {
             mode: ChannelModeV1::Collective {
                 rules: rules(tie_accept),
             },
+            // The self-demotion rules are about the signer's reach, not the scope, so
+            // every channel here is scoped to the channel set and nothing turns on it.
+            scope: Some(
+                irena_core::ChannelScopeV1::new(
+                    &id(channel),
+                    vec![irena_core::RecordKindV1::DecisionChannels],
+                )
+                .unwrap(),
+            ),
         }
     }
 
@@ -321,6 +330,13 @@ mod tests {
             id: id(channel),
             actors: roster(channel, &[(actor, 1)]),
             mode: ChannelModeV1::Individual,
+            scope: Some(
+                irena_core::ChannelScopeV1::new(
+                    &id(channel),
+                    vec![irena_core::RecordKindV1::DecisionChannels],
+                )
+                .unwrap(),
+            ),
         }
     }
 

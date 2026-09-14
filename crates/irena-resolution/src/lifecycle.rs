@@ -14,7 +14,7 @@ use crate::resolution::{
 use bornite_core::VoterIdV1;
 use borsh::{BorshDeserialize, BorshSerialize};
 use irena_core::{
-    CompanyIdV1, NotarisationV1, RecordFamilyV1, read_authorisation_document,
+    ChannelIdV1, CompanyIdV1, NotarisationV1, RecordFamilyV1, read_authorisation_document,
     read_decision_channels_document, read_identities_document,
 };
 use irena_decision::verify_decision;
@@ -352,6 +352,29 @@ impl ResolutionV1 {
                 }
             }
         };
+        // What the channel may decide, as the channel set stood when it decided.
+        if let Some(target) = self.kind.target() {
+            let frozen = reconstruct(store, approval.height)?;
+            let channel_id = ChannelIdV1::new(approval.channel.clone())?;
+            let channel =
+                frozen
+                    .channels
+                    .value
+                    .get(&channel_id)
+                    .ok_or_else(|| ResolutionError::Chain {
+                        detail: format!(
+                            "channel {channel_id} is not in the set in force at height {}",
+                            approval.height
+                        ),
+                    })?;
+            if !channel.may_amend(target.record_kind()) {
+                return Err(ResolutionError::OutOfScope {
+                    channel: approval.channel.clone(),
+                    target,
+                    allowed: channel.scope_text(),
+                });
+            }
+        }
         let carried = self.kind.approved_digest();
         if carried != approval.proposal_digest {
             return Err(ResolutionError::ProposalMismatch {
