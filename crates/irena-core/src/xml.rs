@@ -6,12 +6,14 @@
 //! same strictness. Composing embeds the caller's body element **verbatim**: Irena
 //! does not re-serialise a document a notary signed off on.
 
+use crate::authorisation::{AuthorisationV1, RecordFamilyV1, SignerV1};
 use crate::channel::{
     ActorSourceV1, ChannelIdV1, ChannelModeV1, DecisionChannelV1, DecisionChannelsV1, MAX_CHANNELS,
     MAX_MEMBERS, MemberV1, RosterV1,
 };
 use crate::company::{CompanyGenesisV1, CompanyIdV1, IdentityV1};
 use crate::error::{IrenaError, IssueV1};
+use crate::identities::{IdentitiesV1, MAX_PERSONS, PersonV1};
 use crate::notarisation::{NotarisationV1, NotaryIdV1, NotaryTimeV1};
 use crate::record::{IrenaRecordV1, RECORD_VERSION, RecordBodyV1, RecordKindV1};
 use crate::shares::{HolderV1, MAX_HOLDERS, ShareStructureV1};
@@ -66,7 +68,7 @@ pub fn read_record_with_limit(xml: &str, max_bytes: u64) -> Result<IrenaRecordV1
         malformed_at(
             &reader,
             format!(
-                "unknown record kind {kind:?}; expected company-genesis, identity, share-structure or decision-channels"
+                "unknown record kind {kind:?}; expected company-genesis, identity, share-structure, decision-channels, identities or authorisation"
             ),
         )
     })?;
@@ -146,6 +148,22 @@ pub fn read_record_with_limit(xml: &str, max_bytes: u64) -> Result<IrenaRecordV1
             "decision-channels" => {
                 refuse_second_body(&reader, body.is_some())?;
                 body = Some(RecordBodyV1::DecisionChannels(parse_decision_channels(
+                    &mut reader,
+                    &child,
+                    is_empty,
+                )?));
+            }
+            "identities" => {
+                refuse_second_body(&reader, body.is_some())?;
+                body = Some(RecordBodyV1::Identities(parse_identities(
+                    &mut reader,
+                    &child,
+                    is_empty,
+                )?));
+            }
+            "authorisation" => {
+                refuse_second_body(&reader, body.is_some())?;
+                body = Some(RecordBodyV1::Authorisation(parse_authorisation(
                     &mut reader,
                     &child,
                     is_empty,
@@ -242,27 +260,8 @@ pub fn read_identity_document(xml: &str) -> Result<IdentityV1, IrenaError> {
 pub fn read_share_structure_document(xml: &str) -> Result<ShareStructureV1, IrenaError> {
     check_size(xml, DEFAULT_MAX_DOCUMENT_BYTES)?;
     let mut reader = open(xml);
-    let root = loop {
-        match next_event(&mut reader)? {
-            Event::Decl(_) | Event::Comment(_) | Event::Text(_) | Event::PI(_) => {}
-            Event::Start(root) if root.name().as_ref() == "share-structure" => {
-                break (root, false);
-            }
-            Event::Empty(root) if root.name().as_ref() == "share-structure" => {
-                break (root, true);
-            }
-            other => {
-                return Err(malformed_at(
-                    &reader,
-                    format!(
-                        "expected a <share-structure> root, found {}",
-                        describe(&other)
-                    ),
-                ));
-            }
-        }
-    };
-    let structure = parse_share_structure(&mut reader, &root.0, root.1)?;
+    let (root, is_empty) = root_of(&mut reader, "share-structure")?;
+    let structure = parse_share_structure(&mut reader, &root, is_empty)?;
     expect_eof(&mut reader)?;
     Ok(structure)
 }
@@ -275,35 +274,70 @@ pub fn read_share_structure_document(xml: &str) -> Result<ShareStructureV1, Iren
 pub fn read_decision_channels_document(xml: &str) -> Result<DecisionChannelsV1, IrenaError> {
     check_size(xml, DEFAULT_MAX_DOCUMENT_BYTES)?;
     let mut reader = open(xml);
-    let root = loop {
-        match next_event(&mut reader)? {
-            Event::Decl(_) | Event::Comment(_) | Event::Text(_) | Event::PI(_) => {}
-            Event::Start(root) if root.name().as_ref() == "decision-channels" => {
-                break (root, false);
-            }
-            Event::Empty(root) if root.name().as_ref() == "decision-channels" => {
-                break (root, true);
-            }
-            other => {
-                return Err(malformed_at(
-                    &reader,
-                    format!(
-                        "expected a <decision-channels> root, found {}",
-                        describe(&other)
-                    ),
-                ));
-            }
-        }
-    };
-    let channels = parse_decision_channels(&mut reader, &root.0, root.1)?;
+    let (root, is_empty) = root_of(&mut reader, "decision-channels")?;
+    let channels = parse_decision_channels(&mut reader, &root, is_empty)?;
     expect_eof(&mut reader)?;
     Ok(channels)
 }
 
+/// Reads a standalone `<identities>` document.
+///
+/// # Errors
+///
+/// Returns [`IrenaError`] for anything that is not a valid identities record.
+pub fn read_identities_document(xml: &str) -> Result<IdentitiesV1, IrenaError> {
+    check_size(xml, DEFAULT_MAX_DOCUMENT_BYTES)?;
+    let mut reader = open(xml);
+    let (root, is_empty) = root_of(&mut reader, "identities")?;
+    let identities = parse_identities(&mut reader, &root, is_empty)?;
+    expect_eof(&mut reader)?;
+    Ok(identities)
+}
+
+/// Reads a standalone `<authorisation>` document.
+///
+/// # Errors
+///
+/// Returns [`IrenaError`] for anything that is not a valid authorisation record.
+pub fn read_authorisation_document(xml: &str) -> Result<AuthorisationV1, IrenaError> {
+    check_size(xml, DEFAULT_MAX_DOCUMENT_BYTES)?;
+    let mut reader = open(xml);
+    let (root, is_empty) = root_of(&mut reader, "authorisation")?;
+    let authorisation = parse_authorisation(&mut reader, &root, is_empty)?;
+    expect_eof(&mut reader)?;
+    Ok(authorisation)
+}
+
+/// Reads past the prolog to the root element, which may be empty (`<name/>`).
+///
+/// Returns the start tag and whether it was an empty-element tag.
+fn root_of(
+    reader: &mut XmlReader<'_>,
+    name: &'static str,
+) -> Result<(BytesStart<'static>, bool), IrenaError> {
+    loop {
+        match next_event(reader)? {
+            Event::Decl(_) | Event::Comment(_) | Event::Text(_) | Event::PI(_) => {}
+            Event::Start(root) if root.name().as_ref() == name => {
+                return Ok((root.into_owned(), false));
+            }
+            Event::Empty(root) if root.name().as_ref() == name => {
+                return Ok((root.into_owned(), true));
+            }
+            other => {
+                return Err(malformed_at(
+                    reader,
+                    format!("expected a <{name}> root, found {}", describe(&other)),
+                ));
+            }
+        }
+    }
+}
+
 /// Composes a record document around a body element supplied as text.
 ///
-/// `body` must be a standalone `<company-genesis>`, `<identity>`, `<share-structure>`
-/// or `<decision-channels>` element matching `kind`. A leading XML declaration and surrounding
+/// `body` must be a standalone `<company-genesis>`, `<identity>`, `<share-structure>`,
+/// `<decision-channels>`, `<identities>` or `<authorisation>` element matching `kind`. A leading XML declaration and surrounding
 /// whitespace are removed; the element itself is embedded **byte for byte**. The
 /// composed document is read back before it is returned, so what the ledger receives
 /// is known to parse to exactly what was asked for.
@@ -339,6 +373,12 @@ pub fn compose_record(
         }
         RecordKindV1::DecisionChannels => {
             read_decision_channels_document(element)?;
+        }
+        RecordKindV1::Identities => {
+            read_identities_document(element)?;
+        }
+        RecordKindV1::Authorisation => {
+            read_authorisation_document(element)?;
         }
     }
 
@@ -488,7 +528,8 @@ fn parse_identity(
 /// Parses the body of a `<company-genesis>` element whose start tag has been read.
 ///
 /// The genesis is the whole company: `<identity>`, an optional `<incorporation>`,
-/// the `<share-structure>` and `<governance>` wrapping `<decision-channels>`.
+/// the `<share-structure>`, the `<identities>`, `<governance>` wrapping
+/// `<decision-channels>`, and the `<authorisation>`.
 fn parse_company_genesis(
     reader: &mut XmlReader<'_>,
     start: &BytesStart<'_>,
@@ -499,9 +540,12 @@ fn parse_company_genesis(
     let mut incorporation: Option<Option<Hash>> = None;
     let mut shares: Option<ShareStructureV1> = None;
     let mut channels: Option<DecisionChannelsV1> = None;
+    let mut identities: Option<IdentitiesV1> = None;
+    let mut authorisation: Option<AuthorisationV1> = None;
     // Presence is tracked apart from the parsed value: an element that was there but
     // invalid is reported for what is wrong with it, not also as missing.
     let (mut shares_seen, mut governance_seen) = (false, false);
+    let (mut identities_seen, mut authorisation_seen) = (false, false);
     let repeated = |issues: &mut Vec<IssueV1>, present: bool, element: &'static str| {
         if present {
             issues.push(IssueV1::RepeatedElement {
@@ -584,6 +628,24 @@ fn parse_company_genesis(
                     Err(other) => return Err(other),
                 }
             }
+            "identities" => {
+                repeated(&mut issues, identities_seen, "identities");
+                identities_seen = true;
+                match parse_identities(reader, &child, is_empty) {
+                    Ok(parsed) => identities = Some(parsed),
+                    Err(IrenaError::Invalid { issues: found }) => issues.extend(found),
+                    Err(other) => return Err(other),
+                }
+            }
+            "authorisation" => {
+                repeated(&mut issues, authorisation_seen, "authorisation");
+                authorisation_seen = true;
+                match parse_authorisation(reader, &child, is_empty) {
+                    Ok(parsed) => authorisation = Some(parsed),
+                    Err(IrenaError::Invalid { issues: found }) => issues.extend(found),
+                    Err(other) => return Err(other),
+                }
+            }
             other => {
                 return Err(malformed_at(
                     reader,
@@ -596,7 +658,9 @@ fn parse_company_genesis(
     for (present, element) in [
         (identity.is_some(), "identity"),
         (shares_seen, "share-structure"),
+        (identities_seen, "identities"),
         (governance_seen, "governance"),
+        (authorisation_seen, "authorisation"),
     ] {
         if !present {
             issues.push(IssueV1::MissingElement {
@@ -613,33 +677,21 @@ fn parse_company_genesis(
         incorporation_digest: incorporation.flatten(),
         shares: shares.expect("checked"),
         channels: channels.expect("checked"),
+        identities: identities.expect("checked"),
+        authorisation: authorisation.expect("checked"),
     })
 }
 
 /// Parses the inside of `<governance>`: exactly one `<decision-channels>`.
 fn parse_governance(reader: &mut XmlReader<'_>) -> Result<DecisionChannelsV1, IrenaError> {
+    let mut issues = Vec::new();
     let mut channels = None;
+    let mut seen = false;
     loop {
-        match next_event(reader)? {
-            Event::Text(_) | Event::Comment(_) => {}
-            Event::Start(child) if child.name().as_ref() == "decision-channels" => {
-                if channels.is_some() {
-                    return Err(IrenaError::invalid(vec![IssueV1::RepeatedElement {
-                        parent: "governance",
-                        element: "decision-channels",
-                    }]));
-                }
-                channels = Some(parse_decision_channels(reader, &child, false)?);
-            }
-            Event::Empty(child) if child.name().as_ref() == "decision-channels" => {
-                if channels.is_some() {
-                    return Err(IrenaError::invalid(vec![IssueV1::RepeatedElement {
-                        parent: "governance",
-                        element: "decision-channels",
-                    }]));
-                }
-                channels = Some(parse_decision_channels(reader, &child, true)?);
-            }
+        let (child, is_empty) = match next_event(reader)? {
+            Event::Text(_) | Event::Comment(_) => continue,
+            Event::Start(child) if child.name().as_ref() == "decision-channels" => (child, false),
+            Event::Empty(child) if child.name().as_ref() == "decision-channels" => (child, true),
             Event::End(_) => break,
             other => {
                 return Err(malformed_at(
@@ -647,14 +699,32 @@ fn parse_governance(reader: &mut XmlReader<'_>) -> Result<DecisionChannelsV1, Ir
                     format!("unexpected {} in <governance>", describe(&other)),
                 ));
             }
+        };
+        if seen {
+            issues.push(IssueV1::RepeatedElement {
+                parent: "governance",
+                element: "decision-channels",
+            });
+        }
+        seen = true;
+        // The element is consumed whole even when refused, so the reader is at
+        // `</governance>` afterwards and the genesis can go on to its next part.
+        match parse_decision_channels(reader, &child, is_empty) {
+            Ok(parsed) => channels = Some(parsed),
+            Err(IrenaError::Invalid { issues: found }) => issues.extend(found),
+            Err(other) => return Err(other),
         }
     }
-    channels.ok_or_else(|| {
-        IrenaError::invalid(vec![IssueV1::MissingElement {
+    if !seen {
+        issues.push(IssueV1::MissingElement {
             parent: "governance",
             element: "decision-channels",
-        }])
-    })
+        });
+    }
+    if !issues.is_empty() {
+        return Err(IrenaError::invalid(issues));
+    }
+    Ok(channels.expect("seen and no issues"))
 }
 
 /// Parses the body of a `<decision-channels>` element whose start tag has been read.
@@ -942,7 +1012,6 @@ fn parse_member(
 ) -> Result<Option<MemberV1>, IrenaError> {
     let mut attributes = Attributes::of(reader, "member", child)?;
     let id = require(&mut attributes, "id", issues);
-    let key = attributes.take("key");
     let name = attributes.take("name");
     let weight = attributes.take("weight");
     attributes.finish(reader)?;
@@ -960,20 +1029,6 @@ fn parse_member(
             issues,
         )
     });
-    let key = match key {
-        None => None,
-        Some(text) => collect(
-            PublicKey::from_hex(&text).map_err(|error| {
-                IrenaError::invalid(vec![IssueV1::InvalidValue {
-                    element: "member",
-                    attribute: "key",
-                    value: text.clone(),
-                    reason: error.to_string(),
-                }])
-            }),
-            issues,
-        ),
-    };
     let weight = match weight {
         None => Some(1),
         Some(text) => collect(
@@ -989,12 +1044,7 @@ fn parse_member(
         ),
     };
     Ok(match (id, weight) {
-        (Some(id), Some(weight)) => Some(MemberV1 {
-            id,
-            key,
-            name,
-            weight,
-        }),
+        (Some(id), Some(weight)) => Some(MemberV1 { id, name, weight }),
         _ => None,
     })
 }
@@ -1060,7 +1110,6 @@ fn parse_holder(
 ) -> Result<Option<HolderV1>, IrenaError> {
     let mut attributes = Attributes::of(reader, "holder", child)?;
     let id = require(&mut attributes, "id", issues);
-    let key = attributes.take("key");
     let name = attributes.take("name");
     let shares = require(&mut attributes, "shares", issues);
     attributes.finish(reader)?;
@@ -1078,20 +1127,6 @@ fn parse_holder(
             issues,
         )
     });
-    let key = match key {
-        None => None,
-        Some(text) => collect(
-            PublicKey::from_hex(&text).map_err(|error| {
-                IrenaError::invalid(vec![IssueV1::InvalidValue {
-                    element: "holder",
-                    attribute: "key",
-                    value: text.clone(),
-                    reason: error.to_string(),
-                }])
-            }),
-            issues,
-        ),
-    };
     let shares = shares.and_then(|text| {
         collect(
             parse_u64(&text).ok_or_else(|| {
@@ -1106,12 +1141,204 @@ fn parse_holder(
         )
     });
     Ok(match (id, shares) {
-        (Some(id), Some(shares)) => Some(HolderV1 {
+        (Some(id), Some(shares)) => Some(HolderV1 { id, name, shares }),
+        _ => None,
+    })
+}
+
+/// Parses the body of an `<identities>` element whose start tag has been read.
+///
+/// `is_empty` says the start tag was `<identities/>`: a valid record that lists nobody.
+fn parse_identities(
+    reader: &mut XmlReader<'_>,
+    start: &BytesStart<'_>,
+    is_empty: bool,
+) -> Result<IdentitiesV1, IrenaError> {
+    Attributes::of(reader, "identities", start)?.finish(reader)?;
+    let mut issues = Vec::new();
+    let mut persons = Vec::new();
+
+    if !is_empty {
+        loop {
+            let event = next_event(reader)?;
+            let (child, child_is_empty) = match event {
+                Event::Text(_) | Event::Comment(_) => continue,
+                Event::Empty(child) => (child, true),
+                Event::Start(child) => (child, false),
+                Event::End(_) => break,
+                other => {
+                    return Err(malformed_at(
+                        reader,
+                        format!("unexpected {} in <identities>", describe(&other)),
+                    ));
+                }
+            };
+            let name = child.name().as_ref().to_owned();
+            if name != "person" {
+                return Err(malformed_at(
+                    reader,
+                    format!("<identities> has an unknown child <{name}>"),
+                ));
+            }
+            if persons.len() >= MAX_PERSONS {
+                return Err(IrenaError::invalid(vec![IssueV1::TooManyPersons {
+                    limit: MAX_PERSONS,
+                }]));
+            }
+            if let Some(person) = parse_person(reader, &child, &mut issues)? {
+                persons.push(person);
+            }
+            if !child_is_empty {
+                expect_empty(reader, "person")?;
+            }
+        }
+    }
+
+    if !issues.is_empty() {
+        return Err(IrenaError::invalid(issues));
+    }
+    IdentitiesV1::new(persons)
+}
+
+fn parse_person(
+    reader: &XmlReader<'_>,
+    child: &BytesStart<'_>,
+    issues: &mut Vec<IssueV1>,
+) -> Result<Option<PersonV1>, IrenaError> {
+    let mut attributes = Attributes::of(reader, "person", child)?;
+    let id = require(&mut attributes, "id", issues);
+    let name = attributes.take("name");
+    let document_id = attributes.take("document-id");
+    let key = attributes.take("key");
+    attributes.finish(reader)?;
+
+    let id = id.and_then(|text| {
+        collect(
+            VoterIdV1::new(text.clone()).map_err(|error| {
+                IrenaError::invalid(vec![IssueV1::InvalidValue {
+                    element: "person",
+                    attribute: "id",
+                    value: text,
+                    reason: error.to_string(),
+                }])
+            }),
+            issues,
+        )
+    });
+    let key = match key {
+        None => Some(None),
+        Some(text) => collect(
+            PublicKey::from_hex(&text).map_err(|error| {
+                IrenaError::invalid(vec![IssueV1::InvalidValue {
+                    element: "person",
+                    attribute: "key",
+                    value: text.clone(),
+                    reason: error.to_string(),
+                }])
+            }),
+            issues,
+        )
+        .map(Some),
+    };
+    Ok(match (id, key) {
+        (Some(id), Some(key)) => Some(PersonV1 {
             id,
-            key,
             name,
-            shares,
+            document_id,
+            key,
         }),
+        _ => None,
+    })
+}
+
+/// Parses the body of an `<authorisation>` element whose start tag has been read.
+///
+/// `is_empty` says the start tag was `<authorisation/>`, which the record then
+/// refuses for naming no `company` signer.
+fn parse_authorisation(
+    reader: &mut XmlReader<'_>,
+    start: &BytesStart<'_>,
+    is_empty: bool,
+) -> Result<AuthorisationV1, IrenaError> {
+    Attributes::of(reader, "authorisation", start)?.finish(reader)?;
+    let mut issues = Vec::new();
+    let mut signers = Vec::new();
+
+    if !is_empty {
+        loop {
+            let event = next_event(reader)?;
+            let (child, child_is_empty) = match event {
+                Event::Text(_) | Event::Comment(_) => continue,
+                Event::Empty(child) => (child, true),
+                Event::Start(child) => (child, false),
+                Event::End(_) => break,
+                other => {
+                    return Err(malformed_at(
+                        reader,
+                        format!("unexpected {} in <authorisation>", describe(&other)),
+                    ));
+                }
+            };
+            let name = child.name().as_ref().to_owned();
+            if name != "signer" {
+                return Err(malformed_at(
+                    reader,
+                    format!("<authorisation> has an unknown child <{name}>"),
+                ));
+            }
+            if let Some(signer) = parse_signer(reader, &child, &mut issues)? {
+                signers.push(signer);
+            }
+            if !child_is_empty {
+                expect_empty(reader, "signer")?;
+            }
+        }
+    }
+
+    if !issues.is_empty() {
+        return Err(IrenaError::invalid(issues));
+    }
+    AuthorisationV1::new(signers)
+}
+
+fn parse_signer(
+    reader: &XmlReader<'_>,
+    child: &BytesStart<'_>,
+    issues: &mut Vec<IssueV1>,
+) -> Result<Option<SignerV1>, IrenaError> {
+    let mut attributes = Attributes::of(reader, "signer", child)?;
+    let person = require(&mut attributes, "person", issues);
+    let records = require(&mut attributes, "records", issues);
+    attributes.finish(reader)?;
+
+    let person = person.and_then(|text| {
+        collect(
+            VoterIdV1::new(text.clone()).map_err(|error| {
+                IrenaError::invalid(vec![IssueV1::InvalidValue {
+                    element: "signer",
+                    attribute: "person",
+                    value: text,
+                    reason: error.to_string(),
+                }])
+            }),
+            issues,
+        )
+    });
+    let family = records.and_then(|text| {
+        collect(
+            RecordFamilyV1::parse(&text).ok_or_else(|| {
+                IrenaError::invalid(vec![IssueV1::InvalidValue {
+                    element: "signer",
+                    attribute: "records",
+                    value: text.clone(),
+                    reason: "must be company or governance".to_owned(),
+                }])
+            }),
+            issues,
+        )
+    });
+    Ok(match (person, family) {
+        (Some(person), Some(family)) => Some(SignerV1 { person, family }),
         _ => None,
     })
 }

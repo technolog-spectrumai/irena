@@ -11,12 +11,17 @@
     kind="identity"           carries <identity>           (irena-company-v1.xsd)
     kind="share-structure"    carries <share-structure>    (irena-company-v1.xsd)
     kind="decision-channels"  carries <decision-channels>  (irena-company-v1.xsd)
+    kind="identities"         carries <identities>         (irena-company-v1.xsd)
+    kind="authorisation"      carries <authorisation>      (irena-company-v1.xsd)
 
   A collective channel nests Bornite's own <voting-rules> element, reused unchanged:
   nothing about a company appears inside it, so the same rules organise anything.
 
   Every record is put on the ledger by hand, by someone with the authority and the
-  documents to say the company is now like this. <notarisation> records who that was
+  documents to say the company is now like this. The transaction that carries it is
+  signed by a key, and the ledger checks that key against the company's own
+  <authorisation> in force at that height: a company record signed by anyone who is not
+  a current company signer is refused at publish and is a break at reconstruction. <notarisation> records who that was
   (id, name, address), when they say the change took effect (at), and optionally a
   statement and the digest of an external document. Irena stores and reproduces all
   of it and interprets none of it: the ledger's own order is the only order, and the
@@ -41,6 +46,8 @@
       <xs:enumeration value="identity"/>
       <xs:enumeration value="share-structure"/>
       <xs:enumeration value="decision-channels"/>
+      <xs:enumeration value="identities"/>
+      <xs:enumeration value="authorisation"/>
     </xs:restriction>
   </xs:simpleType>
 
@@ -81,6 +88,8 @@
           <xs:element name="identity" type="Identity"/>
           <xs:element name="share-structure" type="ShareStructure"/>
           <xs:element name="decision-channels" type="DecisionChannels"/>
+          <xs:element name="identities" type="Identities"/>
+          <xs:element name="authorisation" type="Authorisation"/>
         </xs:choice>
       </xs:sequence>
       <xs:attribute name="version" type="xs:string" use="required" fixed="1.0"/>

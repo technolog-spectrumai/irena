@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  An identities amendment for genesis-three-channels.xml: chen's key is rotated (here
+  to the key derived from the seed [3;32]) and quinn is registered with a key ([8;32]).
+  Everyone else is exactly as before. The identities part is replaced whole, so an
+  amendment lists every person who should exist afterwards.
+
+  A person's key is their voice in every channel they sit on, so who may publish this
+  matters: a company signer may publish it bare; the shareholders or the board may
+  execute it by resolution; the ceo channel alone may NOT, because on an individual
+  decision only the signer's own entry may change (chen rotating chen's key is fine;
+  chen registering quinn is an addition, also fine; chen touching okafor's key is
+  refused as self-promotion).
+-->
+<identities>
+  <person id="alice" name="Alice Smith" document-id="GB-P-540027183" key="8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c"/>
+  <person id="bob" name="Bob Jones" key="8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394"/>
+  <person id="carol" name="Carol White"/>
+  <person id="chen" name="M. Chen" document-id="SG-S8811234K" key="ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1"/>
+  <person id="okafor" name="A. Okafor" key="6e7a1cdd29b0b78fd13af4c5598feff4ef2a97166e3ca6f2e4fbfccd80505bf1"/>
+  <person id="vance" name="R. Vance"/>
+  <person id="jane" name="Jane Roe" key="fd1724385aa0c75b64fb78cd602fa1d991fdebf76b13c58ed702eac835e9f618"/>
+  <person id="quinn" name="S. Quinn" key="1398f62c6d1a457c51ba6a4b5f3dbd2f69fca93216218dc8997e416bd17d93ca"/>
+</identities>

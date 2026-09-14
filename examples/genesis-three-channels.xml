@@ -9,19 +9,33 @@
   Nothing here names an organ or a legal system: "board" and "ceo" are labels the
   notary chose. Irena knows share-register, roster, individual and collective.
 
-  Signing keys are Ed25519 public keys. These were derived from the seeds
-  [1;32] (alice), [2;32] (bob), [4;32] (chen), [5;32] (okafor) so the documentation
-  drill can sign with them; a real company registers its holders' and directors'
-  own keys.
+  Every person who holds shares, sits on a roster or signs record transactions is
+  listed once under <identities> with the one key they currently sign with (Carol and
+  Vance have registered none: counted, unable to sign). Holders and members carry an id
+  only. Jane Roe, the company secretary, holds no shares and no seat: she is the one
+  person authorised to put records on the chain, for both families.
+
+  Keys are Ed25519 public keys derived from the seeds [1;32] (alice), [2;32] (bob),
+  [4;32] (chen), [5;32] (okafor), [9;32] (jane) so the documentation drill can sign
+  with them; a real company registers its people's own keys.
 -->
 <company-genesis>
   <identity name="Acme Industries Ltd" jurisdiction="gb" registered-number="01234567"/>
   <incorporation document-digest="9a3f9a3f9a3f9a3f9a3f9a3f9a3f9a3f9a3f9a3f9a3f9a3f9a3f9a3f9a3f9a3f"/>
   <share-structure>
-    <holder id="alice" key="8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c" name="Alice Smith" shares="500"/>
-    <holder id="bob" key="8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394" name="Bob Jones" shares="300"/>
+    <holder id="alice" name="Alice Smith" shares="500"/>
+    <holder id="bob" name="Bob Jones" shares="300"/>
     <holder id="carol" name="Carol White" shares="200"/>
   </share-structure>
+  <identities>
+    <person id="alice" name="Alice Smith" document-id="GB-P-540027183" key="8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c"/>
+    <person id="bob" name="Bob Jones" key="8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394"/>
+    <person id="carol" name="Carol White"/>
+    <person id="chen" name="M. Chen" document-id="SG-S8811234K" key="ca93ac1705187071d67b83c7ff0efe8108e8ec4530575d7726879333dbdabe7c"/>
+    <person id="okafor" name="A. Okafor" key="6e7a1cdd29b0b78fd13af4c5598feff4ef2a97166e3ca6f2e4fbfccd80505bf1"/>
+    <person id="vance" name="R. Vance"/>
+    <person id="jane" name="Jane Roe" key="fd1724385aa0c75b64fb78cd602fa1d991fdebf76b13c58ed702eac835e9f618"/>
+  </identities>
   <governance>
     <decision-channels>
       <channel id="shareholders" mode="collective">
@@ -39,10 +53,10 @@
         </channel>
       <channel id="board" mode="collective">
           <!-- A roster listed inline. The chair carries weight 2; weight defaults to 1.
-               Vance has registered no key: counted in the electorate, unable to sign. -->
+               Keys come from <identities>: Vance has none, so counted, unable to sign. -->
           <actors source="roster">
-            <member id="chen" key="ca93ac1705187071d67b83c7ff0efe8108e8ec4530575d7726879333dbdabe7c" name="M. Chen" weight="2"/>
-            <member id="okafor" key="6e7a1cdd29b0b78fd13af4c5598feff4ef2a97166e3ca6f2e4fbfccd80505bf1" name="A. Okafor"/>
+            <member id="chen" name="M. Chen" weight="2"/>
+            <member id="okafor" name="A. Okafor"/>
             <member id="vance" name="R. Vance"/>
           </actors>
           <voting-rules version="1.0">
@@ -57,9 +71,16 @@
       <channel id="ceo" mode="individual">
           <!-- One actor signs. The source must resolve to exactly one actor. -->
           <actors source="roster">
-            <member id="chen" key="ca93ac1705187071d67b83c7ff0efe8108e8ec4530575d7726879333dbdabe7c" name="M. Chen"/>
+            <member id="chen" name="M. Chen"/>
           </actors>
         </channel>
     </decision-channels>
   </governance>
+  <authorisation>
+    <!-- Who may sign the transactions that carry records. "company": amendments to
+         any part, with no channel deciding - the notary's route. "governance":
+         meetings, votes, decisions, resolutions, executions. -->
+    <signer person="jane" records="company"/>
+    <signer person="jane" records="governance"/>
+  </authorisation>
 </company-genesis>

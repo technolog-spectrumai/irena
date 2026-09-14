@@ -12,10 +12,18 @@ const GENESIS: &str = r#"<company-genesis>
   <identity name="Acme Industries Ltd" jurisdiction="gb" registered-number="01234567"/>
   <incorporation document-digest="9a3f9a3f9a3f9a3f9a3f9a3f9a3f9a3f9a3f9a3f9a3f9a3f9a3f9a3f9a3f9a3f"/>
   <share-structure>
-    <holder id="alice" key="4e9c4e9c4e9c4e9c4e9c4e9c4e9c4e9c4e9c4e9c4e9c4e9c4e9c4e9c4e9c4e9c" name="Alice Smith" shares="500"/>
-    <holder id="bob" key="7b217b217b217b217b217b217b217b217b217b217b217b217b217b217b217b21" shares="300"/>
+    <holder id="alice" name="Alice Smith" shares="500"/>
+    <holder id="bob" shares="300"/>
     <holder id="carol" shares="200"/>
   </share-structure>
+  <identities>
+    <person id="alice" name="Alice Smith" document-id="GB-P-123456789" key="4e9c4e9c4e9c4e9c4e9c4e9c4e9c4e9c4e9c4e9c4e9c4e9c4e9c4e9c4e9c4e9c"/>
+    <person id="bob" key="7b217b217b217b217b217b217b217b217b217b217b217b217b217b217b217b21"/>
+    <person id="carol" name="Carol White"/>
+    <person id="chen" name="M. Chen" key="c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1"/>
+    <person id="okafor" key="c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2"/>
+    <person id="jane" name="Jane Roe" key="9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e"/>
+  </identities>
   <governance>
     <decision-channels>
       <channel id="shareholders" mode="collective">
@@ -31,8 +39,8 @@ const GENESIS: &str = r#"<company-genesis>
       </channel>
       <channel id="board" mode="collective">
         <actors source="roster">
-          <member id="chen" key="c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1" name="M. Chen" weight="2"/>
-          <member id="okafor" key="c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2"/>
+          <member id="chen" name="M. Chen" weight="2"/>
+          <member id="okafor"/>
           <member id="vance"/>
         </actors>
         <voting-rules version="1.0">
@@ -46,19 +54,23 @@ const GENESIS: &str = r#"<company-genesis>
       </channel>
       <channel id="ceo" mode="individual">
         <actors source="roster">
-          <member id="chen" key="c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1"/>
+          <member id="chen"/>
         </actors>
       </channel>
     </decision-channels>
   </governance>
+  <authorisation>
+    <signer person="jane" records="company"/>
+    <signer person="jane" records="governance"/>
+  </authorisation>
 </company-genesis>"#;
 
 const IDENTITY: &str =
     r#"<identity name="Acme Industries plc" jurisdiction="gb" registered-number="01234567"/>"#;
 
 const SHARES: &str = r#"<share-structure>
-  <holder id="alice" key="4e9c4e9c4e9c4e9c4e9c4e9c4e9c4e9c4e9c4e9c4e9c4e9c4e9c4e9c4e9c4e9c" name="Alice Smith" shares="500"/>
-  <holder id="bob" key="7b217b217b217b217b217b217b217b217b217b217b217b217b217b217b217b21" shares="300"/>
+  <holder id="alice" name="Alice Smith" shares="500"/>
+  <holder id="bob" shares="300"/>
   <holder id="carol" shares="200"/>
 </share-structure>"#;
 
@@ -85,10 +97,22 @@ const CHANNELS: &str = r#"<decision-channels>
   </channel>
   <channel id="ceo" mode="individual">
     <actors source="roster">
-      <member id="chen" key="c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1" name="M. Chen"/>
+      <member id="chen" name="M. Chen"/>
     </actors>
   </channel>
 </decision-channels>"#;
+
+const IDENTITIES: &str = r#"<identities>
+  <person id="alice" name="Alice Smith" document-id="GB-P-123456789" key="4e9c4e9c4e9c4e9c4e9c4e9c4e9c4e9c4e9c4e9c4e9c4e9c4e9c4e9c4e9c4e9c"/>
+  <person id="carol" name="Carol White"/>
+  <person id="jane" key="9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e"/>
+</identities>"#;
+
+const AUTHORISATION: &str = r#"<authorisation>
+  <signer person="jane" records="governance"/>
+  <signer person="jane" records="company"/>
+  <signer person="alice" records="governance"/>
+</authorisation>"#;
 
 fn shareholders() -> irena_core::ChannelIdV1 {
     irena_core::ChannelIdV1::new("shareholders").expect("channel id")
@@ -109,12 +133,14 @@ fn notary() -> NotarisationV1 {
     }
 }
 
-fn bodies() -> [(RecordKindV1, &'static str); 4] {
+fn bodies() -> [(RecordKindV1, &'static str); 6] {
     [
         (RecordKindV1::CompanyGenesis, GENESIS),
         (RecordKindV1::Identity, IDENTITY),
         (RecordKindV1::ShareStructure, SHARES),
         (RecordKindV1::DecisionChannels, CHANNELS),
+        (RecordKindV1::Identities, IDENTITIES),
+        (RecordKindV1::Authorisation, AUTHORISATION),
     ]
 }
 
@@ -158,7 +184,7 @@ fn a_supersedes_id_survives_the_trip() {
 }
 
 #[test]
-fn the_share_structure_is_read_into_a_sorted_register_with_keys() {
+fn the_share_structure_is_read_into_a_sorted_register() {
     let xml = compose_record(
         RecordKindV1::ShareStructure,
         &company(),
@@ -170,17 +196,17 @@ fn the_share_structure_is_read_into_a_sorted_register_with_keys() {
     let RecordBodyV1::ShareStructure(register) = read_record(&xml).expect("read").body else {
         panic!("wrong body");
     };
-    let summary: Vec<(&str, u64, bool, Option<&str>)> = register
+    let summary: Vec<(&str, u64, Option<&str>)> = register
         .holders()
         .iter()
-        .map(|h| (h.id.as_str(), h.shares, h.key.is_some(), h.name.as_deref()))
+        .map(|h| (h.id.as_str(), h.shares, h.name.as_deref()))
         .collect();
     assert_eq!(
         summary,
         [
-            ("alice", 500, true, Some("Alice Smith")),
-            ("bob", 300, true, None),
-            ("carol", 200, false, None),
+            ("alice", 500, Some("Alice Smith")),
+            ("bob", 300, None),
+            ("carol", 200, None),
         ]
     );
     assert_eq!(register.total_shares(), 1000);
@@ -219,15 +245,53 @@ fn the_genesis_is_the_whole_company() {
     let irena_core::ActorSourceV1::Roster(roster) = &board.actors else {
         panic!("board is a roster");
     };
-    let weights: Vec<(&str, u64, bool)> = roster
+    let weights: Vec<(&str, u64)> = roster
         .members()
         .iter()
-        .map(|m| (m.id.as_str(), m.weight, m.key.is_some()))
+        .map(|m| (m.id.as_str(), m.weight))
         .collect();
     assert_eq!(
         weights,
-        [("chen", 2, true), ("okafor", 1, true), ("vance", 1, false)],
-        "weight defaults to 1; a member without a key is listed"
+        [("chen", 2), ("okafor", 1), ("vance", 1)],
+        "weight defaults to 1"
+    );
+    // Keys live in the identities part, once per person, wherever they sit.
+    let alice = bornite_core::VoterIdV1::new("alice").unwrap();
+    let alice_key =
+        prunella_core::PublicKey::from_bytes([0x4e, 0x9c].repeat(16).try_into().unwrap());
+    assert_eq!(genesis.identities.key_of(&alice), Some(alice_key));
+    assert_eq!(
+        genesis
+            .identities
+            .get(&alice)
+            .unwrap()
+            .document_id
+            .as_deref(),
+        Some("GB-P-123456789")
+    );
+    let carol = bornite_core::VoterIdV1::new("carol").unwrap();
+    assert_eq!(
+        genesis.identities.key_of(&carol),
+        None,
+        "listed, cannot sign"
+    );
+    assert_eq!(genesis.identities.get(&carol).unwrap().document_id, None);
+    assert_eq!(genesis.identities.len(), 6);
+    let jane = bornite_core::VoterIdV1::new("jane").unwrap();
+    assert!(
+        genesis
+            .authorisation
+            .allows(&jane, irena_core::RecordFamilyV1::Company)
+    );
+    assert!(
+        genesis
+            .authorisation
+            .allows(&jane, irena_core::RecordFamilyV1::Governance)
+    );
+    assert!(
+        !genesis
+            .authorisation
+            .allows(&alice, irena_core::RecordFamilyV1::Company)
     );
     let ceo = genesis
         .channels
@@ -237,11 +301,12 @@ fn the_genesis_is_the_whole_company() {
     assert!(ceo.mode.rules().is_none());
 
     let minimal = read_company_genesis_document(
-        r#"<company-genesis><identity name="X"/><share-structure/><governance><decision-channels><channel id="all" mode="collective"><actors source="share-register"/><voting-rules version="1.0"><weight type="equal"/><exclusions enabled="false"/><quorum type="none"/><threshold type="simple-majority" basis="votes-cast"/><abstentions treatment="exclude"/><tie treatment="reject"/></voting-rules></channel></decision-channels></governance></company-genesis>"#,
+        r#"<company-genesis><identity name="X"/><share-structure/><identities/><governance><decision-channels><channel id="all" mode="collective"><actors source="share-register"/><voting-rules version="1.0"><weight type="equal"/><exclusions enabled="false"/><quorum type="none"/><threshold type="simple-majority" basis="votes-cast"/><abstentions treatment="exclude"/><tie treatment="reject"/></voting-rules></channel></decision-channels></governance><authorisation><signer person="x" records="company"/></authorisation></company-genesis>"#,
     )
     .expect("minimal");
     assert_eq!(minimal.incorporation_digest, None);
     assert!(minimal.shares.is_empty());
+    assert!(minimal.identities.is_empty());
 
     let identity = irena_core::read_identity_document(IDENTITY).expect("identity");
     assert_eq!(identity.name, "Acme Industries plc");
@@ -440,9 +505,9 @@ fn a_notarisation_is_required_and_every_field_is_checked() {
 #[test]
 fn share_structure_problems_are_collected_together() {
     let bad = r#"<share-structure>
-  <holder id="alice" key="4e9c4e9c4e9c4e9c4e9c4e9c4e9c4e9c4e9c4e9c4e9c4e9c4e9c4e9c4e9c4e9c" shares="0"/>
+  <holder id="alice" shares="0"/>
   <holder id="alice" shares="1"/>
-  <holder id="bob" key="4e9c4e9c4e9c4e9c4e9c4e9c4e9c4e9c4e9c4e9c4e9c4e9c4e9c4e9c4e9c4e9c" shares="18446744073709551615"/>
+  <holder id="bob" shares="18446744073709551615"/>
   <holder id="carol" shares="1"/>
 </share-structure>"#;
     let error = read_share_structure_document(bad).expect_err("bad register");
@@ -462,28 +527,22 @@ fn share_structure_problems_are_collected_together() {
     assert!(
         issues
             .iter()
-            .any(|i| matches!(i, IssueV1::DuplicateKey { .. })),
-        "{error}"
-    );
-    assert!(
-        issues
-            .iter()
             .any(|i| matches!(i, IssueV1::TotalSharesOverflow { .. })),
         "{error}"
     );
+    assert_eq!(issues.len(), 3, "{error}");
 
     // Attribute-level problems are collected too, before the register is built.
     let attributes = r#"<share-structure>
   <holder id="al ice" shares="5"/>
-  <holder id="bob" key="short" shares="5"/>
   <holder id="carol" shares="-1"/>
   <holder id="dave" shares="+5"/>
   <holder id="erin"/>
 </share-structure>"#;
     let error = read_share_structure_document(attributes).expect_err("bad attributes");
     let issues = error.issues();
-    assert_eq!(issues.len(), 5, "{error}");
-    for (attribute, count) in [("id", 1), ("key", 1), ("shares", 3)] {
+    assert_eq!(issues.len(), 4, "{error}");
+    for (attribute, count) in [("id", 1), ("shares", 3)] {
         let found = issues
             .iter()
             .filter(|i| match i {
@@ -536,13 +595,21 @@ fn share_structure_problems_are_collected_together() {
 
 #[test]
 fn genesis_problems_are_reported_together() {
-    let governance = GENESIS
-        [GENESIS.find("<governance>").unwrap()..GENESIS.find("</company-genesis>").unwrap()]
+    let governance = GENESIS[GENESIS.find("<governance>").unwrap()
+        ..GENESIS.find("</governance>").unwrap() + "</governance>".len()]
         .to_owned();
     let shares = GENESIS[GENESIS.find("<share-structure>").unwrap()
         ..GENESIS.find("</share-structure>").unwrap() + "</share-structure>".len()]
         .to_owned();
-    let with = |middle: &str| format!("<company-genesis>{middle}</company-genesis>");
+    let identities = GENESIS[GENESIS.find("<identities>").unwrap()
+        ..GENESIS.find("</identities>").unwrap() + "</identities>".len()]
+        .to_owned();
+    let authorisation = GENESIS[GENESIS.find("<authorisation>").unwrap()
+        ..GENESIS.find("</authorisation>").unwrap() + "</authorisation>".len()]
+        .to_owned();
+    let with = |middle: &str| {
+        format!("<company-genesis>{identities}{middle}{authorisation}</company-genesis>")
+    };
     for (label, xml, expect) in [
         (
             "no identity",
@@ -569,6 +636,26 @@ fn genesis_problems_are_reported_together() {
             },
         ),
         (
+            "no authorisation",
+            format!(
+                "<company-genesis><identity name=\"a\"/>{shares}{identities}{governance}</company-genesis>"
+            ),
+            IssueV1::MissingElement {
+                parent: "company-genesis",
+                element: "authorisation",
+            },
+        ),
+        (
+            "no identities",
+            format!(
+                "<company-genesis><identity name=\"a\"/>{shares}{governance}{authorisation}</company-genesis>"
+            ),
+            IssueV1::MissingElement {
+                parent: "company-genesis",
+                element: "identities",
+            },
+        ),
+        (
             "empty governance",
             with(&format!(
                 "<identity name=\"a\"/>{shares}<governance></governance>"
@@ -576,6 +663,22 @@ fn genesis_problems_are_reported_together() {
             IssueV1::MissingElement {
                 parent: "governance",
                 element: "decision-channels",
+            },
+        ),
+        (
+            "bad authorisation inside the genesis",
+            format!(
+                "<company-genesis><identity name=\"a\"/>{shares}{identities}{governance}<authorisation/></company-genesis>"
+            ),
+            IssueV1::NoCompanySigner,
+        ),
+        (
+            "bad identities inside the genesis",
+            format!(
+                "<company-genesis><identity name=\"a\"/>{shares}<identities><person id=\"x\"/><person id=\"x\"/></identities>{governance}{authorisation}</company-genesis>"
+            ),
+            IssueV1::DuplicatePerson {
+                id: bornite_core::VoterIdV1::new("x").unwrap(),
             },
         ),
         (
@@ -614,8 +717,8 @@ fn genesis_problems_are_reported_together() {
     // Everything wrong at once is reported at once.
     let error =
         read_company_genesis_document("<company-genesis><identity name=\"\"/></company-genesis>")
-            .expect_err("three problems");
-    assert_eq!(error.issues().len(), 3, "{error}");
+            .expect_err("five problems");
+    assert_eq!(error.issues().len(), 5, "{error}");
     // Bornite's own issues inside the nested rules surface as Irena issues.
     let bad_rules = GENESIS.replace("treatment=\"reject\"", "treatment=\"maybe\"");
     let error = read_company_genesis_document(&bad_rules).expect_err("bad rules");
@@ -874,6 +977,13 @@ fn composed_records_and_bodies_validate_against_the_published_schemas() {
     );
     check("rules-body", "bornite-voting-rules-v1.xsd", RULES);
     check("channels-body", "irena-company-v1.xsd", CHANNELS);
+    check("identities-body", "irena-company-v1.xsd", IDENTITIES);
+    check(
+        "empty-identities-body",
+        "irena-company-v1.xsd",
+        "<identities/>",
+    );
+    check("authorisation-body", "irena-company-v1.xsd", AUTHORISATION);
     for example in examples() {
         let xml = std::fs::read_to_string(&example).expect("read example");
         let schema = if xml.contains("<irena-record") {
@@ -934,6 +1044,10 @@ fn every_example_document_parses() {
             irena_core::read_decision_channels_document(&xml).map(|_| ())
         } else if xml.contains("<share-structure") {
             read_share_structure_document(&xml).map(|_| ())
+        } else if xml.contains("<identities") {
+            irena_core::read_identities_document(&xml).map(|_| ())
+        } else if xml.contains("<authorisation") {
+            irena_core::read_authorisation_document(&xml).map(|_| ())
         } else {
             panic!("{name}: unknown example document");
         };
@@ -1107,4 +1221,201 @@ fn channel_problems_are_reported_together() {
             "{label}"
         );
     }
+}
+
+#[test]
+fn identities_problems_are_reported_together() {
+    use irena_core::read_identities_document;
+    let bad = r#"<identities>
+  <person id="alice" key="4e9c4e9c4e9c4e9c4e9c4e9c4e9c4e9c4e9c4e9c4e9c4e9c4e9c4e9c4e9c4e9c"/>
+  <person id="alice"/>
+  <person id="bob" key="4e9c4e9c4e9c4e9c4e9c4e9c4e9c4e9c4e9c4e9c4e9c4e9c4e9c4e9c4e9c4e9c"/>
+</identities>"#;
+    let error = read_identities_document(bad).expect_err("bad identities");
+    let issues = error.issues();
+    assert!(
+        issues
+            .iter()
+            .any(|i| matches!(i, IssueV1::DuplicatePerson { .. })),
+        "{error}"
+    );
+    assert!(
+        issues
+            .iter()
+            .any(|i| matches!(i, IssueV1::DuplicateKey { .. })),
+        "{error}"
+    );
+    assert_eq!(issues.len(), 2, "{error}");
+
+    // Attribute-level problems are collected before the record is built.
+    let attributes = r#"<identities>
+  <person id="al ice"/>
+  <person id="bob" key="short"/>
+  <person/>
+</identities>"#;
+    let error = read_identities_document(attributes).expect_err("bad attributes");
+    let issues = error.issues();
+    assert_eq!(issues.len(), 3, "{error}");
+    assert!(
+        issues.iter().any(|i| matches!(
+            i,
+            IssueV1::InvalidValue {
+                element: "person",
+                attribute: "key",
+                ..
+            }
+        )),
+        "{error}"
+    );
+
+    // The document id is opaque and comes back exactly as written.
+    let read = read_identities_document(IDENTITIES).expect("read");
+    let alice = bornite_core::VoterIdV1::new("alice").unwrap();
+    assert_eq!(
+        read.get(&alice).unwrap().document_id.as_deref(),
+        Some("GB-P-123456789")
+    );
+    assert_eq!(
+        read.get(&alice).unwrap().name.as_deref(),
+        Some("Alice Smith")
+    );
+    let carol = bornite_core::VoterIdV1::new("carol").unwrap();
+    assert_eq!(read.get(&carol).unwrap().key, None);
+    assert!(
+        read_identities_document("<identities/>")
+            .expect("empty")
+            .is_empty()
+    );
+
+    // Structure is strict: unknown attributes and children stop the reader.
+    for (label, xml) in [
+        (
+            "unknown attribute",
+            "<identities><person id=\"a\" email=\"x\"/></identities>",
+        ),
+        (
+            "unknown child",
+            "<identities><signer person=\"a\"/></identities>",
+        ),
+        (
+            "nested child",
+            "<identities><person id=\"a\"><key/></person></identities>",
+        ),
+    ] {
+        assert!(
+            matches!(
+                read_identities_document(xml),
+                Err(IrenaError::Malformed { .. })
+            ),
+            "{label}"
+        );
+    }
+}
+
+#[test]
+fn authorisation_problems_are_reported_together() {
+    use irena_core::read_authorisation_document;
+    let bad = r#"<authorisation>
+  <signer person="bob" records="governance"/>
+  <signer person="bob" records="governance"/>
+</authorisation>"#;
+    let error = read_authorisation_document(bad).expect_err("bad authorisation");
+    let issues = error.issues();
+    assert!(
+        issues
+            .iter()
+            .any(|i| matches!(i, IssueV1::DuplicateSigner { .. })),
+        "{error}"
+    );
+    assert!(
+        issues.iter().any(|i| matches!(i, IssueV1::NoCompanySigner)),
+        "{error}"
+    );
+    assert_eq!(issues.len(), 2, "{error}");
+    // Nobody may sign anything: the company could never be amended.
+    let error = read_authorisation_document("<authorisation/>").expect_err("locked out");
+    assert_eq!(error.issues(), [IssueV1::NoCompanySigner], "{error}");
+
+    let attributes = r#"<authorisation>
+  <signer person="ja ne" records="company"/>
+  <signer person="jane" records="board"/>
+  <signer person="jane"/>
+  <signer records="company"/>
+</authorisation>"#;
+    let error = read_authorisation_document(attributes).expect_err("bad attributes");
+    let issues = error.issues();
+    assert_eq!(issues.len(), 4, "{error}");
+    assert!(
+        issues.iter().any(|i| matches!(
+            i,
+            IssueV1::InvalidValue {
+                element: "signer",
+                attribute: "records",
+                ..
+            }
+        )),
+        "{error}"
+    );
+
+    let read = read_authorisation_document(AUTHORISATION).expect("read");
+    let rows: Vec<(&str, irena_core::RecordFamilyV1)> = read
+        .signers()
+        .iter()
+        .map(|s| (s.person.as_str(), s.family))
+        .collect();
+    assert_eq!(
+        rows,
+        [
+            ("alice", irena_core::RecordFamilyV1::Governance),
+            ("jane", irena_core::RecordFamilyV1::Company),
+            ("jane", irena_core::RecordFamilyV1::Governance),
+        ],
+        "rows are sorted by person, then family"
+    );
+    for (label, xml) in [
+        (
+            "unknown attribute",
+            "<authorisation><signer person=\"a\" records=\"company\" since=\"x\"/></authorisation>",
+        ),
+        (
+            "unknown child",
+            "<authorisation><person id=\"a\"/></authorisation>",
+        ),
+    ] {
+        assert!(
+            matches!(
+                read_authorisation_document(xml),
+                Err(IrenaError::Malformed { .. })
+            ),
+            "{label}"
+        );
+    }
+}
+
+#[test]
+fn holders_and_members_no_longer_carry_keys() {
+    // A key on a holder or a member is an unknown attribute: the one key table is the
+    // identities part, and a document written for the older shape is refused outright.
+    let holder = SHARES.replace(
+        "<holder id=\"bob\"",
+        "<holder id=\"bob\" key=\"7b217b217b217b217b217b217b217b217b217b217b217b217b217b217b217b21\"",
+    );
+    assert!(
+        matches!(
+            read_share_structure_document(&holder),
+            Err(IrenaError::Malformed { .. })
+        ),
+        "holder key"
+    );
+    let member = CHANNELS.replace(
+        "<member id=\"chen\"",
+        "<member id=\"chen\" key=\"c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1\"",
+    );
+    assert!(
+        matches!(
+            irena_core::read_decision_channels_document(&member),
+            Err(IrenaError::Malformed { .. })
+        ),
+        "member key"
+    );
 }

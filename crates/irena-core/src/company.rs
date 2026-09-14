@@ -131,6 +131,10 @@ pub struct CompanyGenesisV1 {
     /// The initial governance configuration: every channel the company decides
     /// through, each with its actor source and mode.
     pub channels: crate::channel::DecisionChannelsV1,
+    /// The initial identities: every person and the key they sign with.
+    pub identities: crate::identities::IdentitiesV1,
+    /// The initial authorisation: who may sign which family of record.
+    pub authorisation: crate::authorisation::AuthorisationV1,
 }
 
 #[cfg(test)]

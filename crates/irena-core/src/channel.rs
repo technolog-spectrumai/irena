@@ -23,8 +23,6 @@
 use crate::error::{IrenaError, IssueV1};
 use bornite_core::VoterIdV1;
 use bornite_rules::VotingRulesV1;
-use prunella_core::PublicKey;
-use std::collections::BTreeMap;
 
 /// Maximum length of a channel id, in bytes.
 pub const MAX_CHANNEL_ID_LEN: usize = 64;
@@ -110,11 +108,10 @@ impl core::str::FromStr for ChannelIdV1 {
 /// One member of a roster.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
 pub struct MemberV1 {
-    /// The member's id, which is also their voter id: a member becomes a Bornite voter
-    /// with no translation, exactly as a shareholder does.
+    /// The member's id, which is also their voter id and their person id: a member
+    /// becomes a Bornite voter with no translation, exactly as a shareholder does, and
+    /// signs with their identity's key.
     pub id: VoterIdV1,
-    /// The key the member signs with, if they have registered one.
-    pub key: Option<PublicKey>,
     /// A display name. Opaque.
     pub name: Option<String>,
     /// Voting weight within the channel. At least one; `1` unless the document says
@@ -137,8 +134,8 @@ impl RosterV1 {
     /// # Errors
     ///
     /// Returns [`IrenaError::Invalid`] listing every problem at once: an empty roster,
-    /// duplicate ids, duplicate keys, zero weights, a total past `u64::MAX`, too many
-    /// members. `channel` names the channel in every issue.
+    /// duplicate ids, zero weights, a total past `u64::MAX`, too many members.
+    /// `channel` names the channel in every issue.
     pub fn new(channel: &ChannelIdV1, mut members: Vec<MemberV1>) -> Result<Self, IrenaError> {
         let mut issues = Vec::new();
         if members.len() > MAX_MEMBERS {
@@ -155,7 +152,6 @@ impl RosterV1 {
         members.sort_by(|left, right| left.id.cmp(&right.id));
 
         let mut previous: Option<&VoterIdV1> = None;
-        let mut keys: BTreeMap<&PublicKey, &VoterIdV1> = BTreeMap::new();
         let mut total: u64 = 0;
         let mut overflowed = false;
         for member in &members {
@@ -170,16 +166,6 @@ impl RosterV1 {
                 issues.push(IssueV1::ZeroWeight {
                     channel: channel.clone(),
                     id: member.id.clone(),
-                });
-            }
-            if let Some(key) = &member.key
-                && let Some(first) = keys.insert(key, &member.id)
-                && first != &member.id
-            {
-                issues.push(IssueV1::DuplicateMemberKey {
-                    channel: channel.clone(),
-                    first: first.clone(),
-                    second: member.id.clone(),
                 });
             }
             match total.checked_add(member.weight) {
@@ -375,10 +361,9 @@ impl DecisionChannelsV1 {
 mod tests {
     use super::*;
 
-    fn member(id: &str, weight: u64, key: Option<u8>) -> MemberV1 {
+    fn member(id: &str, weight: u64) -> MemberV1 {
         MemberV1 {
             id: VoterIdV1::new(id).expect("id"),
-            key: key.map(|byte| PublicKey::from_bytes([byte; 32])),
             name: None,
             weight,
         }
@@ -427,11 +412,7 @@ mod tests {
     fn a_roster_is_sorted_and_looked_up_by_id() {
         let roster = RosterV1::new(
             &id("board"),
-            vec![
-                member("vance", 1, None),
-                member("chen", 2, Some(1)),
-                member("okafor", 1, Some(2)),
-            ],
+            vec![member("vance", 1), member("chen", 2), member("okafor", 1)],
         )
         .expect("valid");
         let ids: Vec<&str> = roster.members().iter().map(|m| m.id.as_str()).collect();
@@ -449,10 +430,10 @@ mod tests {
         let error = RosterV1::new(
             &id("board"),
             vec![
-                member("a", 0, Some(1)),
-                member("a", 5, None),
-                member("b", u64::MAX, Some(1)),
-                member("c", 1, None),
+                member("a", 0),
+                member("a", 5),
+                member("b", u64::MAX),
+                member("c", 1),
             ],
         )
         .expect_err("many problems");
@@ -470,14 +451,9 @@ mod tests {
         assert!(
             issues
                 .iter()
-                .any(|i| matches!(i, IssueV1::DuplicateMemberKey { .. }))
-        );
-        assert!(
-            issues
-                .iter()
                 .any(|i| matches!(i, IssueV1::TotalWeightOverflow { .. }))
         );
-        assert_eq!(issues.len(), 4, "{error}");
+        assert_eq!(issues.len(), 3, "{error}");
 
         let empty = RosterV1::new(&id("ceo"), Vec::new()).expect_err("empty");
         assert!(matches!(empty.issues(), [IssueV1::EmptyRoster { .. }]));
@@ -488,7 +464,7 @@ mod tests {
         let ceo = DecisionChannelV1 {
             id: id("ceo"),
             actors: ActorSourceV1::Roster(
-                RosterV1::new(&id("ceo"), vec![member("chen", 1, Some(1))]).unwrap(),
+                RosterV1::new(&id("ceo"), vec![member("chen", 1)]).unwrap(),
             ),
             mode: ChannelModeV1::Individual,
         };

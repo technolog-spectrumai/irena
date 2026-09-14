@@ -23,7 +23,7 @@
       </channel>
   <channel id="board" mode="collective">
     <actors source="roster">
-      <member id="chen" key="ca93ac1705187071d67b83c7ff0efe8108e8ec4530575d7726879333dbdabe7c" name="M. Chen" weight="2"/>
+      <member id="chen" name="M. Chen" weight="2"/>
     </actors>
     <voting-rules version="1.0">
       <weight type="electorate"/>
@@ -37,7 +37,7 @@
   <channel id="ceo" mode="individual">
         <!-- One actor signs. The source must resolve to exactly one actor. -->
         <actors source="roster">
-          <member id="chen" key="ca93ac1705187071d67b83c7ff0efe8108e8ec4530575d7726879333dbdabe7c" name="M. Chen"/>
+          <member id="chen" name="M. Chen"/>
         </actors>
       </channel>
 </decision-channels>

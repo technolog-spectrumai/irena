@@ -56,17 +56,39 @@ pub enum IssueV1 {
         /// The repeated id.
         id: VoterIdV1,
     },
-    /// Two holders share a signing key.
+    /// Two persons share a signing key.
     ///
-    /// One key voting for two holders would let one person cast two ballots that
-    /// Bornite cannot tell apart from two people's.
-    #[error("holders {first} and {second} declare the same signing key")]
+    /// One key for two persons would let one signature be two people's.
+    #[error("{first} and {second} declare the same signing key")]
     DuplicateKey {
-        /// The holder listed first, in id order.
+        /// The person listed first, in id order.
         first: VoterIdV1,
         /// The other.
         second: VoterIdV1,
     },
+    /// Two persons share an id.
+    #[error("person {id} is declared more than once")]
+    DuplicatePerson {
+        /// The repeated id.
+        id: VoterIdV1,
+    },
+    /// An identities record lists more persons than the reader accepts.
+    #[error("identities list more than {limit} persons")]
+    TooManyPersons {
+        /// The limit.
+        limit: usize,
+    },
+    /// The same signer row appears twice.
+    #[error("{person} is listed twice as a {family} signer")]
+    DuplicateSigner {
+        /// The person.
+        person: VoterIdV1,
+        /// The family.
+        family: crate::RecordFamilyV1,
+    },
+    /// Nobody may sign company amendments.
+    #[error("no person may sign company records; the company could never be amended")]
+    NoCompanySigner,
     /// A holder holds nothing.
     #[error("holder {id} holds zero shares; a holder of nothing is a mistake, not a member")]
     ZeroShares {
@@ -113,16 +135,6 @@ pub enum IssueV1 {
         channel: crate::ChannelIdV1,
         /// The repeated id.
         id: VoterIdV1,
-    },
-    /// Two members of one roster share a signing key.
-    #[error("channel {channel}: members {first} and {second} declare the same signing key")]
-    DuplicateMemberKey {
-        /// The channel.
-        channel: crate::ChannelIdV1,
-        /// The member listed first, in id order.
-        first: VoterIdV1,
-        /// The other.
-        second: VoterIdV1,
     },
     /// A member carries no weight.
     #[error("channel {channel}: member {id} has zero weight; a member of nothing is a mistake")]

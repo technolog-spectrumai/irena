@@ -1,20 +1,18 @@
-//! The share register: who holds how many shares, and the key each votes with.
+//! The share register: who holds how many shares.
 //!
 //! **Flat shares.** Every share is one vote, so a holder is a holding and one element
 //! carries both. There are no share classes; when they arrive they are a new version of
 //! this body, not an attribute added to it, so a flat register stays readable forever
 //! and the derivation `weight = shares` changes in exactly one place.
 //!
-//! The register carries the holders' **signing keys**. That is what lets a later vote
-//! check that a ballot came from a registered holder without any key table of its own:
-//! keys are company data, on the chain, amended through the same chain as everything
-//! else. A holder without a key is a shareholder who cannot cast a ballot but still
-//! owns their shares — they are in the electorate and count towards quorum.
+//! A holder carries no key. Their id is a person's id, and the key they sign with is
+//! the one their identity holds (`crate::IdentitiesV1`) at the frozen height. A holder
+//! whose identity has no key, or who has no identity, is a shareholder who cannot cast
+//! a ballot but still owns their shares — they are in the electorate and count towards
+//! quorum.
 
 use crate::error::{IrenaError, IssueV1};
 use bornite_core::VoterIdV1;
-use prunella_core::PublicKey;
-use std::collections::BTreeMap;
 
 /// Largest number of holders a share structure may list.
 ///
@@ -24,11 +22,9 @@ pub const MAX_HOLDERS: usize = 1_000_000;
 /// One shareholder.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
 pub struct HolderV1 {
-    /// The holder's id, which is also their voter id: a holder becomes a Bornite voter
-    /// with no translation.
+    /// The holder's id, which is also their voter id and their person id: a holder
+    /// becomes a Bornite voter with no translation, and signs with their identity's key.
     pub id: VoterIdV1,
-    /// The key the holder signs ballots with, if they have registered one.
-    pub key: Option<PublicKey>,
     /// A display name. Opaque.
     pub name: Option<String>,
     /// How many shares. At least one.
@@ -51,7 +47,7 @@ impl ShareStructureV1 {
     /// # Errors
     ///
     /// Returns [`IrenaError::Invalid`] listing every problem at once: duplicate ids,
-    /// duplicate keys, zero holdings, a total past `u64::MAX`, too many holders.
+    /// zero holdings, a total past `u64::MAX`, too many holders.
     pub fn new(mut holders: Vec<HolderV1>) -> Result<Self, IrenaError> {
         let mut issues = Vec::new();
         if holders.len() > MAX_HOLDERS {
@@ -62,7 +58,6 @@ impl ShareStructureV1 {
         holders.sort_by(|left, right| left.id.cmp(&right.id));
 
         let mut previous: Option<&VoterIdV1> = None;
-        let mut keys: BTreeMap<&PublicKey, &VoterIdV1> = BTreeMap::new();
         let mut total: u64 = 0;
         let mut overflowed = false;
         for holder in &holders {
@@ -75,15 +70,6 @@ impl ShareStructureV1 {
             if holder.shares == 0 {
                 issues.push(IssueV1::ZeroShares {
                     id: holder.id.clone(),
-                });
-            }
-            if let Some(key) = &holder.key
-                && let Some(first) = keys.insert(key, &holder.id)
-                && first != &holder.id
-            {
-                issues.push(IssueV1::DuplicateKey {
-                    first: first.clone(),
-                    second: holder.id.clone(),
                 });
             }
             match total.checked_add(holder.shares) {
@@ -138,10 +124,9 @@ impl ShareStructureV1 {
 mod tests {
     use super::*;
 
-    fn holder(id: &str, shares: u64, key: Option<u8>) -> HolderV1 {
+    fn holder(id: &str, shares: u64) -> HolderV1 {
         HolderV1 {
             id: VoterIdV1::new(id).expect("id"),
-            key: key.map(|byte| PublicKey::from_bytes([byte; 32])),
             name: None,
             shares,
         }
@@ -150,9 +135,9 @@ mod tests {
     #[test]
     fn a_register_is_sorted_and_totalled() {
         let register = ShareStructureV1::new(vec![
-            holder("carol", 200, None),
-            holder("alice", 500, Some(1)),
-            holder("bob", 300, Some(2)),
+            holder("carol", 200),
+            holder("alice", 500),
+            holder("bob", 300),
         ])
         .expect("valid");
         let ids: Vec<&str> = register.holders().iter().map(|h| h.id.as_str()).collect();
@@ -171,10 +156,10 @@ mod tests {
     #[test]
     fn every_problem_is_reported_together() {
         let error = ShareStructureV1::new(vec![
-            holder("alice", 0, Some(1)),
-            holder("alice", 5, None),
-            holder("bob", u64::MAX, Some(1)),
-            holder("carol", 1, None),
+            holder("alice", 0),
+            holder("alice", 5),
+            holder("bob", u64::MAX),
+            holder("carol", 1),
         ])
         .expect_err("many problems");
         let issues = error.issues();
@@ -191,22 +176,15 @@ mod tests {
         assert!(
             issues
                 .iter()
-                .any(|i| matches!(i, IssueV1::DuplicateKey { .. }))
-        );
-        assert!(
-            issues
-                .iter()
                 .any(|i| matches!(i, IssueV1::TotalSharesOverflow { .. }))
         );
-        assert_eq!(issues.len(), 4, "{error}");
+        assert_eq!(issues.len(), 3, "{error}");
     }
 
     #[test]
     fn issue_order_does_not_depend_on_input_order() {
-        let a = ShareStructureV1::new(vec![holder("b", 0, None), holder("a", 0, None)])
-            .expect_err("zero");
-        let b = ShareStructureV1::new(vec![holder("a", 0, None), holder("b", 0, None)])
-            .expect_err("zero");
+        let a = ShareStructureV1::new(vec![holder("b", 0), holder("a", 0)]).expect_err("zero");
+        let b = ShareStructureV1::new(vec![holder("a", 0), holder("b", 0)]).expect_err("zero");
         assert_eq!(a, b);
     }
 

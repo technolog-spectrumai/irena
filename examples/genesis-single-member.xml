@@ -6,12 +6,18 @@
 
   The day a second holder is admitted, this channel stops resolving (two actors in
   individual mode) until the channel set is amended - Irena reports it, never guesses.
+
+  Ada is also the only person who may sign record transactions, for both families:
+  in a one-person company the member, the secretary and the notary's hand are one.
 -->
 <company-genesis>
   <identity name="Ada Lovelace Consulting Ltd" jurisdiction="gb" registered-number="07654321"/>
   <share-structure>
-    <holder id="ada" key="ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c" name="Ada Lovelace" shares="1"/>
+    <holder id="ada" name="Ada Lovelace" shares="1"/>
   </share-structure>
+  <identities>
+    <person id="ada" name="Ada Lovelace" key="ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c"/>
+  </identities>
   <governance>
     <decision-channels>
       <channel id="owner" mode="individual">
@@ -19,4 +25,8 @@
       </channel>
     </decision-channels>
   </governance>
+  <authorisation>
+    <signer person="ada" records="company"/>
+    <signer person="ada" records="governance"/>
+  </authorisation>
 </company-genesis>

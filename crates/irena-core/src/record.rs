@@ -1,13 +1,16 @@
 //! The notarised envelope that carries company data on the ledger.
 //!
 //! One envelope, one body. The first record of a company is its genesis, which carries
-//! everything; every later record amends exactly one part — identity, share register
-//! or decision channels — and names the record that currently provides that part. The
+//! everything; every later record amends exactly one part — identity, share register,
+//! decision channels, identities or authorisation — and names the record that
+//! currently provides that part. The
 //! company at any height is the genesis plus the amendments up to there, applied in
 //! chain order (`irena-ledger`).
 
+use crate::authorisation::AuthorisationV1;
 use crate::channel::DecisionChannelsV1;
 use crate::company::{CompanyGenesisV1, CompanyIdV1, IdentityV1};
+use crate::identities::IdentitiesV1;
 use crate::notarisation::NotarisationV1;
 use crate::shares::ShareStructureV1;
 use prunella_core::TxId;
@@ -30,20 +33,31 @@ pub enum RecordKindV1 {
     ShareStructure,
     /// A `<decision-channels>` element: amends who decides, and how.
     DecisionChannels,
+    /// An `<identities>` element: amends who the persons are and which key each signs with.
+    Identities,
+    /// An `<authorisation>` element: amends who may sign which family of record.
+    Authorisation,
 }
 
 impl RecordKindV1 {
     /// Every kind, in a fixed order.
-    pub const ALL: [Self; 4] = [
+    pub const ALL: [Self; 6] = [
         Self::CompanyGenesis,
         Self::Identity,
         Self::ShareStructure,
         Self::DecisionChannels,
+        Self::Identities,
+        Self::Authorisation,
     ];
 
     /// The kinds that amend one part of a founded company.
-    pub const AMENDMENTS: [Self; 3] =
-        [Self::Identity, Self::ShareStructure, Self::DecisionChannels];
+    pub const AMENDMENTS: [Self; 5] = [
+        Self::Identity,
+        Self::ShareStructure,
+        Self::DecisionChannels,
+        Self::Identities,
+        Self::Authorisation,
+    ];
 
     /// The attribute text.
     #[must_use]
@@ -53,6 +67,8 @@ impl RecordKindV1 {
             Self::Identity => "identity",
             Self::ShareStructure => "share-structure",
             Self::DecisionChannels => "decision-channels",
+            Self::Identities => "identities",
+            Self::Authorisation => "authorisation",
         }
     }
 
@@ -69,6 +85,8 @@ impl RecordKindV1 {
             Self::CompanyGenesis | Self::Identity => "irena.company.v1",
             Self::ShareStructure => "irena.shares.v1",
             Self::DecisionChannels => "irena.channels.v1",
+            Self::Identities => "irena.identities.v1",
+            Self::Authorisation => "irena.authorisation.v1",
         }
     }
 
@@ -97,6 +115,10 @@ pub enum RecordBodyV1 {
     ShareStructure(ShareStructureV1),
     /// An amended channel set.
     DecisionChannels(DecisionChannelsV1),
+    /// Amended identities.
+    Identities(IdentitiesV1),
+    /// Amended authorisation.
+    Authorisation(AuthorisationV1),
 }
 
 impl RecordBodyV1 {
@@ -108,6 +130,8 @@ impl RecordBodyV1 {
             Self::Identity(_) => RecordKindV1::Identity,
             Self::ShareStructure(_) => RecordKindV1::ShareStructure,
             Self::DecisionChannels(_) => RecordKindV1::DecisionChannels,
+            Self::Identities(_) => RecordKindV1::Identities,
+            Self::Authorisation(_) => RecordKindV1::Authorisation,
         }
     }
 }
@@ -153,7 +177,7 @@ mod tests {
         namespaces.dedup();
         assert_eq!(
             namespaces.len(),
-            3,
+            5,
             "genesis and identity share a namespace"
         );
         assert_eq!(RecordKindV1::parse("roll"), None);

@@ -21,10 +21,10 @@
       </channel>
   <channel id="board" mode="collective">
         <!-- A roster listed inline. The chair carries weight 2; weight defaults to 1.
-             Vance has registered no key: counted in the electorate, unable to sign. -->
+             Keys come from <identities>: Vance has none, so counted, unable to sign. -->
         <actors source="roster">
-          <member id="chen" key="ca93ac1705187071d67b83c7ff0efe8108e8ec4530575d7726879333dbdabe7c" name="M. Chen" weight="2"/>
-          <member id="okafor" key="6e7a1cdd29b0b78fd13af4c5598feff4ef2a97166e3ca6f2e4fbfccd80505bf1" name="A. Okafor"/>
+          <member id="chen" name="M. Chen" weight="2"/>
+          <member id="okafor" name="A. Okafor"/>
           <member id="vance" name="R. Vance"/>
         </actors>
         <voting-rules version="1.0">

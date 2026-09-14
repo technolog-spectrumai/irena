@@ -2,13 +2,14 @@
 <!--
   Irena company bodies, version 1.
 
-  Two elements a company puts on its ledger, each carried by an <irena-record>
+  The elements a company puts on its ledger, each carried by an <irena-record>
   (irena-record-v1.xsd) or read on its own:
 
     <company-genesis>    the whole company as founded: <identity>, an optional
-                         <incorporation>, the initial <share-structure> and <governance>
-                         wrapping <decision-channels>. One document founds a company;
-                         later records amend one part of it each.
+                         <incorporation>, the initial <share-structure>, <identities>,
+                         <governance> wrapping <decision-channels>, and <authorisation>.
+                         One document founds a company; later records amend one part
+                         of it each.
     <identity>           who the company is: name, jurisdiction, registration.
     <share-structure>    the share register. FLAT SHARES: every share is one vote, so a
                          holder is a holding and one element carries both. There are no
@@ -33,14 +34,31 @@
                          Notarisation is the trust boundary. A channel says nothing about
                          WHAT its actors may decide; scoping is not in version 1.
 
-  The register carries each holder's signing key. That is what lets a vote check that
-  a ballot came from a registered holder: keys are company data, on the chain, amended
-  through the same chain as everything else. A holder without a key owns their shares
-  and counts towards quorum but cannot cast a ballot.
+    <identities>         THE ONE KEY TABLE. A <person> has a stable id (the same
+                         grammar as a holder or member id, so a person is a holder, a
+                         member or a signer with no translation), an optional name, an
+                         optional external document id (national id, passport - opaque)
+                         and at most one current Ed25519 key. Holders and members carry
+                         an id only; whatever they sign is checked against the key their
+                         identity holds in the identities record in force at the frozen
+                         height. Rotating a key is one identities amendment, seen by
+                         every channel the person sits on. A person without a key is
+                         registered but cannot sign: counted towards quorum, no ballot,
+                         decision or record transaction can be theirs.
+    <authorisation>      who may sign record TRANSACTIONS, per family:
+                           records="company"     amendments to any company part
+                           records="governance"  meetings, votes, decisions,
+                                                 resolutions, executions
+                         The ledger refuses a company record whose transaction signer is
+                         not a company signer's current key; every governance verifier
+                         reports the same for its family. A company signer may rewrite
+                         the register without any channel deciding: that is the notary's
+                         route by design, and this record is exactly who may take it.
 
   Constraints XSD 1.0 cannot express are enforced by the reader: holder ids unique,
-  signing keys unique across holders, shares at least one, total shares within u64;
-  channel ids unique, at least one channel, member ids and keys unique within a roster,
+  shares at least one, total shares within u64; person ids unique, one key on at most
+  one person; signer rows unique, at least one company signer (the lockout rule);
+  channel ids unique, at least one channel, member ids unique within a roster,
   weights at least one, a roster non-empty, <member>s only under source="roster",
   <voting-rules> present exactly when mode="collective".
 -->
@@ -101,8 +119,6 @@
   <xs:complexType name="Member">
     <!-- Also the member's Bornite voter id: same grammar, no translation. -->
     <xs:attribute name="id" type="VoterId" use="required"/>
-    <!-- Ed25519 public key the member signs with. Absent: cannot sign. -->
-    <xs:attribute name="key" type="Hex32" use="optional"/>
     <xs:attribute name="name" type="xs:string" use="optional"/>
     <!-- At least one; the reader refuses zero. Default 1. -->
     <xs:attribute name="weight" type="xs:unsignedLong" use="optional" default="1"/>
@@ -142,7 +158,45 @@
         </xs:complexType>
       </xs:element>
       <xs:element name="share-structure" type="ShareStructure" minOccurs="1" maxOccurs="1"/>
+      <xs:element name="identities" type="Identities" minOccurs="1" maxOccurs="1"/>
       <xs:element name="governance" type="Governance" minOccurs="1" maxOccurs="1"/>
+      <xs:element name="authorisation" type="Authorisation" minOccurs="1" maxOccurs="1"/>
+    </xs:sequence>
+  </xs:complexType>
+
+  <xs:complexType name="Person">
+    <!-- Also the person's id as a holder, member or signer: same grammar, no translation. -->
+    <xs:attribute name="id" type="VoterId" use="required"/>
+    <xs:attribute name="name" type="xs:string" use="optional"/>
+    <!-- An external identity document number (national id, passport). Opaque. -->
+    <xs:attribute name="document-id" type="xs:string" use="optional"/>
+    <!-- Ed25519 public key the person currently signs with. Absent: cannot sign. -->
+    <xs:attribute name="key" type="Hex32" use="optional"/>
+  </xs:complexType>
+
+  <xs:complexType name="Identities">
+    <xs:sequence>
+      <xs:element name="person" type="Person" minOccurs="0" maxOccurs="unbounded"/>
+    </xs:sequence>
+  </xs:complexType>
+
+  <xs:simpleType name="RecordFamily">
+    <xs:restriction base="xs:string">
+      <xs:enumeration value="company"/>
+      <xs:enumeration value="governance"/>
+    </xs:restriction>
+  </xs:simpleType>
+
+  <!-- One person may sign one family of record transactions. -->
+  <xs:complexType name="Signer">
+    <xs:attribute name="person" type="VoterId" use="required"/>
+    <xs:attribute name="records" type="RecordFamily" use="required"/>
+  </xs:complexType>
+
+  <!-- At least one records="company" row (enforced by the reader). -->
+  <xs:complexType name="Authorisation">
+    <xs:sequence>
+      <xs:element name="signer" type="Signer" minOccurs="0" maxOccurs="unbounded"/>
     </xs:sequence>
   </xs:complexType>
 
@@ -152,8 +206,6 @@
         <xs:complexType>
           <!-- Also the holder's Bornite voter id: same grammar, no translation. -->
           <xs:attribute name="id" type="VoterId" use="required"/>
-          <!-- Ed25519 public key the holder signs ballots with. Absent: cannot vote. -->
-          <xs:attribute name="key" type="Hex32" use="optional"/>
           <xs:attribute name="name" type="xs:string" use="optional"/>
           <!-- At least one; the reader refuses zero. -->
           <xs:attribute name="shares" type="xs:unsignedLong" use="required"/>
@@ -166,5 +218,7 @@
   <xs:element name="identity" type="Identity"/>
   <xs:element name="share-structure" type="ShareStructure"/>
   <xs:element name="decision-channels" type="DecisionChannels"/>
+  <xs:element name="identities" type="Identities"/>
+  <xs:element name="authorisation" type="Authorisation"/>
 
 </xs:schema>
