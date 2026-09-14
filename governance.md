@@ -370,6 +370,58 @@ A committee with unequal weights and a two-thirds threshold now exists (blocks 1
 the board decided *collectively* — and the verification says so rather than staying
 silent about it.
 
+### Blocks 21–24 — the chair's key is rotated
+
+M. Chen's laptop is replaced, and with it the key they sign with. Nothing about the
+board changes, nothing about the channels changes: one record says which key is Chen's
+now, and Jane files it.
+
+```console
+$ irena publish-identities --file identities-rotate-chen.xml --signing-key k9.key \
+      --supersedes a29e… --notary-id notary-07 …
+published identities for acme at height 21 as 7c5e…
+
+$ irena identities
+8 person(s); 6 hold a key
+  chen      M. Chen       ed4928c628d1c2c6…    may sign: nothing
+  quinn     S. Quinn      1398f62c6d1a457c…    may sign: nothing
+  …
+```
+
+The same record registers S. Quinn, who sits on the audit committee created three
+blocks earlier and until now could be counted but could not sign. At the next board
+meeting, the old key is simply nobody's:
+
+```console
+$ irena meeting cast --state board2.state --item 1 --ballot chen-old.ballot
+error: item 1: ballot rejected: the signature from chen does not verify
+
+$ irena meeting cast --state board2.state --item 1 --ballot chen-new.ballot
+accepted a yes ballot from chen on item 1; 1 ballot(s) so far
+```
+
+One record, every channel. And the votes already on the chain are untouched: each of
+them froze the identities record it was decided against, so the board's vote at block
+16 still verifies today with the key Chen held then.
+
+### Block 25 — a second secretary, and the one thing nobody may do
+
+The company adds Okafor beside Jane as someone who may file amendments. That is an
+authorisation amendment, and it is filed the ordinary way. The refusal worth seeing is
+the other one — an authorisation that would leave nobody able to amend the company
+again:
+
+```console
+$ irena publish-authorisation --file lockout.xml --signing-key k9.key --supersedes a29e… …
+error: the record would lock the company out: no company signer holds a key; company
+signers: carol (no key)
+```
+
+Carol is a real person in the company; she has never registered a key. A company whose
+only authorised writer cannot sign is a company nobody can ever amend, so the record is
+refused before it is written — and the same record forced onto the chain around Irena
+stops reconstruction where it sits.
+
 ### The finished chain
 
 ```text
@@ -394,9 +446,14 @@ height 17   irena.meeting.v1      the board meeting's record
 height 18   irena.resolution.v1   resolution 5, on the board's vote
 height 19   irena.channels.v1     AMENDMENT — an audit committee
 height 20   irena.execution.v1    the link back to resolution 5
+height 21   irena.identities.v1   AMENDMENT — Chen's new key, and Quinn registered
+height 22   irena.meeting.v1      board meeting convened
+height 23   irena.vote.v1         the board's vote, signed with the new key
+height 24   irena.meeting.v1      the board meeting's record
+height 25   irena.authorisation.v1 AMENDMENT — a second secretary
 ```
 
-Twenty-one blocks, four decisions, three channels, three amendments. Every step
+Twenty-six blocks, five decisions, three channels, five amendments. Every step
 separately checkable, and the blocks that changed the company are the plainest of them
 all.
 
@@ -423,6 +480,7 @@ execution that abolished the `ceo` channel:
 | — the proposal matches | the channel set in the resolution is the one Chen signed for |
 | — the company matches | resolution, decision and chain are one company |
 | — the heights are ordered | decision, then resolution |
+| — the signer was authorised | the key that filed the resolution was, at that height, a person the company authorised for governance records |
 | the resolution authorises this | it is an amendment resolution, for this part of the company |
 | the amendment exists | the transaction named is a real channel-set record |
 | the amendment matches the resolution | byte for byte the approved document |
@@ -430,6 +488,7 @@ execution that abolished the `ceo` channel:
 | **self-demotion holds** | *chen keeps 1 seat unchanged (board) and gains none; gives up ceo* |
 | the amendment took effect | it is genuinely in the company's history, not orphaned |
 | the heights are ordered | resolution, then amendment, then execution |
+| the signer was authorised | the key that filed the execution was one the company authorised, at that height |
 | executed once | no second execution of the same resolution |
 
 For a resolution that rests on a vote, the decision check is replaced by five: the
