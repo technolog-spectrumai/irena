@@ -50,6 +50,23 @@ is, and it does not know what the law says a board may do. What it knows is that
 change to who decides is an amendment like any other, with a history, and that a person
 who rewrites that list alone may only ever write themselves *down*.
 
+**Who may write is itself a record.**
+
+Every record reaches the ledger signed by a key, and the company says whose key that
+may be. One list — the **identities** — holds every person the company knows: the id
+they hold shares or a seat under, a name, sometimes a passport or national-id number,
+and the one key they currently sign with. A second — the **authorisation** — says which
+kind of record each of them may put on the chain: amendments to the company, or the
+records of governance (meetings, votes, decisions, resolutions). Because the key lives
+in one place, rotating it is one amendment, and every channel that person sits on sees
+the new key the moment it lands; anything already frozen keeps the key it froze.
+
+Two things follow, and both are said out loud rather than hidden. A person authorised
+for company records can rewrite the register **with no channel deciding anything** —
+that is the company secretary's route, and the list is exactly who may take it. And no
+record may leave the company without at least one such person holding a key, so a
+company can never lose the ability to amend itself.
+
 What joins all of it is a chain of references, each pinned to an exact transaction:
 
 ```text
@@ -83,8 +100,9 @@ $ irena init --network acme-net --company acme --genesis genesis-three-channels.
 genesis record: fd171178…
 ```
 
-One document founds the company: who it is, who holds its shares (with the signing key
-each shareholder votes with), and its decision channels. It goes into block 0 as
+One document founds the company: who it is, who holds its shares, who its people are
+and what key each signs with, its decision channels, and who may put records on the
+chain. It goes into block 0 as
 `irena.company.v1`, notarised by Jane Roe. From here the company is never edited. It is
 *reconstructed* — read the genesis, apply every amendment in order — and asking for
 height 6 gives you the company as it was at height 6, whatever has happened since.
@@ -102,7 +120,33 @@ $ irena channels
       alice      weight 500  can sign
       bob        weight 300  can sign
       carol      weight 200  no key: cannot sign
+
+$ irena identities
+7 person(s); 5 hold a key; a person's key is their voice in every channel they sit on
+  alice     Alice Smith   8a88e3dd7409f195…    may sign: nothing
+  bob       Bob Jones     8139770ea87d175f…    may sign: nothing
+  carol     Carol White   no key: cannot sign  may sign: nothing
+  chen      M. Chen       ca93ac1705187071…    may sign: nothing
+  jane      Jane Roe      fd1724385aa0c75b…    may sign: company, governance
+  okafor    A. Okafor     6e7a1cdd29b0b78f…    may sign: nothing
+  vance     R. Vance      no key: cannot sign  may sign: nothing
 ```
+
+Neither the register nor the channels carry a key: they carry ids, and this one list
+says what each id signs with. Carol and Vance are in the company and hold no key — they
+count towards quorum wherever they sit and can sign nothing. Jane Roe holds no shares
+and sits on no channel; she is the company secretary, and she is the only person who
+may put a record on this chain. Alice owns half the company and may not write to it at
+all:
+
+```console
+$ irena publish-shares --file shares-buyout.xml --signing-key alice.key --supersedes a29e… …
+error: unauthorised signer for company records: key 8a88…: alice holds this key but is
+not a company signer in the authorisation in force
+```
+
+That is the separation the company chose when it was founded: deciding and writing are
+different jobs, and the second one is a list you can read.
 
 Three ways to decide, three configurations of the same thing. The shareholders' channel
 takes its people from the register, so Alice's weight is her 500 shares. The board is a
