@@ -11,6 +11,13 @@
         <!-- Every holder of the register in force when a decision is frozen; one share,
              one vote. Bornite's rules, unchanged. -->
         <actors source="share-register"/>
+        <scope>
+          <amend part="identity"/>
+          <amend part="share-structure"/>
+          <amend part="decision-channels"/>
+          <amend part="identities"/>
+          <amend part="authorisation"/>
+        </scope>
         <voting-rules version="1.0">
           <weight type="electorate"/>
           <exclusions enabled="true"/>

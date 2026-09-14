@@ -64,6 +64,13 @@ fn channels(rules: &str) -> String {
         r#"<decision-channels>
   <channel id="shareholders" mode="collective">
     <actors source="share-register"/>
+    <scope>
+      <amend part="identity"/>
+      <amend part="share-structure"/>
+      <amend part="decision-channels"/>
+      <amend part="identities"/>
+      <amend part="authorisation"/>
+    </scope>
     {rules}
   </channel>
   <channel id="board" mode="collective">
@@ -72,6 +79,13 @@ fn channels(rules: &str) -> String {
       <member id="dir-a"/>
       <member id="dir-b"/>
     </actors>
+    <scope>
+      <amend part="identity"/>
+      <amend part="share-structure"/>
+      <amend part="decision-channels"/>
+      <amend part="identities"/>
+      <amend part="authorisation"/>
+    </scope>
     <voting-rules version="1.0">
       <weight type="electorate"/>
       <exclusions enabled="false"/>
@@ -85,6 +99,13 @@ fn channels(rules: &str) -> String {
     <actors source="roster">
       <member id="chair" name="M. Chen"/>
     </actors>
+    <scope>
+      <amend part="identity"/>
+      <amend part="share-structure"/>
+      <amend part="decision-channels"/>
+      <amend part="identities"/>
+      <amend part="authorisation"/>
+    </scope>
   </channel>
 </decision-channels>
 "#
@@ -1625,7 +1646,7 @@ fn a_passed_vote_becomes_a_resolution_that_changes_the_company() {
     assert_eq!(json["checks"].as_array().map(Vec::len), Some(11));
     assert_eq!(
         json["resolution"]["checks"].as_array().map(Vec::len),
-        Some(11)
+        Some(12)
     );
     assert!(
         json["checks"]

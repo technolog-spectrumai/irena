@@ -48,6 +48,13 @@ const RULES_V2: &str = r#"<voting-rules version="1.0">
 const CHANNELS_V1: &str = r#"<decision-channels>
   <channel id="shareholders" mode="collective">
     <actors source="share-register"/>
+    <scope>
+      <amend part="identity"/>
+      <amend part="share-structure"/>
+      <amend part="decision-channels"/>
+      <amend part="identities"/>
+      <amend part="authorisation"/>
+    </scope>
     <voting-rules version="1.0">
   <weight type="electorate"/>
   <exclusions enabled="true"/>
@@ -63,6 +70,13 @@ const CHANNELS_V1: &str = r#"<decision-channels>
 const CHANNELS_V2: &str = r#"<decision-channels>
   <channel id="shareholders" mode="collective">
     <actors source="share-register"/>
+    <scope>
+      <amend part="identity"/>
+      <amend part="share-structure"/>
+      <amend part="decision-channels"/>
+      <amend part="identities"/>
+      <amend part="authorisation"/>
+    </scope>
     <voting-rules version="1.0">
   <weight type="electorate"/>
   <exclusions enabled="true"/>
@@ -76,6 +90,13 @@ const CHANNELS_V2: &str = r#"<decision-channels>
     <actors source="roster">
       <member id="chen"/>
     </actors>
+    <scope>
+      <amend part="identity"/>
+      <amend part="share-structure"/>
+      <amend part="decision-channels"/>
+      <amend part="identities"/>
+      <amend part="authorisation"/>
+    </scope>
   </channel>
 </decision-channels>"#;
 

@@ -12,6 +12,13 @@
         <!-- Every holder of the register in force when a decision is frozen; one share,
              one vote. Bornite's rules, unchanged. -->
         <actors source="share-register"/>
+        <scope>
+          <amend part="identity"/>
+          <amend part="share-structure"/>
+          <amend part="decision-channels"/>
+          <amend part="identities"/>
+          <amend part="authorisation"/>
+        </scope>
         <voting-rules version="1.0">
           <weight type="electorate"/>
           <exclusions enabled="true"/>
@@ -25,6 +32,10 @@
     <actors source="roster">
       <member id="chen" name="M. Chen" weight="2"/>
     </actors>
+    <scope>
+      <amend part="decision-channels"/>
+      <amend part="identities"/>
+    </scope>
     <voting-rules version="1.0">
       <weight type="electorate"/>
       <exclusions enabled="false"/>
@@ -39,5 +50,8 @@
         <actors source="roster">
           <member id="chen" name="M. Chen"/>
         </actors>
+        <scope>
+          <amend part="decision-channels"/>
+        </scope>
       </channel>
 </decision-channels>

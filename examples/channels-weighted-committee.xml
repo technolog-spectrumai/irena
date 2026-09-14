@@ -15,6 +15,13 @@
     <!-- Every holder of the register in force when a decision is frozen; one share,
          one vote. Bornite's rules, unchanged. -->
     <actors source="share-register"/>
+    <scope>
+      <amend part="identity"/>
+      <amend part="share-structure"/>
+      <amend part="decision-channels"/>
+      <amend part="identities"/>
+      <amend part="authorisation"/>
+    </scope>
     <voting-rules version="1.0">
       <weight type="electorate"/>
       <exclusions enabled="true"/>
@@ -32,6 +39,10 @@
       <member id="okafor" name="A. Okafor"/>
       <member id="vance" name="R. Vance"/>
     </actors>
+    <scope>
+      <amend part="decision-channels"/>
+      <amend part="identities"/>
+    </scope>
     <voting-rules version="1.0">
       <weight type="electorate"/>
       <exclusions enabled="false"/>
@@ -47,6 +58,9 @@
       <member id="vance" name="R. Vance" weight="2"/>
       <member id="quinn" name="S. Quinn" weight="1"/>
     </actors>
+    <scope>
+      <amend part="decision-channels"/>
+    </scope>
     <voting-rules version="1.0">
       <weight type="electorate"/>
       <exclusions enabled="false"/>
