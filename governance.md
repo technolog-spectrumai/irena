@@ -559,6 +559,11 @@ that person, everywhere they sit — and their own right to file records may onl
 never grow. A sole director may hand back their key or their signing right; they may
 not take anyone else's, or hand themselves one.
 
+**A decision outside the channel's remit.** A chief executive whose channel is not
+scoped to the register cannot rewrite it, however genuine the signature and however
+willing the secretary. *Channel ceo may not amend the share-structure.* A channel that
+names no scope at all may record decisions and change nothing.
+
 **A key that may not write.** Alice owns half the company and cannot file an amendment;
 Chen chairs the board and cannot file the record of the board's own vote. Who decides
 and who writes are two lists, and the second one is checked before anything reaches the

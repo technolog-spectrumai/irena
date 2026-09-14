@@ -184,15 +184,22 @@ record: fd171178… (height 0, supersedes none)
       chen                     weight            2  can sign
       okafor                   weight            1  can sign
       vance                    weight            1  no key: cannot sign
+      may amend: decision-channels, identities
       rules: {"weight":"electorate","exclusions_enabled":false,"quorum":{"type":"none"},…}
-  ceo                  individual roster         1 actor(s), total weight 1, 1 can sign  — decides alone; may amend the channel set only downwards (self-demotion rule)
+  ceo                  individual roster         1 actor(s), total weight 1, 1 can sign  — decides alone; whatever it may amend, only ever downwards (self-demotion rule)
       chen                     weight            1  can sign
+      may amend: decision-channels
   shareholders         collective share-register 3 actor(s), total weight 1000, 2 can sign
       alice                    weight          500  can sign
       bob                      weight          300  can sign
       carol                    weight          200  no key: cannot sign
+      may amend: identity, share-structure, decision-channels, identities, authorisation
       rules: {"weight":"electorate","exclusions_enabled":true,"quorum":{"type":"fraction",…},…}
 ```
+
+Every channel says what it may amend. *May amend: nothing: declarative decisions only*
+is a channel that records decisions and changes no part of the company, which is what a
+channel with no `<scope>` element means.
 
 `publish-channels` replaces the whole set; `history --kind decision-channels` lists
 every set that has been in force.
@@ -491,7 +498,10 @@ $ irena resolution create --channel ceo --decision 01c40b29… \
 ```
 
 `--target share-structure|decision-channels|identities|authorisation` with `--file`
-makes an amendment resolution; `--document-digest` alone makes a declarative one. `finalize` checks the
+makes an amendment resolution; `--document-digest` alone makes a declarative one. The
+channel must be scoped to the part, or `finalize` exits `2` with
+`channel ceo may not amend the share-structure; it may amend decision-channels` and
+nothing is written. `finalize` checks the
 whole chain of authority before writing anything — for a vote: the meeting verifies,
 the item is a vote item, the named vote answered it, that vote verifies, **Bornite
 accepted it**, it was through the channel named, and what the resolution carries
