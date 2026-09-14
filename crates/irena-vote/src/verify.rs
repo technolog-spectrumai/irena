@@ -23,9 +23,12 @@ pub enum CheckNameV1 {
     VoteIdDerives,
     /// The snapshot height precedes the record's own height.
     SnapshotPrecedesRecord,
-    /// The founding record, register and channel set in force at the snapshot height
-    /// are exactly the transactions the snapshot pinned.
+    /// The founding record, register, channel set and identities in force at the
+    /// snapshot height are exactly the transactions the snapshot pinned.
     RecordsResolve,
+    /// The transaction signer is the current key of a `governance` signer under the
+    /// company as it stood at the record's own height.
+    SignerAuthorised,
     /// The pinned channel exists in that channel set and is collective.
     ChannelIsCollective,
     /// The electorate re-resolved from the pinned channel equals the frozen one.
@@ -215,6 +218,11 @@ pub fn verify(store: &LocalChainStore, tx_id: &TxId) -> Result<VerificationV1, V
             state.channels.tx_id,
             record.snapshot.channels_tx_id,
         ),
+        (
+            "identities",
+            state.identities.tx_id,
+            record.snapshot.identities_tx_id,
+        ),
     ];
     let moved: Vec<String> = pinned
         .iter()
@@ -226,7 +234,7 @@ pub fn verify(store: &LocalChainStore, tx_id: &TxId) -> Result<VerificationV1, V
         moved.is_empty(),
         if moved.is_empty() {
             format!(
-                "genesis, register and channel set at height {} are the pinned records",
+                "genesis, register, channel set and identities at height {} are the pinned records",
                 record.snapshot.height
             )
         } else {
@@ -236,7 +244,12 @@ pub fn verify(store: &LocalChainStore, tx_id: &TxId) -> Result<VerificationV1, V
         return Ok(report);
     }
 
-    // 5. The channel is collective, and 6. its actors are the frozen electorate.
+    // 5. The transaction signer was a governance signer when the record was written.
+    let (authorised, detail) =
+        irena_decision::signer_authorised_at(store, located.height, &transaction.signer);
+    report.check(CheckNameV1::SignerAuthorised, authorised, detail);
+
+    // 6. The channel is collective, and 7. its actors are the frozen electorate.
     let resolved = record
         .snapshot
         .channel()
@@ -293,7 +306,7 @@ pub fn verify(store: &LocalChainStore, tx_id: &TxId) -> Result<VerificationV1, V
         }
     };
 
-    // 7. Ballots verify, each against the frozen snapshot.
+    // 8. Ballots verify, each against the frozen snapshot.
     let mut bad = Vec::new();
     for ballot in &record.ballots {
         if let Err(rejection) = ballot.check(&record.snapshot) {
@@ -310,7 +323,7 @@ pub fn verify(store: &LocalChainStore, tx_id: &TxId) -> Result<VerificationV1, V
         },
     );
 
-    // 8. Ballots ordered.
+    // 9. Ballots ordered.
     report.check(
         CheckNameV1::BallotsOrdered,
         record.ballots_are_sorted(),
@@ -321,7 +334,7 @@ pub fn verify(store: &LocalChainStore, tx_id: &TxId) -> Result<VerificationV1, V
         },
     );
 
-    // 9. Commitment.
+    // 10. Commitment.
     let commitment = ballot_commitment(&record.ballots);
     report.check(
         CheckNameV1::CommitmentDerives,
@@ -329,7 +342,7 @@ pub fn verify(store: &LocalChainStore, tx_id: &TxId) -> Result<VerificationV1, V
         format!("stored {} derived {commitment}", record.ballot_commitment),
     );
 
-    // 10. Result reproduces. Without the channel's rules there is nothing to rerun,
+    // 11. Result reproduces. Without the channel's rules there is nothing to rerun,
     // and the check is absent rather than reported either way.
     let Some(rules) = rules else {
         return Ok(report);

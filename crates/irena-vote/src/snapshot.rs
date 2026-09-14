@@ -60,15 +60,15 @@ pub struct ElectorateEntryV1 {
     /// Whether the rules may exclude this voter. Always false: neither a share
     /// register nor a roster has a notion of exclusion.
     pub excluded: bool,
-    /// The registered signing key, if any.
+    /// The key this voter's identity held at the frozen height, if any.
     pub key: Option<PublicKey>,
 }
 
 /// Everything a vote is decided against, fixed at freeze time.
 ///
 /// Records are pinned by transaction id: a Prunella transaction id commits to the
-/// payload bytes, so pinning the id pins the exact register and channel set, and the
-/// channel id picks the rules out of that set. The electorate is included in full so
+/// payload bytes, so pinning the id pins the exact register, channel set and
+/// identities, and the channel id picks the rules out of that set. The electorate is included in full so
 /// the snapshot can be evaluated and audited on its own, and re-resolved from the
 /// pinned channel by a verifier.
 #[derive(BorshSerialize, BorshDeserialize, Clone, Debug, PartialEq, Eq, serde::Serialize)]
@@ -87,6 +87,8 @@ pub struct VoteSnapshotV1 {
     pub shares_tx_id: TxId,
     /// The channel set in force at that height.
     pub channels_tx_id: TxId,
+    /// The identities in force at that height: where the voters' keys came from.
+    pub identities_tx_id: TxId,
     /// The channel voted through: a collective one, whose rules decide.
     pub channel: String,
     /// The derived electorate, in voter id order.

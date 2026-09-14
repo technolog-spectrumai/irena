@@ -17,19 +17,73 @@ use prunella_crypto::SigningKey;
 use prunella_store::LocalChainStore;
 use tempfile::TempDir;
 
-/// The whole company: alice (500, key 1), bob (300, key 2), carol (200, no key), and
-/// three channels: the shareholders under RULES, a board, a ceo.
+/// The whole company: alice (500 shares), bob (300), carol (200, no key), three
+/// channels — the shareholders under RULES, a board, a ceo — the one key table, and
+/// jane as the only person who may sign records.
 fn genesis_xml() -> String {
     format!(
-        "<company-genesis><identity name=\"Acme Industries Ltd\"/>{}<governance>{}</governance></company-genesis>",
+        "<company-genesis><identity name=\"Acme Industries Ltd\"/>{}{}<governance>{}</governance>{AUTHORISATION}</company-genesis>",
         register(),
+        identities(),
         channels(RULES)
     )
 }
 
+/// The one key table: alice 1, bob 2, the three directors 5/6/7, jane 9. Carol is
+/// listed with no key; dave is not listed at all.
+fn identities() -> String {
+    format!(
+        r#"<identities>
+  <person id="alice" key="{}"/>
+  <person id="bob" key="{}"/>
+  <person id="carol" name="Carol White"/>
+  <person id="chair" key="{}"/>
+  <person id="dir-a" key="{}"/>
+  <person id="dir-b" key="{}"/>
+  <person id="jane" name="Jane Roe" key="{}"/>
+</identities>"#,
+        key(1).public_key(),
+        key(2).public_key(),
+        key(5).public_key(),
+        key(6).public_key(),
+        key(7).public_key(),
+        key(9).public_key()
+    )
+}
+
+/// Carol registers key 3 and dave, the new holder, registers key 4.
+fn identities_amended() -> String {
+    format!(
+        r#"<identities>
+  <person id="alice" key="{}"/>
+  <person id="bob" key="{}"/>
+  <person id="carol" name="Carol White" key="{}"/>
+  <person id="chair" key="{}"/>
+  <person id="dave" key="{}"/>
+  <person id="dir-a" key="{}"/>
+  <person id="dir-b" key="{}"/>
+  <person id="jane" name="Jane Roe" key="{}"/>
+</identities>"#,
+        key(1).public_key(),
+        key(2).public_key(),
+        key(3).public_key(),
+        key(5).public_key(),
+        key(4).public_key(),
+        key(6).public_key(),
+        key(7).public_key(),
+        key(9).public_key()
+    )
+}
+
+/// Jane, the company secretary, is the only signer: company and governance alike.
+const AUTHORISATION: &str = r#"<authorisation>
+  <signer person="jane" records="company"/>
+  <signer person="jane" records="governance"/>
+</authorisation>"#;
+
 /// The channel set: shareholders (share register, collective, `rules`); board (chair
-/// key 5 weight 2, dir-a key 6, dir-b key 7; collective, simple majority, no quorum);
-/// ceo (chair, individual).
+/// weight 2, dir-a, dir-b; collective, simple majority, no quorum); ceo (chair,
+/// individual). Keys are nowhere here: they live in the identities.
 fn channels(rules: &str) -> String {
     format!(
         r#"<decision-channels>
@@ -39,9 +93,9 @@ fn channels(rules: &str) -> String {
   </channel>
   <channel id="board" mode="collective">
     <actors source="roster">
-      <member id="chair" key="{}" weight="2"/>
-      <member id="dir-a" key="{}"/>
-      <member id="dir-b" key="{}"/>
+      <member id="chair" weight="2"/>
+      <member id="dir-a"/>
+      <member id="dir-b"/>
     </actors>
     <voting-rules version="1.0">
       <weight type="electorate"/>
@@ -54,14 +108,10 @@ fn channels(rules: &str) -> String {
   </channel>
   <channel id="ceo" mode="individual">
     <actors source="roster">
-      <member id="chair" key="{}"/>
+      <member id="chair"/>
     </actors>
   </channel>
-</decision-channels>"#,
-        key(5).public_key(),
-        key(6).public_key(),
-        key(7).public_key(),
-        key(5).public_key()
+</decision-channels>"#
     )
 }
 
@@ -115,33 +165,25 @@ fn notary(at: &str) -> NotarisationV1 {
     }
 }
 
-/// alice (500, key 1), bob (300, key 2), carol (200, no key).
+/// alice 500, bob 300, carol 200.
 fn register() -> String {
-    format!(
-        r#"<share-structure>
-  <holder id="alice" key="{}" shares="500"/>
-  <holder id="bob" key="{}" shares="300"/>
+    r#"<share-structure>
+  <holder id="alice" shares="500"/>
+  <holder id="bob" shares="300"/>
   <holder id="carol" shares="200"/>
-</share-structure>"#,
-        key(1).public_key(),
-        key(2).public_key()
-    )
+</share-structure>"#
+        .to_owned()
 }
 
-/// bob sold half to dave (key 4); carol registered key 3.
+/// bob sold half to dave.
 fn register_amended() -> String {
-    format!(
-        r#"<share-structure>
-  <holder id="alice" key="{}" shares="500"/>
-  <holder id="bob" key="{}" shares="150"/>
-  <holder id="carol" key="{}" shares="200"/>
-  <holder id="dave" key="{}" shares="150"/>
-</share-structure>"#,
-        key(1).public_key(),
-        key(2).public_key(),
-        key(3).public_key(),
-        key(4).public_key()
-    )
+    r#"<share-structure>
+  <holder id="alice" shares="500"/>
+  <holder id="bob" shares="150"/>
+  <holder id="carol" shares="200"/>
+  <holder id="dave" shares="150"/>
+</share-structure>"#
+        .to_owned()
 }
 
 struct Chain {
@@ -269,7 +311,7 @@ fn a_vote_runs_from_draft_to_a_verified_record() {
     // And it verifies from nothing but the chain and the id.
     let report = verify(&chain.store, &finalized.tx_id).expect("verify");
     assert!(report.is_valid(), "{report:#?}");
-    assert_eq!(report.checks.len(), 10);
+    assert_eq!(report.checks.len(), 11);
     assert_eq!(report.record.as_ref().unwrap(), &finalized.record);
 }
 
@@ -452,6 +494,13 @@ fn amendments_after_freezing_change_nothing() {
         "2026-02-01T10:05:00Z",
         2000,
     );
+    amend(
+        &chain,
+        RecordKindV1::Identities,
+        &identities_amended(),
+        "2026-02-01T10:10:00Z",
+        3000,
+    );
 
     // dave, now a holder, is not in this vote; carol, now with a key, still cannot vote.
     let dave = SignedBallotV1::sign(&key(4), frozen_id, &voter("dave"), BallotChoiceV1::Yes);
@@ -492,7 +541,7 @@ fn amendments_after_freezing_change_nothing() {
     // A vote frozen now sees the amended company and the stricter rules.
     let mut later = VoteV1::draft("x", proposal());
     later
-        .freeze(&chain.store, BlockHeight(3), &shareholders())
+        .freeze(&chain.store, BlockHeight(4), &shareholders())
         .expect("freeze");
     assert_ne!(later.id(), Some(frozen_id));
     later.open().unwrap();
@@ -693,7 +742,10 @@ fn evaluation_matches_bornite_run_on_the_same_inputs_directly() {
 
     let rules = bornite_xml::read_rules_document(RULES).unwrap();
     let register = irena_core::read_share_structure_document(&register()).unwrap();
-    let electorate = actors_of_register(&register).unwrap().electorate;
+    let identities = irena_core::read_identities_document(&identities()).unwrap();
+    let electorate = actors_of_register(&register, &identities)
+        .unwrap()
+        .electorate;
     let ballots = BallotSetV1::new(vec![
         BallotV1 {
             voter: voter("bob"),
@@ -734,8 +786,20 @@ fn a_vote_with_no_ballots_is_still_a_vote() {
 // Tampering with the record.
 // ---------------------------------------------------------------------------------
 
+/// Appends a block holding one transaction, bypassing every Irena check. Signed by
+/// jane's key, so a planted vote record is judged on its content, not its signer.
 fn append_raw(store: &LocalChainStore, namespace: &str, payload: Vec<u8>) -> prunella_core::TxId {
-    let signer = key(8);
+    append_raw_signed(store, 9, namespace, payload)
+}
+
+/// As [`append_raw`], signed by the key of the given seed.
+fn append_raw_signed(
+    store: &LocalChainStore,
+    seed: u8,
+    namespace: &str,
+    payload: Vec<u8>,
+) -> prunella_core::TxId {
+    let signer = key(seed);
     let head = store.head().unwrap();
     let parent = store.get_block(head.height).unwrap().unwrap();
     let transaction = signer.sign_transaction(TransactionDraft {
@@ -860,6 +924,7 @@ fn every_tampered_field_is_caught_by_a_named_check() {
                         &bornite_xml::read_rules_document(RULES).unwrap(),
                         &actors_of_register(
                             &irena_core::read_share_structure_document(&register()).unwrap(),
+                            &irena_core::read_identities_document(&identities()).unwrap(),
                         )
                         .unwrap()
                         .electorate,
@@ -1005,6 +1070,44 @@ fn a_snapshot_from_the_future_is_caught() {
 }
 
 #[test]
+fn only_a_governance_signer_may_put_a_vote_on_the_chain() {
+    let chain = founded();
+    let mut vote = open_vote(&chain);
+    vote.cast(ballot(&vote, 1, "alice", BallotChoiceV1::Yes))
+        .unwrap();
+    vote.close().unwrap();
+    vote.evaluate(&chain.store).unwrap();
+    // Alice voted and holds half the company; writing the record is another matter.
+    let error = vote
+        .finalize(&chain.store, &key(1), 3000)
+        .expect_err("alice writes");
+    assert!(
+        matches!(
+            error,
+            VoteError::Ledger(irena_ledger::LedgerError::UnauthorisedSigner { .. })
+        ),
+        "{error}"
+    );
+    assert_eq!(chain.store.head().unwrap().height, BlockHeight::GENESIS);
+    let finalized = vote.finalize(&chain.store, &key(9), 3000).expect("jane");
+    assert!(verify(&chain.store, &finalized.tx_id).unwrap().is_valid());
+
+    // The same record planted by an unauthorised key fails one named check.
+    let planted = append_raw_signed(
+        &chain.store,
+        1,
+        "irena.vote.v1",
+        finalized.record.canonical_bytes(),
+    );
+    let failed: Vec<CheckNameV1> = verify(&chain.store, &planted)
+        .unwrap()
+        .failures()
+        .map(|c| c.name)
+        .collect();
+    assert_eq!(failed, [CheckNameV1::SignerAuthorised]);
+}
+
+#[test]
 fn a_broken_chain_stops_evaluation_rather_than_guessing() {
     let chain = founded();
     let mut vote = open_vote(&chain);
@@ -1025,12 +1128,22 @@ fn a_broken_chain_stops_evaluation_rather_than_guessing() {
     append_raw(&chain.store, "irena.channels.v1", payload.into_bytes());
     assert!(
         vote.evaluate(&chain.store).is_ok(),
-        "resolution at height 2 is unaffected"
+        "evaluation re-resolves at the snapshot height, which the break is after"
     );
-    let finalized = vote.finalize(&chain.store, &key(9), 10_000).unwrap();
-    assert!(verify(&chain.store, &finalized.tx_id).unwrap().is_valid());
+    // Writing, though, needs the company at the head: who may sign a record is the
+    // authorisation in force now, and on a broken chain there is no now.
+    let error = vote
+        .finalize(&chain.store, &key(9), 10_000)
+        .expect_err("broken head");
+    assert!(
+        matches!(
+            error,
+            VoteError::Ledger(irena_ledger::LedgerError::BrokenAmendmentChain { .. })
+        ),
+        "{error}"
+    );
 
-    // But a vote frozen after the break cannot exist: the company does not resolve.
+    // And a vote frozen after the break cannot exist: the company does not resolve.
     let mut later = VoteV1::draft("x", proposal());
     assert!(matches!(
         later.freeze(&chain.store, BlockHeight(2), &shareholders()),

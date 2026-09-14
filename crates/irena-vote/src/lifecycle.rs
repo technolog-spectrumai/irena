@@ -7,9 +7,9 @@ use crate::snapshot::{ElectorateEntryV1, VoteIdV1, VoteSnapshotV1};
 use bornite_core::{BallotSetV1, BallotV1, VoterIdV1};
 use bornite_eval::VoteEvaluationV1;
 use borsh::{BorshDeserialize, BorshSerialize};
-use irena_core::ChannelIdV1;
+use irena_core::{ChannelIdV1, RecordFamilyV1};
 use irena_decision::resolve_channel;
-use irena_ledger::reconstruct;
+use irena_ledger::{authorised_signer, company_now, reconstruct};
 use prunella_canonical::Canonical;
 use prunella_core::{BlockHeight, Hash, Namespace, SchemaVersion, TransactionDraft, TxId};
 use prunella_crypto::SigningKey;
@@ -208,6 +208,7 @@ impl VoteV1 {
             genesis_tx_id: state.genesis_tx_id,
             shares_tx_id: state.shares.tx_id,
             channels_tx_id: state.channels.tx_id,
+            identities_tx_id: state.identities.tx_id,
             channel: channel.as_str().to_owned(),
             electorate,
         });
@@ -329,13 +330,16 @@ impl VoteV1 {
 
     /// Writes the final record to the chain in its own block.
     ///
-    /// The evaluation is rerun first and must match what was stored: a vote whose
-    /// result cannot be reproduced at the moment of finalisation is not finalised.
+    /// `key` signs the transaction, and must be the current key of a `governance`
+    /// signer under the company at the chain head. The evaluation is rerun first and
+    /// must match what was stored: a vote whose result cannot be reproduced at the
+    /// moment of finalisation is not finalised.
     ///
     /// # Errors
     ///
     /// [`VoteError::InvalidTransition`] unless evaluated; [`VoteError::ResultMismatch`]
-    /// if the rerun disagrees; the chain's errors.
+    /// if the rerun disagrees; [`VoteError::Ledger`] carrying `UnauthorisedSigner` for
+    /// a key that may not sign governance records; the chain's errors.
     pub fn finalize(
         &mut self,
         store: &LocalChainStore,
@@ -347,6 +351,11 @@ impl VoteV1 {
         if Some(&rerun) != self.evaluation.as_ref() {
             return Err(VoteError::ResultMismatch);
         }
+        authorised_signer(
+            &company_now(store)?,
+            RecordFamilyV1::Governance,
+            &key.public_key(),
+        )?;
         let record = self.final_record()?;
 
         let head = store.head()?;
