@@ -534,7 +534,23 @@ the channel set is unaffected by a change to the register, and vice versa.
 
 **Promoting oneself.** A change to who decides, carried by one person alone, that gives
 them a seat they did not have or changes a seat they keep. Refused at execution, named
-in the refusal, and re-checked by anyone who verifies the chain later.
+in the refusal, and re-checked by anyone who verifies the chain later. The same rule
+guards the two quieter routes to the same place: on one person's signature, only *their
+own* entry in the identities may change — rewriting somebody else's key is voting as
+that person, everywhere they sit — and their own right to file records may only shrink,
+never grow. A sole director may hand back their key or their signing right; they may
+not take anyone else's, or hand themselves one.
+
+**A key that may not write.** Alice owns half the company and cannot file an amendment;
+Chen chairs the board and cannot file the record of the board's own vote. Who decides
+and who writes are two lists, and the second one is checked before anything reaches the
+chain — and again by every reader afterwards, so a record forced onto the ledger by an
+unauthorised key stops reconstruction where it sits rather than quietly becoming part of
+the company.
+
+**Locking the company out.** No record may leave the company without at least one
+authorised writer who holds a key. A company that cannot be amended by anybody is a
+company nobody meant to create.
 
 **Doing it twice.** A resolution executes once: the resolution knows it is spent, the
 chain is checked for an existing execution, and the amendment itself would be refused
@@ -544,7 +560,9 @@ because the record it targets has already moved.
 a *new* record that lies. Every such lie is caught by name — including an amendment to
 the channel set written straight to the ledger with an execution record claiming Chen's
 decision authorised it: *self-demotion* fails, because a reader re-applies the rule to
-the chain as it was.
+the chain as it was. A governance record filed by a key the company never authorised
+fails its own named check, *signer authorised*, whoever else's signature it carries
+inside.
 
 ---
 
@@ -560,19 +578,27 @@ consistency with what was recorded, never correspondence with the world or the l
 **Notarisation is the trust boundary**, and it is where a real-world authority — the
 articles, a court, a registrar — enters.
 
-**That a lone actor cannot do harm outside their own seats.** The self-demotion rule
-bounds a signer's *own* reach. It does not stop an individual channel from rewriting a
-channel its actor is not part of, and a channel-set change carried by a meeting is
-unrestricted. Say what a channel may decide — a *scope* — is the next planned step,
-and deliberately not a permissions language.
+**That a lone actor cannot do harm outside their own seats.** The self-demotion rules
+bound a signer's *own* reach. They do not stop an individual channel from rewriting a
+channel its actor is not part of, registering a new person, or authorising somebody
+else, and a change carried by a meeting is unrestricted. Saying what a channel may
+decide — a *scope* — is the next planned step, and deliberately not a permissions
+language.
+
+**That the writers are honest.** A person authorised for company records can rewrite
+the register with no channel deciding anything. That is the secretary's route, by
+design: the alternative is a company that cannot correct a filing. What the system
+gives you is not prevention but a list — who may do it, on the chain, amended like
+everything else — and a record of every time they did.
 
 **That a document says what you think.** A digest proves *which* document was meant. It
 says nothing about what is written in it.
 
-**That the right person acted.** Beyond the channels, V1 has **no authorisation
-roles**. Any key can publish a resolution; the channel decides whether it verifies, and
-the notarisation is the only authority on who the channels are. The chain shows who
-signed and who notarised, and leaves the judgement to you.
+**That the right person held the key.** The company says which key is whose and which
+of them may write; it cannot say whether the person holding that key is the person the
+notary met. A stolen key is the identity, until an amendment says otherwise — which is
+why rotation is one record and why every past decision keeps the key it froze. The
+chain shows who signed and who notarised, and leaves that judgement to you.
 
 **Secret ballots.** Ballots are in the record. That is what makes a meeting checkable
 from the chain alone, and it is the wrong trade for some companies. It is not in V1.
