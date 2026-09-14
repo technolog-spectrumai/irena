@@ -612,9 +612,9 @@ but nothing is decided by them. The ledger's own order is the only order.
 
 | Who | What they do | What they cannot do |
 |---|---|---|
-| **Company secretary** | Drafts the agenda, convenes a meeting of a channel, opens, collects ballots, closes, finalises, drafts and executes resolutions | Forge a ballot or a decision; change an agenda after convening; execute a resolution the channel did not authorise |
-| **Shareholder, director, committee member** | An *actor* of a channel: signs their own ballot with their registered key, or — as the sole actor of an individual channel — signs a decision; verifies afterwards that it counted | Vote twice; act without a registered key; act on a question they were not asked; act through a channel they are not an actor of |
-| **A person who decides alone** | Signs decisions through their individual channel; may give that channel up | Widen their own reach by their own signature |
+| **Company secretary** | The person the company authorises to write: convenes meetings, opens, collects ballots, closes, finalises, files resolutions, executions and amendments | Forge a ballot or a decision; change an agenda after convening; execute a resolution the channel did not authorise; take away the last authorised writer |
+| **Shareholder, director, committee member** | An *actor* of a channel: signs their own ballot with the key their identity holds, or — as the sole actor of an individual channel — signs a decision; verifies afterwards that it counted | Vote twice; act without a registered key; act on a question they were not asked; act through a channel they are not an actor of; **put a record on the chain unless the company authorised them to** |
+| **A person who decides alone** | Signs decisions through their individual channel; may give that channel up, rotate their own key, or drop their own right to file records | Widen their own reach by their own signature: no new seat, nobody else's key, no new right to file |
 | **Notary** | Attests to each record — who they are, when, which external document backs it — including the record that says who decides | Change what a record says once it is on the chain |
 | **Auditor** | Verifies any record — a vote, a decision, a meeting, a resolution, an execution — from the chain alone | Need anything but the chain file and a transaction id |
 
