@@ -512,6 +512,7 @@ dependencies = [
 name = "irena-ledger"
 version = "0.1.0"
 dependencies = [
+ "bornite-core",
  "bornite-rules",
  "bornite-xml",
  "irena-core",
@@ -533,6 +534,7 @@ dependencies = [
  "bornite-xml",
  "borsh",
  "irena-core",
+ "irena-decision",
  "irena-ledger",
  "irena-vote",
  "prunella-canonical",

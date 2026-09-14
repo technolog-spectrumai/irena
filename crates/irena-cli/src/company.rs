@@ -270,7 +270,7 @@ pub(crate) fn run(cli: &Cli) -> Result<u8, String> {
                     person.name.as_deref().unwrap_or("-"),
                     person.key.map_or_else(
                         || "no key: cannot sign".to_owned(),
-                        |key| format!("{key:.16}")
+                        |key| format!("{}…", &key.to_string()[..16])
                     ),
                     if families.is_empty() {
                         "nothing".to_owned()
