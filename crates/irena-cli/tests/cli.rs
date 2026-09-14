@@ -2541,6 +2541,139 @@ fn a_resolution_can_rotate_a_key_and_the_ceo_may_only_rotate_its_own() {
 }
 
 #[test]
+fn channels_show_what_each_may_amend_and_a_narrow_one_is_refused() {
+    let cli = Cli::new();
+    cli.founded();
+
+    // Every channel says what it may amend, in text and in JSON.
+    let shown = cli.run(&["channels"]).ok();
+    assert!(
+        shown.out().contains(
+            "may amend: identity, share-structure, decision-channels, identities, authorisation"
+        ),
+        "{}",
+        shown.out()
+    );
+    let json = cli.run(&["channels", "--json"]).ok().json();
+    let ceo = json["channels"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["id"] == "ceo")
+        .expect("ceo");
+    assert_eq!(ceo["scope"].as_array().map(Vec::len), Some(5));
+
+    // Narrow the ceo to nothing at all, through the shareholders.
+    let narrowed = channels(RULES).replace(
+        r#"    <actors source="roster">
+      <member id="chair" name="M. Chen"/>
+    </actors>
+    <scope>
+      <amend part="identity"/>
+      <amend part="share-structure"/>
+      <amend part="decision-channels"/>
+      <amend part="identities"/>
+      <amend part="authorisation"/>
+    </scope>"#,
+        r#"    <actors source="roster">
+      <member id="chair" name="M. Chen"/>
+    </actors>"#,
+    );
+    assert_ne!(narrowed, channels(RULES), "fixture edited");
+    std::fs::write(cli.dir.path().join("narrowed.xml"), &narrowed).unwrap();
+    let digest = cli.digest_of("narrowed.xml");
+    let (meeting_tx, vote_tx) = cli.decide("Scope the ceo channel", &digest, true, 1000);
+    cli.resolution(&[
+        "create",
+        "--channel",
+        "shareholders",
+        "--meeting",
+        &meeting_tx,
+        "--item",
+        "1",
+        "--vote",
+        &vote_tx,
+        "--title",
+        "Resolution 1: scope the ceo",
+        "--target",
+        "decision-channels",
+        "--file",
+        "narrowed.xml",
+        "--state",
+        "r.state",
+    ])
+    .ok();
+    cli.with_notary(&[
+        "resolution",
+        "finalize",
+        "--state",
+        "r.state",
+        "--signing-key",
+        "k.key",
+        "--timestamp",
+        "2000",
+    ])
+    .ok();
+    cli.with_notary(&[
+        "resolution",
+        "execute",
+        "--state",
+        "r.state",
+        "--signing-key",
+        "k.key",
+        "--timestamp",
+        "3000",
+    ])
+    .ok();
+    let shown = cli.run(&["channels"]).ok();
+    assert!(
+        shown
+            .out()
+            .contains("may amend: nothing: declarative decisions only"),
+        "{}",
+        shown.out()
+    );
+
+    // The chair decides alone, and the register is out of reach.
+    let digest = cli.digest_of("shares2.xml");
+    let decision_tx = cli.decide_alone("Rewrite the register", &digest, 4000);
+    cli.resolution(&[
+        "create",
+        "--channel",
+        "ceo",
+        "--decision",
+        &decision_tx,
+        "--title",
+        "Resolution 2: a new register",
+        "--target",
+        "share-structure",
+        "--file",
+        "shares2.xml",
+        "--state",
+        "r2.state",
+    ])
+    .ok();
+    let refused = cli.with_notary(&[
+        "resolution",
+        "finalize",
+        "--state",
+        "r2.state",
+        "--signing-key",
+        "k.key",
+        "--timestamp",
+        "5000",
+    ]);
+    assert_eq!(refused.code(), 2);
+    assert!(
+        refused
+            .err()
+            .contains("channel ceo may not amend the share-structure"),
+        "{}",
+        refused.err()
+    );
+}
+
+#[test]
 fn an_individual_channel_may_only_demote_itself() {
     let cli = Cli::new();
     cli.founded();

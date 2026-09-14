@@ -178,7 +178,7 @@ pub(crate) fn run(cli: &Cli) -> Result<u8, String> {
                             resolved.actors.total_weight,
                             resolved.actors.signing_actors,
                             if channel.mode.is_individual() {
-                                "  — decides alone; may amend the channel set only downwards (self-demotion rule)"
+                                "  — decides alone; whatever it may amend, only ever downwards (self-demotion rule)"
                             } else {
                                 ""
                             }
@@ -195,6 +195,7 @@ pub(crate) fn run(cli: &Cli) -> Result<u8, String> {
                                 }
                             ));
                         }
+                        lines.push(format!("      may amend: {}", channel.scope_text()));
                         if let Some(rules) = resolved.rules() {
                             lines.push(format!(
                                 "      rules: {}",
@@ -209,6 +210,7 @@ pub(crate) fn run(cli: &Cli) -> Result<u8, String> {
                             "actors": resolved.actors.actors,
                             "total_weight": resolved.actors.total_weight,
                             "signing_actors": resolved.actors.signing_actors,
+                            "scope": channel.scope,
                             "rules": resolved.rules(),
                         }));
                     }
@@ -217,11 +219,13 @@ pub(crate) fn run(cli: &Cli) -> Result<u8, String> {
                             "  {:<20} {mode:<10} {source:<14} DOES NOT RESOLVE: {error}",
                             channel.id.as_str()
                         ));
+                        lines.push(format!("      may amend: {}", channel.scope_text()));
                         channels.push(json!({
                             "id": channel.id,
                             "mode": mode,
                             "source": source,
                             "resolves": false,
+                            "scope": channel.scope,
                             "error": error.to_string(),
                         }));
                     }
