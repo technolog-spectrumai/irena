@@ -55,4 +55,7 @@ pub use resolve::{
     ActorSetV1, ActorV1, ResolvedChannelV1, actors_of, actors_of_register, actors_of_roster,
     resolve_channel,
 };
-pub use verify::{DecisionCheckNameV1, DecisionCheckV1, DecisionVerificationV1, verify_decision};
+pub use verify::{
+    DecisionCheckNameV1, DecisionCheckV1, DecisionVerificationV1, check_signer_authorised,
+    signer_authorised_at, verify_decision,
+};

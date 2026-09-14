@@ -79,13 +79,19 @@ fn next_timestamp(store: &LocalChainStore) -> u64 {
     block.header.timestamp_millis + 1000
 }
 
-/// Publishes an amendment superseding whatever currently provides the part.
+/// Publishes an amendment superseding whatever currently provides the part, signed by
+/// jane, Acme's company signer.
 fn amend(chain: &Chain, kind: RecordKindV1, body: &str) -> TxId {
+    amend_with(chain, 9, kind, body)
+}
+
+/// As [`amend`], signed by the key of the given seed.
+fn amend_with(chain: &Chain, seed: u8, kind: RecordKindV1, body: &str) -> TxId {
     let current = company_now(&chain.store).expect("state").provider_of(kind);
     let ts = next_timestamp(&chain.store);
     publish(
         &chain.store,
-        &key(9),
+        &key(seed),
         kind,
         body,
         Some(current),
@@ -214,6 +220,7 @@ fn a_decision_runs_from_draft_to_a_verified_record() {
     assert_eq!(snapshot.genesis_tx_id, genesis);
     assert_eq!(snapshot.shares_tx_id, genesis);
     assert_eq!(snapshot.channels_tx_id, genesis);
+    assert_eq!(snapshot.identities_tx_id, genesis);
     assert_eq!(decision.id(), Some(snapshot.id()));
 
     decision.sign(&key(4)).expect("sign");
@@ -253,6 +260,7 @@ fn a_decision_runs_from_draft_to_a_verified_record() {
             DecisionCheckNameV1::DecisionIdDerives,
             DecisionCheckNameV1::SnapshotPrecedesRecord,
             DecisionCheckNameV1::RecordsResolve,
+            DecisionCheckNameV1::SignerAuthorised,
             DecisionCheckNameV1::ChannelIsIndividual,
             DecisionCheckNameV1::ActorResolves,
             DecisionCheckNameV1::SignatureVerifies,
@@ -304,8 +312,8 @@ fn a_decision_needs_an_individual_channel_with_a_signing_actor() {
     let channels = two[two.find("<decision-channels>").unwrap()
         ..two.find("</decision-channels>").unwrap() + "</decision-channels>".len()]
         .replace(
-            r#"<member id="chen" key="ca93ac1705187071d67b83c7ff0efe8108e8ec4530575d7726879333dbdabe7c" name="M. Chen"/>"#,
-            r#"<member id="chen" key="ca93ac1705187071d67b83c7ff0efe8108e8ec4530575d7726879333dbdabe7c" name="M. Chen"/><member id="vance"/>"#,
+            r#"<member id="chen" name="M. Chen"/>"#,
+            r#"<member id="chen" name="M. Chen"/><member id="vance"/>"#,
         );
     assert!(
         channels.contains(
@@ -331,7 +339,7 @@ fn a_decision_needs_an_individual_channel_with_a_signing_actor() {
 
     // A sole actor with no key cannot sign, and freeze says so.
     let keyless = channels.replace(
-        r#"<member id="chen" key="ca93ac1705187071d67b83c7ff0efe8108e8ec4530575d7726879333dbdabe7c" name="M. Chen"/><member id="vance"/>"#,
+        r#"<member id="chen" name="M. Chen"/><member id="vance"/>"#,
         r#"<member id="vance"/>"#,
     );
     amend(&chain, RecordKindV1::DecisionChannels, &keyless);
@@ -358,8 +366,9 @@ fn a_single_member_company_decides_through_its_register() {
         .freeze(&chain.store, BlockHeight::GENESIS, &owner)
         .expect("freeze");
     decision.sign(&key(7)).expect("ada signs");
+    // In a one-person company the same key signs the decision and the transaction.
     let finalized = decision
-        .finalize(&chain.store, &key(9), 5000)
+        .finalize(&chain.store, &key(7), 5000)
         .expect("finalize");
     assert!(
         verify_decision(&chain.store, &finalized.tx_id)
@@ -368,15 +377,11 @@ fn a_single_member_company_decides_through_its_register() {
     );
 
     // A second holder is admitted: the same channel no longer resolves to one actor.
-    let register = format!(
-        r#"<share-structure>
-  <holder id="ada" key="{}" shares="1"/>
-  <holder id="bea" key="{}" shares="1"/>
-</share-structure>"#,
-        key(7).public_key(),
-        key(8).public_key()
-    );
-    amend(&chain, RecordKindV1::ShareStructure, &register);
+    let register = r#"<share-structure>
+  <holder id="ada" shares="1"/>
+  <holder id="bea" shares="1"/>
+</share-structure>"#;
+    amend_with(&chain, 7, RecordKindV1::ShareStructure, register);
     let head = chain.store.head().unwrap().height;
     let state = reconstruct(&chain.store, head).unwrap();
     let error = resolve_channel(&state, &owner).expect_err("two holders");
@@ -390,6 +395,73 @@ fn a_single_member_company_decides_through_its_register() {
             .unwrap()
             .is_valid()
     );
+}
+
+#[test]
+fn only_a_governance_signer_may_put_a_decision_on_the_chain() {
+    let chain = acme();
+    let mut decision = signed(&chain);
+    // Chen decided; chen may not write. The company's authorisation says who may.
+    let error = decision
+        .finalize(&chain.store, &key(4), 5000)
+        .expect_err("chen writes");
+    assert!(
+        matches!(
+            error,
+            DecisionError::Ledger(irena_ledger::LedgerError::UnauthorisedSigner { .. })
+        ),
+        "{error}"
+    );
+    assert!(error.to_string().contains("governance"), "{error}");
+    assert_eq!(
+        chain.store.head().unwrap().height,
+        BlockHeight::GENESIS,
+        "nothing was written"
+    );
+    let finalized = decision
+        .finalize(&chain.store, &key(9), 5000)
+        .expect("jane writes");
+    let report = verify_decision(&chain.store, &finalized.tx_id).unwrap();
+    assert!(report.is_valid(), "{report:#?}");
+
+    // A record written around Irena by a key nobody authorised fails the same check.
+    let planted = append_raw(
+        &chain.store,
+        DECISION_NAMESPACE,
+        finalized.record.canonical_bytes(),
+    );
+    let report = verify_decision(&chain.store, &planted).unwrap();
+    assert!(
+        report.is_valid(),
+        "signed by jane's key, like the genuine one"
+    );
+    let rogue = {
+        let head = chain.store.head().unwrap();
+        let parent = chain.store.get_block(head.height).unwrap().unwrap();
+        let signer = key(4);
+        let transaction = signer.sign_transaction(TransactionDraft {
+            namespace: Namespace::new(DECISION_NAMESPACE).unwrap(),
+            schema_version: SchemaVersion(1),
+            payload: finalized.record.canonical_bytes(),
+            signer: signer.public_key(),
+            nonce: head.height.next().unwrap().value(),
+        });
+        let tx_id = transaction.id;
+        let block = parent
+            .header
+            .child_draft(vec![transaction], parent.header.timestamp_millis + 1000)
+            .unwrap()
+            .build()
+            .unwrap();
+        chain.store.append_block(block).unwrap();
+        tx_id
+    };
+    let failed: Vec<DecisionCheckNameV1> = verify_decision(&chain.store, &rogue)
+        .unwrap()
+        .failures()
+        .map(|c| c.name)
+        .collect();
+    assert_eq!(failed, [DecisionCheckNameV1::SignerAuthorised]);
 }
 
 #[test]

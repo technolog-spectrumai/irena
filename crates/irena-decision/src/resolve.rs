@@ -4,13 +4,16 @@
 //! source; resolution turns that source, as it stands at one height, into ids and
 //! integer weights. Bornite receives an electorate and never learns whether a weight
 //! came from a shareholding or a seat. With **flat shares** the register gives
-//! `weight = shares`; a roster gives the weight each member was listed with.
+//! `weight = shares`; a roster gives the weight each member was listed with. Keys come
+//! from neither: an actor's key is the one their identity holds in the identities in
+//! force at the same height, the one key table.
 
 use crate::error::DecisionError;
 use bornite_core::{ElectorateV1, VoterIdV1, VoterV1, WeightTotalV1, WeightV1};
 use bornite_rules::VotingRulesV1;
 use irena_core::{
-    ActorSourceV1, ChannelIdV1, ChannelModeV1, DecisionChannelV1, RosterV1, ShareStructureV1,
+    ActorSourceV1, ChannelIdV1, ChannelModeV1, DecisionChannelV1, IdentitiesV1, RosterV1,
+    ShareStructureV1,
 };
 use irena_ledger::CompanyStateV1;
 use prunella_core::{BlockHeight, PublicKey, TxId};
@@ -22,7 +25,7 @@ pub struct ActorV1 {
     pub id: VoterIdV1,
     /// Their weight in this channel.
     pub weight: WeightV1,
-    /// The key they sign with, if registered.
+    /// The key their identity currently holds, if any.
     pub key: Option<PublicKey>,
     /// Whether a signature from this actor could ever be accepted.
     pub can_sign: bool,
@@ -93,27 +96,24 @@ impl ActorSetV1 {
 /// The actors of the share register: every holder, weight equal to their holding.
 ///
 /// Every holder has at least one share by validation, so every holder is an actor; a
-/// holder without a signing key is still one (they own the shares and count towards
-/// quorum) but can never sign, and the set says so. Nobody is marked excluded: the
-/// register has no notion of exclusion, so a channel's exclusion rule removes no one.
+/// holder whose identity holds no key — or who has no identity at all — is still one
+/// (they own the shares and count towards quorum) but can never sign, and the set says
+/// so. Nobody is marked excluded: the register has no notion of exclusion, so a
+/// channel's exclusion rule removes no one.
 ///
 /// # Errors
 ///
 /// Returns [`DecisionError::Derivation`] if Bornite refuses the weights, which a
 /// validated register cannot cause; the check exists so nothing is ever `expect`ed
 /// about money.
-pub fn actors_of_register(register: &ShareStructureV1) -> Result<ActorSetV1, DecisionError> {
+pub fn actors_of_register(
+    register: &ShareStructureV1,
+    identities: &IdentitiesV1,
+) -> Result<ActorSetV1, DecisionError> {
     let actors = register
         .holders()
         .iter()
-        .map(|holder| {
-            Ok(ActorV1 {
-                id: holder.id.clone(),
-                weight: WeightV1::new(holder.shares).map_err(DecisionError::Derivation)?,
-                key: holder.key,
-                can_sign: holder.key.is_some(),
-            })
-        })
+        .map(|holder| actor(&holder.id, holder.shares, identities))
         .collect::<Result<Vec<_>, DecisionError>>()?;
     ActorSetV1::build(actors)
 }
@@ -123,20 +123,26 @@ pub fn actors_of_register(register: &ShareStructureV1) -> Result<ActorSetV1, Dec
 /// # Errors
 ///
 /// As [`actors_of_register`].
-pub fn actors_of_roster(roster: &RosterV1) -> Result<ActorSetV1, DecisionError> {
+pub fn actors_of_roster(
+    roster: &RosterV1,
+    identities: &IdentitiesV1,
+) -> Result<ActorSetV1, DecisionError> {
     let actors = roster
         .members()
         .iter()
-        .map(|member| {
-            Ok(ActorV1 {
-                id: member.id.clone(),
-                weight: WeightV1::new(member.weight).map_err(DecisionError::Derivation)?,
-                key: member.key,
-                can_sign: member.key.is_some(),
-            })
-        })
+        .map(|member| actor(&member.id, member.weight, identities))
         .collect::<Result<Vec<_>, DecisionError>>()?;
     ActorSetV1::build(actors)
+}
+
+fn actor(id: &VoterIdV1, weight: u64, identities: &IdentitiesV1) -> Result<ActorV1, DecisionError> {
+    let key = identities.key_of(id);
+    Ok(ActorV1 {
+        id: id.clone(),
+        weight: WeightV1::new(weight).map_err(DecisionError::Derivation)?,
+        key,
+        can_sign: key.is_some(),
+    })
 }
 
 /// The actors of a source, as the company stands.
@@ -147,10 +153,11 @@ pub fn actors_of_roster(roster: &RosterV1) -> Result<ActorSetV1, DecisionError> 
 pub fn actors_of(
     source: &ActorSourceV1,
     register: &ShareStructureV1,
+    identities: &IdentitiesV1,
 ) -> Result<ActorSetV1, DecisionError> {
     match source {
-        ActorSourceV1::ShareRegister => actors_of_register(register),
-        ActorSourceV1::Roster(roster) => actors_of_roster(roster),
+        ActorSourceV1::ShareRegister => actors_of_register(register, identities),
+        ActorSourceV1::Roster(roster) => actors_of_roster(roster, identities),
     }
 }
 
@@ -164,6 +171,8 @@ pub struct ResolvedChannelV1 {
     /// The register record its actors came from (the register is consulted whatever
     /// the source, so the pin is always meaningful).
     pub shares_tx_id: TxId,
+    /// The identities record its actors' keys came from.
+    pub identities_tx_id: TxId,
     /// The height the company was resolved at.
     pub height: BlockHeight,
     /// Who may decide.
@@ -223,7 +232,11 @@ pub fn resolve_channel(
             channel: id.clone(),
             height: state.at,
         })?;
-    let actors = actors_of(&channel.actors, &state.shares.value)?;
+    let actors = actors_of(
+        &channel.actors,
+        &state.shares.value,
+        &state.identities.value,
+    )?;
     if channel.mode.is_individual() && actors.len() != 1 {
         return Err(DecisionError::NotSingleActor {
             channel: id.clone(),
@@ -234,6 +247,7 @@ pub fn resolve_channel(
         channel: channel.clone(),
         channels_tx_id: state.channels.tx_id,
         shares_tx_id: state.shares.tx_id,
+        identities_tx_id: state.identities.tx_id,
         height: state.at,
         actors,
     })
@@ -242,35 +256,52 @@ pub fn resolve_channel(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use irena_core::{HolderV1, MemberV1};
+    use irena_core::{HolderV1, MemberV1, PersonV1};
 
-    fn holder(id: &str, shares: u64, key: Option<u8>) -> HolderV1 {
+    fn holder(id: &str, shares: u64) -> HolderV1 {
         HolderV1 {
             id: VoterIdV1::new(id).expect("id"),
-            key: key.map(|b| PublicKey::from_bytes([b; 32])),
             name: None,
             shares,
         }
     }
 
-    fn member(id: &str, weight: u64, key: Option<u8>) -> MemberV1 {
+    fn member(id: &str, weight: u64) -> MemberV1 {
         MemberV1 {
             id: VoterIdV1::new(id).expect("id"),
-            key: key.map(|b| PublicKey::from_bytes([b; 32])),
             name: None,
             weight,
         }
     }
 
+    /// The one key table: `(id, key seed)` for everyone who has a key.
+    fn identities(keyed: &[(&str, u8)]) -> IdentitiesV1 {
+        IdentitiesV1::new(
+            keyed
+                .iter()
+                .map(|(id, seed)| PersonV1 {
+                    id: VoterIdV1::new(*id).expect("id"),
+                    name: None,
+                    document_id: None,
+                    key: Some(PublicKey::from_bytes([*seed; 32])),
+                })
+                .collect(),
+        )
+        .expect("identities")
+    }
+
     #[test]
     fn register_weight_is_shares_and_keyless_holders_stay_in() {
         let register = ShareStructureV1::new(vec![
-            holder("carol", 200, None),
-            holder("alice", 500, Some(1)),
-            holder("bob", 300, Some(2)),
+            holder("carol", 200),
+            holder("alice", 500),
+            holder("bob", 300),
         ])
         .expect("register");
-        let set = actors_of_register(&register).expect("actors");
+        // Carol is registered with no key; a person the identities never list is the
+        // same to the channel.
+        let set = actors_of_register(&register, &identities(&[("alice", 1), ("bob", 2)]))
+            .expect("actors");
         let ids: Vec<&str> = set
             .electorate
             .voters()
@@ -299,14 +330,11 @@ mod tests {
         let channel = ChannelIdV1::new("board").unwrap();
         let roster = RosterV1::new(
             &channel,
-            vec![
-                member("vance", 1, None),
-                member("chen", 2, Some(4)),
-                member("okafor", 1, Some(5)),
-            ],
+            vec![member("vance", 1), member("chen", 2), member("okafor", 1)],
         )
         .expect("roster");
-        let set = actors_of_roster(&roster).expect("actors");
+        let set =
+            actors_of_roster(&roster, &identities(&[("chen", 4), ("okafor", 5)])).expect("actors");
         let weights: Vec<(&str, u64)> = set
             .actors
             .iter()
@@ -319,12 +347,15 @@ mod tests {
 
     #[test]
     fn resolution_does_not_depend_on_listing_order() {
+        let keys = identities(&[("a", 1)]);
         let a = actors_of_register(
-            &ShareStructureV1::new(vec![holder("b", 1, None), holder("a", 2, Some(1))]).unwrap(),
+            &ShareStructureV1::new(vec![holder("b", 1), holder("a", 2)]).unwrap(),
+            &keys,
         )
         .unwrap();
         let b = actors_of_register(
-            &ShareStructureV1::new(vec![holder("a", 2, Some(1)), holder("b", 1, None)]).unwrap(),
+            &ShareStructureV1::new(vec![holder("a", 2), holder("b", 1)]).unwrap(),
+            &keys,
         )
         .unwrap();
         assert_eq!(a, b);
@@ -332,7 +363,11 @@ mod tests {
 
     #[test]
     fn an_empty_register_resolves_to_nobody() {
-        let set = actors_of_register(&ShareStructureV1::new(Vec::new()).unwrap()).unwrap();
+        let set = actors_of_register(
+            &ShareStructureV1::new(Vec::new()).unwrap(),
+            &identities(&[("a", 1)]),
+        )
+        .unwrap();
         assert!(set.is_empty());
         assert_eq!(set.total_weight.value(), 0);
     }

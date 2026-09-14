@@ -12,8 +12,8 @@ use crate::record::{
 };
 use crate::resolve::resolve_channel;
 use borsh::{BorshDeserialize, BorshSerialize};
-use irena_core::{ChannelIdV1, CompanyIdV1};
-use irena_ledger::reconstruct;
+use irena_core::{ChannelIdV1, CompanyIdV1, RecordFamilyV1};
+use irena_ledger::{authorised_signer, company_now, reconstruct};
 use prunella_canonical::{Canonical, hash_canonical};
 use prunella_core::{
     BlockHeight, Hash, Namespace, PublicKey, SchemaVersion, Signature, TransactionDraft, TxId,
@@ -67,9 +67,9 @@ impl serde::Serialize for DecisionIdV1 {
 
 /// Everything a decision is taken against, fixed at freeze time.
 ///
-/// Records are pinned by transaction id, so pinning the id pins the exact channel set
-/// and register. The actor and key are included so the snapshot can be checked on its
-/// own, and re-resolved from the pinned records by a verifier.
+/// Records are pinned by transaction id, so pinning the id pins the exact channel set,
+/// register and identities. The actor and key are included so the snapshot can be
+/// checked on its own, and re-resolved from the pinned records by a verifier.
 #[derive(BorshSerialize, BorshDeserialize, Clone, Debug, PartialEq, Eq, serde::Serialize)]
 pub struct DecisionSnapshotV1 {
     /// Which company.
@@ -86,11 +86,13 @@ pub struct DecisionSnapshotV1 {
     pub shares_tx_id: TxId,
     /// The channel set in force at that height.
     pub channels_tx_id: TxId,
+    /// The identities in force at that height: where the actor's key came from.
+    pub identities_tx_id: TxId,
     /// The channel decided through.
     pub channel: String,
     /// The channel's sole actor.
     pub actor: String,
-    /// The key the actor was registered with.
+    /// The key the actor's identity held at that height.
     pub key: PublicKey,
 }
 
@@ -279,6 +281,7 @@ impl DecisionV1 {
             genesis_tx_id: state.genesis_tx_id,
             shares_tx_id: state.shares.tx_id,
             channels_tx_id: state.channels.tx_id,
+            identities_tx_id: state.identities.tx_id,
             channel: channel.as_str().to_owned(),
             actor: actor.id.as_str().to_owned(),
             key,
@@ -329,14 +332,18 @@ impl DecisionV1 {
 
     /// Writes the final record to the chain in its own block.
     ///
-    /// The signature is verified again first and the channel re-resolved at the
-    /// snapshot height: a decision that cannot be reproduced at the moment of
-    /// finalisation is not finalised.
+    /// `key` signs the transaction, and must be the current key of a `governance`
+    /// signer under the company at the chain head: who may put a decision on the
+    /// chain is the company's own authorisation, not whoever holds a key. The
+    /// signature is verified again first and the channel re-resolved at the snapshot
+    /// height: a decision that cannot be reproduced at the moment of finalisation is
+    /// not finalised.
     ///
     /// # Errors
     ///
     /// [`DecisionError::InvalidTransition`] unless signed; [`DecisionError::BadSignature`];
-    /// [`DecisionError::ChannelsMoved`]; the chain's errors.
+    /// [`DecisionError::Ledger`] carrying `UnauthorisedSigner` for a key that may not
+    /// sign governance records; [`DecisionError::ChannelsMoved`]; the chain's errors.
     pub fn finalize(
         &mut self,
         store: &LocalChainStore,
@@ -346,6 +353,11 @@ impl DecisionV1 {
         self.expect_status(DecisionStatusV1::Signed, "finalize")?;
         let record = self.final_record()?;
         record.check_signature()?;
+        authorised_signer(
+            &company_now(store)?,
+            RecordFamilyV1::Governance,
+            &key.public_key(),
+        )?;
         let state = reconstruct(store, record.snapshot.height)?;
         if state.channels.tx_id != record.snapshot.channels_tx_id
             || state.company.as_str() != record.snapshot.company

@@ -3,7 +3,8 @@
 use crate::error::DecisionError;
 use crate::record::{DECISION_NAMESPACE, FinalDecisionRecordV1, RECORD_VERSION};
 use crate::resolve::resolve_channel;
-use irena_ledger::reconstruct;
+use irena_core::RecordFamilyV1;
+use irena_ledger::{authorised_signer, reconstruct};
 use prunella_canonical::Canonical;
 use prunella_core::{BlockHeight, TxId};
 use prunella_store::LocalChainStore;
@@ -20,9 +21,12 @@ pub enum DecisionCheckNameV1 {
     DecisionIdDerives,
     /// The snapshot height precedes the record's own height.
     SnapshotPrecedesRecord,
-    /// The founding record, register and channel set in force at the snapshot height
-    /// are exactly the transactions the snapshot pinned.
+    /// The founding record, register, channel set and identities in force at the
+    /// snapshot height are exactly the transactions the snapshot pinned.
     RecordsResolve,
+    /// The transaction signer is the current key of a `governance` signer under the
+    /// company as it stood at the record's own height.
+    SignerAuthorised,
     /// The pinned channel exists at that height and is individual.
     ChannelIsIndividual,
     /// The channel resolves to exactly the frozen actor, with the frozen key.
@@ -220,6 +224,11 @@ pub fn verify_decision(
             state.channels.tx_id,
             record.snapshot.channels_tx_id,
         ),
+        (
+            "identities",
+            state.identities.tx_id,
+            record.snapshot.identities_tx_id,
+        ),
     ];
     let moved: Vec<String> = pinned
         .iter()
@@ -231,7 +240,7 @@ pub fn verify_decision(
         moved.is_empty(),
         if moved.is_empty() {
             format!(
-                "genesis, register and channel set at height {} are the pinned records",
+                "genesis, register, channel set and identities at height {} are the pinned records",
                 record.snapshot.height
             )
         } else {
@@ -241,7 +250,10 @@ pub fn verify_decision(
         return Ok(report);
     }
 
-    // 5. The channel is individual, and 6. resolves to the frozen actor.
+    // 5. The transaction signer was a governance signer when the record was written.
+    check_signer_authorised(&mut report, store, located.height, &transaction.signer);
+
+    // 6. The channel is individual, and 7. resolves to the frozen actor.
     match resolve_channel(&state, &channel) {
         Ok(resolved) => match resolved.sole_actor() {
             Some(actor) => {
@@ -287,7 +299,7 @@ pub fn verify_decision(
         }
     }
 
-    // 7. Signature.
+    // 8. Signature.
     match record.check_signature() {
         Ok(()) => {
             report.check(
@@ -306,4 +318,40 @@ pub fn verify_decision(
     }
 
     Ok(report)
+}
+
+/// Runs the `SignerAuthorised` check: the key that signed the transaction at `height`
+/// was a `governance` signer's current key under the company as it stood there.
+///
+/// Public so the other governance verifiers report the same check the same way.
+pub fn check_signer_authorised(
+    report: &mut DecisionVerificationV1,
+    store: &LocalChainStore,
+    height: BlockHeight,
+    signer: &prunella_core::PublicKey,
+) -> bool {
+    let (passed, detail) = signer_authorised_at(store, height, signer);
+    report.check(DecisionCheckNameV1::SignerAuthorised, passed, detail)
+}
+
+/// Whether `signer` was a `governance` signer's current key at `height`, and why.
+#[must_use]
+pub fn signer_authorised_at(
+    store: &LocalChainStore,
+    height: BlockHeight,
+    signer: &prunella_core::PublicKey,
+) -> (bool, String) {
+    match reconstruct(store, height) {
+        Ok(state) => match authorised_signer(&state, RecordFamilyV1::Governance, signer) {
+            Ok(person) => (
+                true,
+                format!(
+                    "transaction signed by {}, a governance signer at height {height}",
+                    person.id
+                ),
+            ),
+            Err(error) => (false, error.to_string()),
+        },
+        Err(error) => (false, format!("company at height {height}: {error}")),
+    }
 }
