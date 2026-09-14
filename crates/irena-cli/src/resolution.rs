@@ -156,7 +156,7 @@ pub(crate) fn run(cli: &Cli, command: &ResolutionCommand) -> Result<u8, String> 
                 (Some(target), Some(file), None) => {
                     let target = AmendmentTargetV1::parse(target).ok_or_else(|| {
                         format!(
-                            "--target must be share-structure or decision-channels, not {target:?}"
+                            "--target must be share-structure, decision-channels, identities or authorisation, not {target:?}"
                         )
                     })?;
                     ResolutionKindV1::Amendment {

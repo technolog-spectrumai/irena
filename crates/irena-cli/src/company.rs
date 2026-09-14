@@ -60,6 +60,8 @@ pub(crate) fn run(cli: &Cli) -> Result<u8, String> {
         Command::PublishIdentity(args) => publish_kind(cli, args, RecordKindV1::Identity),
         Command::PublishShares(args) => publish_kind(cli, args, RecordKindV1::ShareStructure),
         Command::PublishChannels(args) => publish_kind(cli, args, RecordKindV1::DecisionChannels),
+        Command::PublishIdentities(args) => publish_kind(cli, args, RecordKindV1::Identities),
+        Command::PublishAuthorisation(args) => publish_kind(cli, args, RecordKindV1::Authorisation),
         Command::Show { at } => {
             let store = open(&cli.chain)?;
             let at = height_or_head(&store, *at)?;
@@ -73,6 +75,8 @@ pub(crate) fn run(cli: &Cli) -> Result<u8, String> {
                  {}\n\
                  {}\n\
                  {}\n\
+                 {}\n\
+                 {}\n\
                  {} record(s) applied",
                 state.company,
                 state.genesis_height,
@@ -80,9 +84,11 @@ pub(crate) fn run(cli: &Cli) -> Result<u8, String> {
                 identity.name,
                 identity.jurisdiction.as_deref().unwrap_or("-"),
                 identity.registered_number.as_deref().unwrap_or("-"),
-                describe_record("identity", &state.identity),
-                describe_record("shares  ", &state.shares),
-                describe_record("channels", &state.channels),
+                describe_record("identity     ", &state.identity),
+                describe_record("shares       ", &state.shares),
+                describe_record("channels     ", &state.channels),
+                describe_record("identities   ", &state.identities),
+                describe_record("authorisation", &state.authorisation),
                 state.applied.len(),
             );
             emit(
@@ -98,7 +104,8 @@ pub(crate) fn run(cli: &Cli) -> Result<u8, String> {
             let state = reconstruct(&store, at).map_err(|e| e.to_string())?;
             let found = &state.shares;
             let register = &found.value;
-            let actors = actors_of_register(register).map_err(|e| e.to_string())?;
+            let actors =
+                actors_of_register(register, &state.identities.value).map_err(|e| e.to_string())?;
             let mut lines = vec![
                 format!("share register of {} at height {at}", state.company),
                 describe_record("record", found),
@@ -232,13 +239,86 @@ pub(crate) fn run(cli: &Cli) -> Result<u8, String> {
             );
             Ok(EXIT_OK)
         }
+        Command::Identities { at } => {
+            let store = open(&cli.chain)?;
+            let at = height_or_head(&store, *at)?;
+            let state = reconstruct(&store, at).map_err(|e| e.to_string())?;
+            let identities = &state.identities.value;
+            let authorisation = &state.authorisation.value;
+            let mut lines = vec![
+                format!("identities of {} at height {at}", state.company),
+                describe_record("identities   ", &state.identities),
+                describe_record("authorisation", &state.authorisation),
+                format!(
+                    "{} person(s); {} hold a key; a person's key is their voice in every channel they sit on",
+                    identities.len(),
+                    identities
+                        .persons()
+                        .iter()
+                        .filter(|p| p.key.is_some())
+                        .count()
+                ),
+            ];
+            for person in identities.persons() {
+                let families: Vec<String> = authorisation
+                    .families_of(&person.id)
+                    .map(|family| family.to_string())
+                    .collect();
+                lines.push(format!(
+                    "  {:<24} {:<30} {:<20} may sign: {}",
+                    person.id.as_str(),
+                    person.name.as_deref().unwrap_or("-"),
+                    person.key.map_or_else(
+                        || "no key: cannot sign".to_owned(),
+                        |key| format!("{key:.16}")
+                    ),
+                    if families.is_empty() {
+                        "nothing".to_owned()
+                    } else {
+                        families.join(", ")
+                    }
+                ));
+            }
+            let unknown: Vec<String> = authorisation
+                .signers()
+                .iter()
+                .filter(|signer| identities.get(&signer.person).is_none())
+                .map(|signer| format!("{} ({})", signer.person, signer.family))
+                .collect();
+            if !unknown.is_empty() {
+                lines.push(format!(
+                    "  authorised but not in the identities, so unable to sign: {}",
+                    unknown.join(", ")
+                ));
+            }
+            emit(
+                cli.json,
+                &lines.join("\n"),
+                &json!({
+                    "company": state.company,
+                    "at": at,
+                    "identities_record": record_json(&state.identities),
+                    "authorisation_record": record_json(&state.authorisation),
+                    "persons": identities.persons().iter().map(|person| json!({
+                        "id": person.id,
+                        "name": person.name,
+                        "document_id": person.document_id,
+                        "key": person.key,
+                        "can_sign": person.key.is_some(),
+                        "may_sign": authorisation.families_of(&person.id).collect::<Vec<_>>(),
+                    })).collect::<Vec<_>>(),
+                    "signers": authorisation.signers(),
+                }),
+            );
+            Ok(EXIT_OK)
+        }
         Command::History { kind, at } => {
             let store = open(&cli.chain)?;
             let kind = RecordKindV1::parse(kind)
                 .filter(|kind| RecordKindV1::AMENDMENTS.contains(kind))
                 .ok_or_else(|| {
                     format!(
-                        "--kind must be identity, share-structure or decision-channels, not {kind:?}"
+                        "--kind must be identity, share-structure, decision-channels, identities or authorisation, not {kind:?}"
                     )
                 })?;
             let at = height_or_head(&store, *at)?;

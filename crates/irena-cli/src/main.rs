@@ -150,6 +150,12 @@ pub(crate) enum Command {
     /// Publish a decision-channels record, amending who decides and how. The whole
     /// channel set is replaced at once.
     PublishChannels(PublishArgs),
+    /// Publish an identities record: every person and the one key each signs with.
+    /// The whole table is replaced at once.
+    PublishIdentities(PublishArgs),
+    /// Publish an authorisation record: who may sign which family of record
+    /// transaction. The whole record is replaced at once.
+    PublishAuthorisation(PublishArgs),
     /// Show what the company is at a height: identity, register and channels together.
     Show {
         /// Reconstruct at this height. Defaults to the head.
@@ -167,9 +173,15 @@ pub(crate) enum Command {
         #[arg(long)]
         at: Option<u64>,
     },
+    /// Show every person, the key they sign with, and which records they may sign.
+    Identities {
+        #[arg(long)]
+        at: Option<u64>,
+    },
     /// List every record that has provided one part, in ledger order.
     History {
-        /// `identity`, `share-structure` or `decision-channels`.
+        /// `identity`, `share-structure`, `decision-channels`, `identities` or
+        /// `authorisation`.
         #[arg(long)]
         kind: String,
         #[arg(long)]

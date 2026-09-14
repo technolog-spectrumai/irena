@@ -14,26 +14,52 @@ const RULES: &str = r#"<voting-rules version="1.0">
 </voting-rules>
 "#;
 
-/// alice (500, key from seed 0x01), bob (300, seed 0x02), carol (200, no key).
+/// alice 500, bob 300, carol 200. Keys live in the identities, not here.
 fn register() -> String {
-    let key = |seed: u8| prunella_crypto::SigningKey::from_seed([seed; 32]).public_key();
-    format!(
-        r#"<share-structure>
-  <holder id="alice" key="{}" name="Alice Smith" shares="500"/>
-  <holder id="bob" key="{}" shares="300"/>
+    r#"<share-structure>
+  <holder id="alice" name="Alice Smith" shares="500"/>
+  <holder id="bob" shares="300"/>
   <holder id="carol" shares="200"/>
 </share-structure>
+"#
+    .to_owned()
+}
+
+/// The one key table: alice 1, bob 2, the three directors 5/6/7, jane 9 (the company
+/// secretary, who holds no shares and no seat). Carol is listed with no key.
+fn identities() -> String {
+    let key = |seed: u8| prunella_crypto::SigningKey::from_seed([seed; 32]).public_key();
+    format!(
+        r#"<identities>
+  <person id="alice" name="Alice Smith" document-id="GB-P-540027183" key="{}"/>
+  <person id="bob" key="{}"/>
+  <person id="carol" name="Carol White"/>
+  <person id="chair" name="M. Chen" key="{}"/>
+  <person id="dir-a" key="{}"/>
+  <person id="dir-b" key="{}"/>
+  <person id="jane" name="Jane Roe" key="{}"/>
+</identities>
 "#,
         key(1),
-        key(2)
+        key(2),
+        key(5),
+        key(6),
+        key(7),
+        key(9)
     )
 }
 
+/// Jane, the company secretary, is the only person who may sign records.
+const AUTHORISATION: &str = r#"<authorisation>
+  <signer person="jane" records="company"/>
+  <signer person="jane" records="governance"/>
+</authorisation>
+"#;
+
 /// The channel set: shareholders (share register, collective, `rules`); board (chair
-/// seed 5 weight 2, dir-a seed 6, dir-b seed 7; collective, simple majority, no
-/// quorum); ceo (chair, individual).
+/// weight 2, dir-a, dir-b; collective, simple majority, no quorum); ceo (chair,
+/// individual).
 fn channels(rules: &str) -> String {
-    let key = |seed: u8| prunella_crypto::SigningKey::from_seed([seed; 32]).public_key();
     format!(
         r#"<decision-channels>
   <channel id="shareholders" mode="collective">
@@ -42,9 +68,9 @@ fn channels(rules: &str) -> String {
   </channel>
   <channel id="board" mode="collective">
     <actors source="roster">
-      <member id="chair" key="{}" name="M. Chen" weight="2"/>
-      <member id="dir-a" key="{}"/>
-      <member id="dir-b" key="{}"/>
+      <member id="chair" name="M. Chen" weight="2"/>
+      <member id="dir-a"/>
+      <member id="dir-b"/>
     </actors>
     <voting-rules version="1.0">
       <weight type="electorate"/>
@@ -57,15 +83,11 @@ fn channels(rules: &str) -> String {
   </channel>
   <channel id="ceo" mode="individual">
     <actors source="roster">
-      <member id="chair" key="{}" name="M. Chen"/>
+      <member id="chair" name="M. Chen"/>
     </actors>
   </channel>
 </decision-channels>
-"#,
-        key(5),
-        key(6),
-        key(7),
-        key(5)
+"#
     )
 }
 
@@ -75,12 +97,15 @@ fn genesis() -> String {
         r#"<company-genesis>
   <identity name="Acme Industries Ltd" jurisdiction="gb" registered-number="01234567"/>
   {}
+  {}
   <governance>
   {}
   </governance>
+  {AUTHORISATION}
 </company-genesis>
 "#,
         register(),
+        identities(),
         channels(RULES)
     )
 }
@@ -144,6 +169,27 @@ impl Cli {
         std::fs::write(
             dir.path().join("channels2.xml"),
             channels(&RULES.replace("reject", "accept")),
+        )
+        .expect("write");
+        // Carol registers the key of seed 3; everyone else is unchanged.
+        std::fs::write(
+            dir.path().join("identities2.xml"),
+            identities().replace(
+                "<person id=\"carol\" name=\"Carol White\"/>",
+                &format!(
+                    "<person id=\"carol\" name=\"Carol White\" key=\"{}\"/>",
+                    prunella_crypto::SigningKey::from_seed([3; 32]).public_key()
+                ),
+            ),
+        )
+        .expect("write");
+        // Alice joins jane as a governance signer.
+        std::fs::write(
+            dir.path().join("authorisation2.xml"),
+            AUTHORISATION.replace(
+                "</authorisation>",
+                "  <signer person=\"alice\" records=\"governance\"/>\n</authorisation>",
+            ),
         )
         .expect("write");
         std::fs::write(dir.path().join("k.key"), "09".repeat(32)).expect("key");
@@ -717,7 +763,7 @@ fn a_vote_runs_end_to_end_and_the_freeze_holds_against_a_mid_vote_amendment() {
         verified.out()
     );
     let report = cli.vote(&["verify", "--tx", &tx, "--json"]).ok().json();
-    assert_eq!(report["checks"].as_array().map(Vec::len), Some(10));
+    assert_eq!(report["checks"].as_array().map(Vec::len), Some(11));
     assert!(
         report["checks"]
             .as_array()
@@ -1119,7 +1165,7 @@ fn a_meeting_runs_end_to_end_with_several_votes_and_verifies() {
         verified.out()
     );
     let report = cli.meeting(&["verify", "--tx", &tx, "--json"]).ok().json();
-    assert_eq!(report["checks"].as_array().map(Vec::len), Some(9));
+    assert_eq!(report["checks"].as_array().map(Vec::len), Some(10));
     assert_eq!(report["votes"].as_array().map(Vec::len), Some(2));
     assert!(
         report["checks"]
@@ -1576,10 +1622,10 @@ fn a_passed_vote_becomes_a_resolution_that_changes_the_company() {
         .resolution(&["verify", "--execution", &execution_tx, "--json"])
         .ok()
         .json();
-    assert_eq!(json["checks"].as_array().map(Vec::len), Some(10));
+    assert_eq!(json["checks"].as_array().map(Vec::len), Some(11));
     assert_eq!(
         json["resolution"]["checks"].as_array().map(Vec::len),
-        Some(10)
+        Some(11)
     );
     assert!(
         json["checks"]
@@ -2200,6 +2246,280 @@ fn channels_resolve_and_an_individual_decision_becomes_a_resolution() {
 }
 
 #[test]
+fn identities_show_who_may_sign_what_and_publishing_is_authorised() {
+    let cli = Cli::new();
+    cli.founded();
+
+    // Every person, the key they hold, and the records they may sign.
+    let shown = cli.run(&["identities"]).ok();
+    assert!(
+        shown.out().contains("7 person(s); 6 hold a key"),
+        "{}",
+        shown.out()
+    );
+    assert!(
+        shown.out().contains("carol") && shown.out().contains("no key: cannot sign"),
+        "{}",
+        shown.out()
+    );
+    assert!(
+        shown.out().contains("jane") && shown.out().contains("company, governance"),
+        "{}",
+        shown.out()
+    );
+    let json = cli.run(&["identities", "--json"]).ok().json();
+    assert_eq!(json["persons"].as_array().map(Vec::len), Some(7));
+    assert_eq!(json["persons"][0]["id"], "alice");
+    assert_eq!(json["persons"][0]["document_id"], "GB-P-540027183");
+    assert_eq!(
+        json["persons"][0]["may_sign"].as_array().map(Vec::len),
+        Some(0)
+    );
+    assert_eq!(json["signers"].as_array().map(Vec::len), Some(2));
+
+    // Alice holds half the company and may not publish a thing.
+    let supersedes = cli.provider("shares");
+    let refused = cli.with_notary(&[
+        "publish-shares",
+        "--file",
+        "shares2.xml",
+        "--signing-key",
+        "holder1.key",
+        "--supersedes",
+        &supersedes,
+        "--timestamp",
+        "1000",
+    ]);
+    assert_eq!(refused.code(), 2);
+    assert!(
+        refused
+            .err()
+            .contains("unauthorised signer for company records")
+            && refused.err().contains("alice holds this key"),
+        "{}",
+        refused.err()
+    );
+
+    // Carol registers a key: one record, and she can vote everywhere she sits.
+    let amended = cli
+        .amend(
+            "publish-identities",
+            "identities2.xml",
+            "identities",
+            "1000",
+        )
+        .ok();
+    assert_eq!(amended.json()["record"]["body"]["kind"], "identities");
+    let shares = cli.run(&["shares", "--json"]).ok().json();
+    let carol = shares["holders"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|h| h["id"] == "carol")
+        .expect("carol");
+    assert_eq!(carol["can_sign"], true, "the register never changed");
+    assert_eq!(
+        cli.run(&["shares", "--at", "0", "--json"]).ok().json()["holders"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|h| h["id"] == "carol")
+            .expect("carol")["can_sign"],
+        false,
+        "the past keeps the key it had"
+    );
+
+    // A second governance signer, and the history of both new parts.
+    cli.amend(
+        "publish-authorisation",
+        "authorisation2.xml",
+        "authorisation",
+        "2000",
+    )
+    .ok();
+    let json = cli.run(&["identities", "--json"]).ok().json();
+    let alice = json["persons"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["id"] == "alice")
+        .expect("alice");
+    assert_eq!(alice["may_sign"][0], "governance");
+    for kind in ["identities", "authorisation"] {
+        let history = cli.run(&["history", "--kind", kind, "--json"]).ok().json();
+        assert_eq!(
+            history.as_array().map(Vec::len),
+            Some(2),
+            "the genesis and one amendment of {kind}"
+        );
+    }
+
+    // Nobody may take the last company signer away.
+    std::fs::write(
+        cli.dir.path().join("lockout.xml"),
+        "<authorisation><signer person=\"zeta\" records=\"company\"/></authorisation>\n",
+    )
+    .unwrap();
+    let lockout = cli.amend(
+        "publish-authorisation",
+        "lockout.xml",
+        "authorisation",
+        "3000",
+    );
+    assert_eq!(lockout.code(), 2);
+    assert!(
+        lockout.err().contains("lock the company out")
+            && lockout.err().contains("zeta (not in the identities)"),
+        "{}",
+        lockout.err()
+    );
+    assert!(
+        cli.run(&["verify-structure"])
+            .ok()
+            .out()
+            .contains("every link holds")
+    );
+}
+
+#[test]
+fn a_resolution_can_rotate_a_key_and_the_ceo_may_only_rotate_its_own() {
+    let cli = Cli::new();
+    cli.founded();
+
+    // The shareholders register carol's key by resolution: an ordinary amendment of
+    // the identities, authorised the ordinary way.
+    let digest = cli.digest_of("identities2.xml");
+    let (meeting_tx, vote_tx) = cli.decide("Register carol's key", &digest, true, 1000);
+    cli.resolution(&[
+        "create",
+        "--title",
+        "Resolution 1: carol's key",
+        "--channel",
+        "shareholders",
+        "--meeting",
+        &meeting_tx,
+        "--item",
+        "1",
+        "--vote",
+        &vote_tx,
+        "--target",
+        "identities",
+        "--file",
+        "identities2.xml",
+        "--state",
+        "r.state",
+    ])
+    .ok();
+    cli.with_notary(&[
+        "resolution",
+        "finalize",
+        "--state",
+        "r.state",
+        "--signing-key",
+        "k.key",
+        "--timestamp",
+        "2000",
+    ])
+    .ok();
+    let executed = cli
+        .with_notary(&[
+            "resolution",
+            "execute",
+            "--state",
+            "r.state",
+            "--signing-key",
+            "k.key",
+            "--timestamp",
+            "3000",
+            "--json",
+        ])
+        .ok();
+    let execution_tx = executed.json()["execution_tx"]
+        .as_str()
+        .expect("tx")
+        .to_owned();
+    let verified = cli
+        .resolution(&["verify", "--execution", &execution_tx])
+        .ok();
+    assert!(
+        verified.out().contains("SelfDemotionHolds"),
+        "{}",
+        verified.out()
+    );
+    let json = cli.run(&["identities", "--json"]).ok().json();
+    let carol = json["persons"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["id"] == "carol")
+        .expect("carol");
+    assert_eq!(carol["can_sign"], true);
+
+    // The ceo rewriting somebody else's key is a takeover, and is refused by name.
+    let stolen = std::fs::read_to_string(cli.dir.path().join("identities2.xml"))
+        .unwrap()
+        .replace(
+            &format!(
+                "<person id=\"dir-a\" key=\"{}\"/>",
+                prunella_crypto::SigningKey::from_seed([6; 32]).public_key()
+            ),
+            &format!(
+                "<person id=\"dir-a\" key=\"{}\"/>",
+                prunella_crypto::SigningKey::from_seed([4; 32]).public_key()
+            ),
+        );
+    assert!(
+        !stolen.contains(
+            &prunella_crypto::SigningKey::from_seed([6; 32])
+                .public_key()
+                .to_string()
+        )
+    );
+    std::fs::write(cli.dir.path().join("stolen.xml"), &stolen).unwrap();
+    let digest = cli.digest_of("stolen.xml");
+    let decision_tx = cli.decide_alone("A new key for dir-a", &digest, 4000);
+    cli.resolution(&[
+        "create",
+        "--title",
+        "Resolution 2: a new key for dir-a",
+        "--channel",
+        "ceo",
+        "--decision",
+        &decision_tx,
+        "--target",
+        "identities",
+        "--file",
+        "stolen.xml",
+        "--state",
+        "r2.state",
+    ])
+    .ok();
+    cli.with_notary(&[
+        "resolution",
+        "finalize",
+        "--state",
+        "r2.state",
+        "--signing-key",
+        "k.key",
+        "--timestamp",
+        "5000",
+    ])
+    .ok();
+    let refused = cli.with_notary(&[
+        "resolution",
+        "execute",
+        "--state",
+        "r2.state",
+        "--signing-key",
+        "k.key",
+        "--timestamp",
+        "6000",
+    ]);
+    assert_eq!(refused.code(), 2);
+    assert!(refused.err().contains("change dir-a"), "{}", refused.err());
+}
+
+#[test]
 fn an_individual_channel_may_only_demote_itself() {
     let cli = Cli::new();
     cli.founded();
@@ -2207,11 +2527,7 @@ fn an_individual_channel_may_only_demote_itself() {
     // The ceo thins the board it sits on: refused at execution, and the refusal names
     // the rule.
     let thinned = channels(RULES).replace(
-        &format!(
-            "      <member id=\"dir-a\" key=\"{}\"/>\n      <member id=\"dir-b\" key=\"{}\"/>\n",
-            prunella_crypto::SigningKey::from_seed([6; 32]).public_key(),
-            prunella_crypto::SigningKey::from_seed([7; 32]).public_key()
-        ),
+        "      <member id=\"dir-a\"/>\n      <member id=\"dir-b\"/>\n",
         "",
     );
     assert!(!thinned.contains("dir-a"), "fixture edited");
