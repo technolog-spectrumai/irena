@@ -10,6 +10,7 @@ repository.workspace = true
 bornite-xml.workspace = true
 borsh.workspace = true
 irena-core.workspace = true
+irena-decision.workspace = true
 irena-ledger.workspace = true
 irena-vote.workspace = true
 prunella-canonical.workspace = true

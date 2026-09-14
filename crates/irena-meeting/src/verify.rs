@@ -29,6 +29,9 @@ pub enum MeetingCheckNameV1 {
     MetadataMatches,
     /// The company reconstructs at the convening height and is the record's company.
     CompanyReconstructs,
+    /// Both the convening and the final record were signed by a `governance` signer's
+    /// current key, each judged against the company at its own height.
+    SignerAuthorised,
     /// Every vote item names a transaction that `irena-vote` verifies.
     VotesVerify,
     /// Every referenced vote is the one this item, this company and this meeting
@@ -222,7 +225,32 @@ pub fn verify_meeting(
         }
     }
 
-    // 7. and 8. Every referenced vote.
+    // 7. Both records' signers.
+    let signers = [
+        ("convening", convening.height, convening.transaction.signer),
+        ("final", located.height, located.transaction.signer),
+    ];
+    let mut refused = Vec::new();
+    let mut allowed = Vec::new();
+    for (label, height, signer) in signers {
+        let (ok, detail) = irena_decision::signer_authorised_at(store, height, &signer);
+        if ok {
+            allowed.push(format!("{label}: {detail}"));
+        } else {
+            refused.push(format!("{label}: {detail}"));
+        }
+    }
+    report.check(
+        MeetingCheckNameV1::SignerAuthorised,
+        refused.is_empty(),
+        if refused.is_empty() {
+            allowed.join("; ")
+        } else {
+            refused.join("; ")
+        },
+    );
+
+    // 8. and 9. Every referenced vote.
     let mut unverified = Vec::new();
     let mut foreign = Vec::new();
     for entry in &record.items {

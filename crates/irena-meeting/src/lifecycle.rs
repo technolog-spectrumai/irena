@@ -9,8 +9,8 @@ use crate::record::{
     compose_final,
 };
 use borsh::{BorshDeserialize, BorshSerialize};
-use irena_core::{CompanyIdV1, NotarisationV1};
-use irena_ledger::company_now;
+use irena_core::{CompanyIdV1, NotarisationV1, RecordFamilyV1};
+use irena_ledger::{authorised_signer, company_now};
 use irena_vote::{SignedBallotV1, VoteV1};
 use prunella_canonical::Canonical;
 use prunella_core::{BlockHeight, Namespace, SchemaVersion, TransactionDraft, TxId};
@@ -199,9 +199,15 @@ impl MeetingV1 {
     ///
     /// # Errors
     ///
+    /// `key` signs the transaction, and must be the current key of a `governance`
+    /// signer under the company at the head.
+    ///
+    /// # Errors
+    ///
     /// [`MeetingError::InvalidTransition`] unless a draft;
     /// [`MeetingError::InvalidAgenda`] if the agenda or metadata is not valid; the
-    /// ledger's errors if the chain holds no company; the chain's own errors.
+    /// ledger's errors if the chain holds no company or `key` may not sign governance
+    /// records; the chain's own errors.
     pub fn convene(
         &mut self,
         store: &LocalChainStore,
@@ -212,6 +218,7 @@ impl MeetingV1 {
         self.expect_status(MeetingStatusV1::Draft, "convene")?;
         let agenda = self.agenda()?;
         let state = company_now(store)?;
+        authorised_signer(&state, RecordFamilyV1::Governance, &key.public_key())?;
         let payload = compose_convened(&state.company, notarisation, &self.metadata, &agenda)?;
         let (tx_id, height) = self.append(store, key, payload, timestamp_millis)?;
         self.company = state.company.as_str().to_owned();
@@ -376,8 +383,9 @@ impl MeetingV1 {
     ///
     /// # Errors
     ///
-    /// [`MeetingError::InvalidTransition`] unless closed; [`MeetingError::Vote`]
-    /// naming the item whose vote could not be finalised; the chain's own errors.
+    /// [`MeetingError::InvalidTransition`] unless closed; the ledger's errors if
+    /// `key` may not sign governance records; [`MeetingError::Vote`] naming the item
+    /// whose vote could not be finalised; the chain's own errors.
     pub fn finalize(
         &mut self,
         store: &LocalChainStore,
@@ -386,6 +394,11 @@ impl MeetingV1 {
         timestamp_millis: u64,
     ) -> Result<MeetingFinalizedV1, MeetingError> {
         self.expect_status(MeetingStatusV1::Closed, "finalize")?;
+        authorised_signer(
+            &company_now(store)?,
+            RecordFamilyV1::Governance,
+            &key.public_key(),
+        )?;
         for (number, vote) in &mut self.votes {
             let number = *number;
             if vote.finalized().is_some() {

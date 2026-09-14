@@ -49,43 +49,68 @@ fn notary(at: &str) -> NotarisationV1 {
     }
 }
 
-/// alice (500, key 1), bob (300, key 2), carol (200, no key).
+/// alice 500, bob 300, carol 200.
 fn register() -> String {
-    format!(
-        r#"<share-structure>
-  <holder id="alice" key="{}" shares="500"/>
-  <holder id="bob" key="{}" shares="300"/>
+    r#"<share-structure>
+  <holder id="alice" shares="500"/>
+  <holder id="bob" shares="300"/>
   <holder id="carol" shares="200"/>
-</share-structure>"#,
-        key(1).public_key(),
-        key(2).public_key()
-    )
+</share-structure>"#
+        .to_owned()
 }
 
 /// bob's shares move to dave: the amendment used to show a freeze holds.
 fn register_amended() -> String {
-    format!(
-        r#"<share-structure>
-  <holder id="alice" key="{}" shares="500"/>
+    r#"<share-structure>
+  <holder id="alice" shares="500"/>
   <holder id="carol" shares="200"/>
-  <holder id="dave" key="{}" shares="300"/>
-</share-structure>"#,
+  <holder id="dave" shares="300"/>
+</share-structure>"#
+        .to_owned()
+}
+
+/// The one key table: alice 1, bob 2, dave 4, the directors 5/6/7, jane 9. Carol is
+/// listed with no key.
+fn identities() -> String {
+    format!(
+        r#"<identities>
+  <person id="alice" key="{}"/>
+  <person id="bob" key="{}"/>
+  <person id="carol" name="Carol White"/>
+  <person id="chair" key="{}"/>
+  <person id="dave" key="{}"/>
+  <person id="dir-a" key="{}"/>
+  <person id="dir-b" key="{}"/>
+  <person id="jane" name="Jane Roe" key="{}"/>
+</identities>"#,
         key(1).public_key(),
-        key(4).public_key()
+        key(2).public_key(),
+        key(5).public_key(),
+        key(4).public_key(),
+        key(6).public_key(),
+        key(7).public_key(),
+        key(9).public_key()
     )
 }
 
+/// Jane, the company secretary, is the only signer: company and governance alike.
+const AUTHORISATION: &str = r#"<authorisation>
+  <signer person="jane" records="company"/>
+  <signer person="jane" records="governance"/>
+</authorisation>"#;
+
 fn genesis_xml() -> String {
     format!(
-        "<company-genesis><identity name=\"Acme Industries Ltd\"/>{}<governance>{}</governance></company-genesis>",
+        "<company-genesis><identity name=\"Acme Industries Ltd\"/>{}{}<governance>{}</governance>{AUTHORISATION}</company-genesis>",
         register(),
+        identities(),
         channels(RULES)
     )
 }
 
 /// The channel set: shareholders (share register, collective, `rules`); board (chair
-/// key 5 weight 2, dir-a key 6, dir-b key 7; collective, simple majority, no quorum);
-/// ceo (chair, individual).
+/// weight 2, dir-a, dir-b; collective, simple majority, no quorum); ceo (chair,
+/// individual). Keys are nowhere here: they live in the identities.
 fn channels(rules: &str) -> String {
     format!(
         r#"<decision-channels>
@@ -95,9 +120,9 @@ fn channels(rules: &str) -> String {
   </channel>
   <channel id="board" mode="collective">
     <actors source="roster">
-      <member id="chair" key="{}" weight="2"/>
-      <member id="dir-a" key="{}"/>
-      <member id="dir-b" key="{}"/>
+      <member id="chair" weight="2"/>
+      <member id="dir-a"/>
+      <member id="dir-b"/>
     </actors>
     <voting-rules version="1.0">
       <weight type="electorate"/>
@@ -110,14 +135,10 @@ fn channels(rules: &str) -> String {
   </channel>
   <channel id="ceo" mode="individual">
     <actors source="roster">
-      <member id="chair" key="{}"/>
+      <member id="chair"/>
     </actors>
   </channel>
-</decision-channels>"#,
-        key(5).public_key(),
-        key(6).public_key(),
-        key(7).public_key(),
-        key(5).public_key()
+</decision-channels>"#
     )
 }
 
@@ -318,9 +339,74 @@ fn a_meeting_runs_from_draft_to_a_verified_record() {
 
     let report = verify_meeting(&chain.store, &finalized.tx_id).expect("verify");
     assert!(report.is_valid(), "{report:#?}");
-    assert_eq!(report.checks.len(), 9);
+    assert_eq!(report.checks.len(), 10);
     assert_eq!(report.votes.len(), 2, "every vote verified too");
     assert!(report.votes.iter().all(|(_, v)| v.is_valid()));
+}
+
+#[test]
+fn only_a_governance_signer_may_convene_or_finalise_a_meeting() {
+    let chain = founded();
+    let mut meeting = drafted();
+    // The chair chairs; the secretary writes. Convening is a record like any other.
+    let error = meeting
+        .convene(&chain.store, &key(5), &notary("2026-03-01T09:00:00Z"), 1000)
+        .expect_err("chair convenes");
+    assert!(
+        matches!(
+            error,
+            MeetingError::Ledger(irena_ledger::LedgerError::UnauthorisedSigner { .. })
+        ),
+        "{error}"
+    );
+    assert_eq!(chain.store.head().unwrap().height, BlockHeight::GENESIS);
+    meeting
+        .convene(&chain.store, &key(9), &notary("2026-03-01T09:00:00Z"), 1000)
+        .expect("jane convenes");
+    meeting.open(&chain.store).expect("open");
+    meeting
+        .cast(
+            2,
+            SignedBallotV1::sign(
+                &key(1),
+                meeting.vote(2).unwrap().id().unwrap(),
+                &voter("alice"),
+                BallotChoiceV1::Yes,
+            ),
+        )
+        .expect("alice");
+    meeting.close(&chain.store).expect("close");
+    let error = meeting
+        .finalize(&chain.store, &key(5), &notary("2026-03-01T12:00:00Z"), 4000)
+        .expect_err("chair finalises");
+    assert!(
+        matches!(
+            error,
+            MeetingError::Ledger(irena_ledger::LedgerError::UnauthorisedSigner { .. })
+        ),
+        "{error}"
+    );
+    let finalized = meeting
+        .finalize(&chain.store, &key(9), &notary("2026-03-01T12:00:00Z"), 4000)
+        .expect("jane finalises");
+    let report = verify_meeting(&chain.store, &finalized.tx_id).expect("verify");
+    assert!(report.is_valid(), "{report:#?}");
+
+    // The same final record planted by an unauthorised key fails one named check.
+    let planted = append_raw_signed(
+        &chain.store,
+        5,
+        "irena.meeting.v1",
+        compose_final(&acme(), &notary("2026-03-01T12:00:00Z"), &finalized.record)
+            .expect("compose")
+            .into_bytes(),
+    );
+    let report = verify_meeting(&chain.store, &planted).expect("verify");
+    assert_eq!(
+        failures(&report),
+        [MeetingCheckNameV1::SignerAuthorised],
+        "{report:#?}"
+    );
 }
 
 #[test]
@@ -723,8 +809,15 @@ fn two_meetings_on_one_chain_are_independent() {
 // Verification refuses what it should.
 // ---------------------------------------------------------------------------------
 
+/// Appends a block holding one transaction, bypassing every Irena check. Signed by
+/// jane's key, so a planted record is judged on its content, not on its signer.
 fn append_raw(store: &LocalChainStore, namespace: &str, payload: Vec<u8>) -> TxId {
-    let signer = key(8);
+    append_raw_signed(store, 9, namespace, payload)
+}
+
+/// As [`append_raw`], signed by the key of the given seed.
+fn append_raw_signed(store: &LocalChainStore, seed: u8, namespace: &str, payload: Vec<u8>) -> TxId {
+    let signer = key(seed);
     let head = store.head().unwrap();
     let parent = store.get_block(head.height).unwrap().unwrap();
     let transaction = signer.sign_transaction(TransactionDraft {
