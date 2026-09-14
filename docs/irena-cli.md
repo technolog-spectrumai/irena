@@ -57,11 +57,12 @@ genesis record: fd171178…
 genesis hash on any machine. A genesis missing its register or its governance is
 refused with every missing part named, and no chain is created.
 
-## `publish-identity`, `publish-shares`, `publish-channels`
+## `publish-identity`, `publish-shares`, `publish-channels`, `publish-identities`, `publish-authorisation`
 
 Publish an amendment to one part of the company, in its own block. `--supersedes` must
 name the transaction currently providing that part — the genesis for the first
-amendment, then the last amendment of the part; `show` prints it.
+amendment, then the last amendment of the part; `show` prints it. `--signing-key` must
+hold the current key of a person the company authorises for `company` records.
 
 ```console
 $ irena publish-shares --file shares-v2.xml --signing-key k.key --supersedes 5d02… \
@@ -76,33 +77,83 @@ With the id of a version that no longer provides the part, the command exits `2`
 supersedes 5d02…`, and nothing is written. `--timestamp` sets the block timestamp in
 milliseconds; it defaults to the clock and is never earlier than the parent block's.
 
-## `show`
-
-The company reconstructed at a height — identity, register and channel set, each with
-the record that provides it.
+An unauthorised key is refused before anything is written, and the message names the
+person who holds it:
 
 ```console
-$ irena show --at 1
-company acme at height 1 (founded at height 0 by 5d02…)
+$ irena publish-shares --file shares-buyout.xml --signing-key k1.key --supersedes a29e… \
+      --notary-id notary-07 --notary-name "Jane Roe" --notary-at 2026-03-01T09:30:00Z
+error: unauthorised signer for company records: key 8a88…: alice holds this key but is
+not a company signer in the authorisation in force
+```
+
+So is an amendment that would leave nobody able to amend the company again:
+
+```console
+$ irena publish-authorisation --file lockout.xml --signing-key k9.key --supersedes a29e… …
+error: the record would lock the company out: no company signer holds a key; company
+signers: carol (no key)
+```
+
+## `show`
+
+The company reconstructed at a height — identity, register, channel set, identities
+and authorisation, each with the record that provides it.
+
+```console
+$ irena show
+company acme at height 25 (founded at height 0 by a29e…)
 name:            Acme Industries Ltd
 jurisdiction:    gb
 registered no.:  01234567
-identity: 5d02… (height 0, supersedes none)
-  notary:     Jane Roe (notary-07), 12 High Street, London at 2026-03-01T09:30:00Z
-shares  : 9b7a… (height 1, supersedes 5d02…)
-  notary:     Jane Roe (notary-07) at 2026-04-01T10:00:00Z
-channels: 5d02… (height 0, supersedes none)
-  notary:     Jane Roe (notary-07), 12 High Street, London at 2026-03-01T09:30:00Z
-2 record(s) applied
+identity     : a29e… (height 0, supersedes none)
+  notary:     Jane Roe (notary-07) at 2026-03-01T09:30:00Z
+shares       : 32a4… (height 5, supersedes a29e…)
+  notary:     Jane Roe (notary-07) at 2026-03-01T09:30:00Z
+channels     : bded… (height 19, supersedes e5bd…)
+  notary:     Jane Roe (notary-07) at 2026-03-01T09:30:00Z
+identities   : 7c5e… (height 21, supersedes a29e…)
+  notary:     Jane Roe (notary-07) at 2026-03-01T09:30:00Z
+authorisation: d7a4… (height 25, supersedes a29e…)
+  notary:     Jane Roe (notary-07) at 2026-03-01T09:30:00Z
+6 record(s) applied
 ```
 
 `--at` defaults to the head. On a chain with no company, exit `2`.
 
+## `identities`
+
+Every person at a height: the key they currently sign with, and which families of
+record they may sign. A person with no key is registered and unable to sign anything;
+a signer who is not in the identities is named at the end, because the row counts for
+nothing.
+
+```console
+$ irena identities
+identities of acme at height 21
+identities   : 7c5e… (height 21, supersedes a29e…)
+  notary:     Jane Roe (notary-07) at 2026-03-01T09:30:00Z
+authorisation: a29e… (height 0, supersedes none)
+  notary:     Jane Roe (notary-07) at 2026-03-01T09:30:00Z
+8 person(s); 6 hold a key; a person's key is their voice in every channel they sit on
+  alice                    Alice Smith                    8a88e3dd7409f195…    may sign: nothing
+  bob                      Bob Jones                      8139770ea87d175f…    may sign: nothing
+  carol                    Carol White                    no key: cannot sign  may sign: nothing
+  chen                     M. Chen                        ed4928c628d1c2c6…    may sign: nothing
+  jane                     Jane Roe                       fd1724385aa0c75b…    may sign: company, governance
+  okafor                   A. Okafor                      6e7a1cdd29b0b78f…    may sign: nothing
+  quinn                    S. Quinn                       1398f62c6d1a457c…    may sign: nothing
+  vance                    R. Vance                       no key: cannot sign  may sign: nothing
+```
+
+`--json` adds each person's `document-id` — an opaque passport or national-id number,
+stored and never interpreted — and the raw signer rows.
+
 ## `shares`
 
 The register at a height, with each holder's voting weight as the `share-register`
-actor source resolves it (flat shares: one share, one vote) and whether they hold a
-signing key.
+actor source resolves it (flat shares: one share, one vote) and whether the identities
+in force at that height hold a key for them.
 
 ```console
 $ irena shares --at 0
@@ -149,7 +200,8 @@ every set that has been in force.
 ## `history`
 
 Every record that has provided one part, in chain order: the genesis, then each
-amendment of the part.
+amendment of the part. `--kind` is `identity`, `share-structure`,
+`decision-channels`, `identities` or `authorisation`.
 
 ```console
 $ irena history --kind share-structure
@@ -166,17 +218,20 @@ Reconstructs the company record by record and reports. Exits `1` if it cannot.
 
 ```console
 $ irena verify-structure
-company acme reconstructs at height 1: 2 record(s) applied, every link holds
-  identity         1 version(s), provided by 5d02…
-  share-structure  2 version(s), provided by 9b7a…
-  decision-channels 1 version(s), provided by 5d02…
+company acme reconstructs at height 25: 6 record(s) applied, every link holds
+  identity         1 version(s), provided by a29e…
+  share-structure  2 version(s), provided by 32a4…
+  decision-channels 3 version(s), provided by bded…
+  identities       2 version(s), provided by 7c5e…
+  authorisation    2 version(s), provided by d7a4…
 nothing was repaired because nothing needed it
 ```
 
 A break can only come from a record written around Irena through Prunella directly:
-an amendment that does not supersede the current provider, a second genesis, a record
-for another company, an unreadable record. It is named exactly and left alone; heights
-before it still reconstruct (`--at`).
+an amendment that does not supersede the current provider, a company record signed by
+a key the company does not authorise, one that leaves nobody able to amend the company
+again, a second genesis, a record for another company, an unreadable record. It is
+named exactly and left alone; heights before it still reconstruct (`--at`).
 
 ## `vote`
 
@@ -435,8 +490,8 @@ $ irena resolution create --channel ceo --decision 01c40b29… \
       --title "Resolution 2: appoint auditors" --document-digest aaaa… --state r2.state
 ```
 
-`--target share-structure|decision-channels` with `--file` makes an amendment
-resolution; `--document-digest` alone makes a declarative one. `finalize` checks the
+`--target share-structure|decision-channels|identities|authorisation` with `--file`
+makes an amendment resolution; `--document-digest` alone makes a declarative one. `finalize` checks the
 whole chain of authority before writing anything — for a vote: the meeting verifies,
 the item is a vote item, the named vote answered it, that vote verifies, **Bornite
 accepted it**, it was through the channel named, and what the resolution carries
@@ -495,15 +550,17 @@ verification of execution 8b1ce256… at height 14
     ok   ProposalMatches              the decision-channels body approved, 1f23046a… (1908 bytes)
     ok   CompanyMatches               acme
     ok   HeightsOrdered               decision recorded at 11, resolution at 12
+    ok   SignerAuthorised             transaction signed by jane, a governance signer at height 12
   ok   Decodes                      execution of resolution f05850db…
   ok   ResolutionVerifies           resolution f05850db… verifies
   ok   ResolutionAuthorisesThis     a decision-channels amendment
   ok   AmendmentExists              a decision-channels record for acme
   ok   AmendmentMatchesResolution   the decision-channels the channel approved, 1f23046a…
   ok   AmendmentReplacedApprovedBase replaced fd171178…, the record the voters saw
-  ok   SelfDemotionHolds            channel ceo on chen's own signature: chen keeps 1 seat(s) unchanged (board) and gains none; gives up ceo
+  ok   SelfDemotionHolds            the channel set, amended on chen's own signature through channel ceo: chen keeps 1 seat(s) unchanged (board) and gains none; gives up ceo
   ok   AmendmentApplied             the amendment is in the company's decision-channels history at height 14
   ok   HeightsOrdered               resolution at 12, amendment at 13, execution at 14
+  ok   SignerAuthorised             transaction signed by jane, a governance signer at height 14
   ok   ExecutedOnce                 the only execution of this resolution
 the amendment is exactly what the channel authorised
 
