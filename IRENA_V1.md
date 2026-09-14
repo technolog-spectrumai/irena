@@ -446,7 +446,7 @@ and a proposal:
 |---|---|
 | `company`, `subject`, `proposal_digest` | What is being voted on. The proposal is identified by its digest and never interpreted |
 | `height` | Where the company was resolved |
-| `genesis_tx_id`, `shares_tx_id`, `channels_tx_id` | The founding transaction and the transactions providing the register and the channel set there, **pinned by transaction id**. A Prunella transaction id commits to the payload bytes, so pinning the id pins the exact register and channel set |
+| `genesis_tx_id`, `shares_tx_id`, `channels_tx_id`, `identities_tx_id` | The founding transaction and the transactions providing the register, the channel set and the identities there, **pinned by transaction id**. A Prunella transaction id commits to the payload bytes, so pinning the id pins the exact register, channel set and key table — a key rotated after the freeze reaches no ballot of this vote |
 | `channel` | The channel voted through; its rules, in that pinned channel set, decide |
 | `electorate` | Every actor in id order: id, weight, excluded (always false), registered key |
 
@@ -467,7 +467,7 @@ reporting the first failure as a typed `BallotRejectionV1`:
 2. well-formed voter id;
 3. voter is in the frozen electorate;
 4. voter is not excluded;
-5. voter has a registered key in the frozen register;
+5. the frozen electorate entry carries a key — the one the identities held at the freeze;
 6. the signature verifies against that key — Prunella's Ed25519 verifier, **never
    Bornite**, which never sees a signature;
 7. the voter has not already cast a ballot. The first ballot stands.
@@ -517,7 +517,8 @@ one failed is absent, not counted as passed:
 | `Decodes` | The transaction is in `irena.vote.v1` and its payload decodes as a V1 record that re-encodes to exactly the stored bytes |
 | `VoteIdDerives` | The stored vote id is the digest of the stored snapshot |
 | `SnapshotPrecedesRecord` | The snapshot height is below the record's own height |
-| `RecordsResolve` | The genesis, register and channel set in force at the snapshot height are exactly the pinned transactions |
+| `RecordsResolve` | The genesis, register, channel set and identities in force at the snapshot height are exactly the pinned transactions |
+| `SignerAuthorised` | The transaction signer is a `governance` signer's current key under the company at the record's own height |
 | `ChannelIsCollective` | The pinned channel exists in that channel set and is collective |
 | `ElectorateDerives` | The electorate re-resolved from the pinned channel equals the frozen one |
 | `BallotsVerify` | Every ballot is for this vote, from a frozen voter with a key, with a signature that verifies against it |
@@ -562,7 +563,7 @@ A runtime state machine like a vote, canonical Borsh between steps (`irena decis
   (§1.3), requires it to be individual (`NotIndividual`) and to have resolved to an
   actor with a registered key (`NoKey`), and records a `DecisionSnapshotV1`: `company`,
   `subject`, `proposal_digest`, `height`, `genesis_tx_id`, `shares_tx_id`,
-  `channels_tx_id`, `channel`, `actor`, `key`. **The decision id is the digest of the
+  `channels_tx_id`, `identities_tx_id`, `channel`, `actor`, `key`. **The decision id is the digest of the
   snapshot** (`hash(IRENA/decision/v1/id, canonical(snapshot))`).
 * **sign(key)** signs `hash(IRENA/decision/v1/statement, canonical(snapshot))` with
   Prunella's Ed25519 and refuses any key but the frozen actor's (`WrongKey`).
@@ -578,7 +579,8 @@ A runtime state machine like a vote, canonical Borsh between steps (`irena decis
 | `Decodes` | The transaction is in `irena.decision.v1` and its payload decodes as a V1 record that re-encodes to exactly the stored bytes |
 | `DecisionIdDerives` | The stored id is the digest of the stored snapshot |
 | `SnapshotPrecedesRecord` | The snapshot height is below the record's own height |
-| `RecordsResolve` | The genesis, register and channel set in force at the snapshot height are exactly the pinned transactions |
+| `RecordsResolve` | The genesis, register, channel set and identities in force at the snapshot height are exactly the pinned transactions |
+| `SignerAuthorised` | The transaction signer is a `governance` signer's current key under the company at the record's own height |
 | `ChannelIsIndividual` | The pinned channel exists in that channel set and is individual |
 | `ActorResolves` | The channel resolves to exactly the frozen actor, with the frozen key |
 | `SignatureVerifies` | The signature verifies against that key over the frozen snapshot |
@@ -701,6 +703,7 @@ referenced vote's own ten checks (§7.6) pass:
 | `AgendaMatches` | The agenda in the final record is exactly the agenda convened |
 | `MetadataMatches` | Channel, title, schedule and notice are exactly those convened |
 | `CompanyReconstructs` | The company reconstructs at the convening height and is the record's company |
+| `SignerAuthorised` | **Both** records — the convening and the final — were signed by a `governance` signer's current key, each judged against the company at its own height |
 | `VotesVerify` | Every vote item names a transaction `irena_vote::verify` accepts |
 | `VotesBelong` | Each vote is the one *this* item called for: right company, **through the meeting's channel**, right subject, right proposal digest, frozen at the declared opening height, finalised before the meeting, and the outcome the record claims |
 | `ItemsConsistent` | Informational items carry no vote; vote items carry one |
