@@ -87,7 +87,8 @@ record on the ledger, and every reference is a transaction id, never a date, a n
 
 Acme Industries has three shareholders — Alice with 500 shares, Bob with 300, Carol
 with 200 — a board of three directors, and a chief executive, M. Chen, who is also the
-board's chair. What follows is a real chain of twenty-one blocks, from an actual run.
+board's chair. Jane Roe, the company secretary, holds no shares and no seat and files
+every record. What follows is a real chain of twenty-six blocks, from an actual run.
 The ids are shortened here; the full output is in
 [docs/irena-cli.md](docs/irena-cli.md), and the documents are under
 [examples/](examples/README.md).
