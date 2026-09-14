@@ -48,9 +48,10 @@ Who may decide, and how, is company data — not code. A **decision channel** ha
 an **actor source** and a **mode**:
 
 ```text
-channel      := id + actor source + mode
+channel      := id + actor source + mode + scope?
 actor source := share-register | roster (members listed inline)
 mode         := individual | collective(<voting-rules>)
+scope        := the company parts this channel may amend; absent, it amends none
 ```
 
 ```xml
@@ -71,9 +72,15 @@ mode         := individual | collective(<voting-rules>)
     <actors source="roster">
       <member id="chen"/>
     </actors>
+    <scope><amend part="decision-channels"/></scope>  <!-- and nothing else -->
   </channel>
 </decision-channels>
 ```
+
+**Silence denies.** A channel with no `<scope>` records declarative decisions and
+amends nothing, so a channel written without thinking about scope holds no power over
+the company. A channel with one may amend exactly the parts it lists, and the scope
+that applies is the one in the channel set the decision was frozen against.
 
 Nobody carries a key here. A holder or a member is an **id**, and the key that id
 signs with lives once, in the identities record:
@@ -238,13 +245,14 @@ before they are re-argued.
 | **The lockout rule is mechanical** | An identities or authorisation record leaving no `company` signer with a key is refused at publish and is a break at reconstruction, so a company can never lose the ability to amend itself. The genesis signer itself is unchecked: whoever founds the chain founds the company, and the authorisation inside applies from the next record on | — |
 | **Notarisation required on every record** — id, name, optional address, `at` in canonical UTC | Real-world authority enters in one place; `at` is attested metadata and never orders anything | Stage 4 can bind notary ids to keys; a notarisation could carry more attestations without changing the envelope |
 | **Bornite's `<voting-rules>` nested unchanged, once per collective channel** | The same rules bytes mean the same rules in a file, a genesis or an amendment; Bornite never sees a company; a board's rules and the shareholders' sit side by side in one channel set | — |
-| **Decision channels: `id + actor source + mode`, no organ types** | `shareholders`, `board`, `ceo` are configurations; Irena knows `share-register`, `roster`, `individual`, `collective` and no legal system; a test runs all three through the same `execute`. Cost: nothing says *what* a channel may decide | Scoped channels — a `scope` attribute checked at `execute` — are the next step, deliberately short of a permissions language; more sources are one `match` arm each |
+| **Decision channels: `id + actor source + mode + scope`, no organ types** | `shareholders`, `board`, `ceo` are configurations; Irena knows `share-register`, `roster`, `individual`, `collective` and no legal system; a test runs all three through the same `execute` | More actor sources are one `match` arm each |
+| **Scope is a list of parts, and silence denies** | A channel amends exactly what it lists, and a channel with no scope amends nothing at all. That is how "the register is not ours to decide" becomes mechanical, which is what a company whose register is kept by an outside authority actually needs. Cost: a third format break, and every channel document must now say what it may do | A scope could later narrow by *kind* of change rather than by part; anything finer starts becoming a permissions language, which is still refused |
 | **Clean break: `<governance>` holds `<decision-channels>`, never a bare `<voting-rules>`** | No implicit `shareholders` channel hardcoded in Rust; old genesis documents stop parsing (Irena's format is not frozen; only PROTOCOL_V1 and BORNITE_V1 are) | — |
 | **The channel set is a company part, replaced whole** | One provider per part, reconstruction unchanged, the register's own supersession mechanism; changing one channel rewrites the set | Per-channel supersession if whole-set rewrites prove costly |
 | **Individual = the source resolves to exactly one actor** | No `actor=` selector, no notion of an office; a `ceo` is a roster of one, a single-member company its own register; rotation is a channel-set amendment. Cost: validity depends on state, so a `share-register` individual channel stops resolving the day a second holder is admitted — reported, never guessed | — |
 | **Individual decisions are their own chain record** | `irena.decision.v1`, verified independently like a vote; a resolution names a channel and one transaction whichever the mode, and everything after the authority check is one code path (`ApprovalV1`) | — |
 | **A meeting is a meeting of one channel** | A board meeting and a shareholders' meeting are the same code with a different id; `VotesBelong` catches a vote from another channel; per-item channels are not built | Per-item channels if a mixed meeting is ever wanted |
-| **Self-demotion, not a policy engine** | Two set comparisons — no new seat, no changed seat — refused at `execute` and re-checked by `SelfDemotionHolds`; a sole director may abolish themselves, never promote themselves. Gap, documented: an individual channel may rewrite a channel its actor is not part of, and collective amendments are unrestricted | Widen the rule if the gap matters; scoped channels close most of it |
+| **Self-demotion, not a policy engine** | Two set comparisons — no new seat, no changed seat — refused at `execute` and re-checked by `SelfDemotionHolds`; a sole director may abolish themselves, never promote themselves. It bounds the signer's own reach; the scope bounds the subject matter, and the two are checked independently | Widen either rule if a gap matters |
 | **Records pinned by transaction id, never by height or time** | A vote snapshot pins the exact bytes it was decided against; amendments after the freeze cannot reach it | — |
 | **Vote state as a canonical Borsh file; ballots as files** | Every lifecycle step is one command; a holder signs on their own machine | Stage 5 UI drives the same `VoteV1` in memory; a meeting holds several |
 | **A meeting is a container, not a company part** | Meeting records carry no `supersedes` and reconstruction ignores their namespace, so no meeting can silently change the company | Turning a passed motion into an amendment is stage 2, and adds a record kind rather than changing this one |
@@ -276,11 +284,12 @@ Planned, in order — see [IRENA_V1.md §11](IRENA_V1.md):
    board is a collective channel over a roster, see [IRENA_V1.md §1.3](IRENA_V1.md);
 4. ~~identities and authorisation~~ — **done**: one key table and who may sign which
    family of record, see [IRENA_V1.md §1.4–§1.5](IRENA_V1.md);
-5. Placidia coordination and UI.
+5. ~~scoped channels~~ — **done**: a channel amends the parts it lists and nothing
+   else, see [IRENA_V1.md §1.3](IRENA_V1.md);
+6. Placidia coordination and UI.
 
-Next to the channels, recorded rather than built: scoped channels, per-channel
-supersession, more actor sources, a wider self-demotion rule, notary ids bound to
-identities.
+Next to the channels, recorded rather than built: per-channel supersession, more actor
+sources, a wider self-demotion rule, notary ids bound to identities.
 
 Also deliberately absent: share classes (the company has flat shares), secret ballots,
 delegation, proxies, networking, consensus.

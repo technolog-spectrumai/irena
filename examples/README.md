@@ -14,6 +14,13 @@ what the code accepts. The `irena` CLI tests found chains from them.
 | [`channels-ceo-thins-board.xml`](channels-ceo-thins-board.xml) | A channel-set amendment the `ceo` channel **may not** execute alone: it changes a board its actor sits on — refused by the self-demotion rule |
 | [`identities-rotate-chen.xml`](identities-rotate-chen.xml) | An identities amendment: chen's key rotated, quinn registered. One record, and every channel chen sits on sees the new key |
 | [`authorisation-two-secretaries.xml`](authorisation-two-secretaries.xml) | An authorisation amendment: a second `company` signer, and a `governance`-only signer |
+| [`channels-psa-register-external.xml`](channels-psa-register-external.xml) | A channel set where **no channel may amend the share register**, for a company whose register is kept by an outside authority and only mirrored on the chain |
+
+Every channel says what it may amend. A channel with no `<scope>` records declarative
+decisions and amends nothing, so silence denies. In these examples the shareholders
+amend any part, the board changes who decides and who holds a key, and the chief
+executive may change the channel set alone, which the self-demotion rule then allows
+only downwards.
 
 Holders and roster members carry an id only. Keys live once, under `<identities>`,
 where a person may also carry an opaque `document-id` (a national id or passport

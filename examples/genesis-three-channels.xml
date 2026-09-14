@@ -9,6 +9,12 @@
   Nothing here names an organ or a legal system: "board" and "ceo" are labels the
   notary chose. Irena knows share-register, roster, individual and collective.
 
+  Each channel also says what it may amend. The shareholders may amend any part; the
+  board may change who decides and who holds a key, and may not touch the register;
+  the ceo may change the channel set alone, which under the self-demotion rule means
+  only downwards. Silence denies: a channel with no <scope> records decisions and
+  amends nothing.
+
   Every person who holds shares, sits on a roster or signs record transactions is
   listed once under <identities> with the one key they currently sign with (Carol and
   Vance have registered none: counted, unable to sign). Holders and members carry an id
@@ -80,7 +86,8 @@
           </voting-rules>
         </channel>
       <channel id="ceo" mode="individual">
-          <!-- One actor signs. The source must resolve to exactly one actor. -->
+          <!-- One actor signs. The source must resolve to exactly one actor. The
+               scope is what stops one signature reaching the register. -->
           <actors source="roster">
             <member id="chen" name="M. Chen"/>
           </actors>

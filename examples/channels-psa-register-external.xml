@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  A channel set for a company whose share register is not its own to decide.
+
+  In a Polish prosta spółka akcyjna the rejestr akcjonariuszy is kept by an authorised
+  entity, a brokerage house or a notary, and entry in it is constitutive: a person
+  becomes a shareholder when the keeper enters them, not when the company resolves
+  anything. The <share-structure> on this chain is therefore a MIRROR of a register the
+  company does not own.
+
+  So no channel here is scoped to share-structure. Not the shareholders, not the board,
+  not the chief executive. The mirror is brought up to date by the company signer filing
+  what the keeper recorded, which is an ordinary authorised publication and no channel's
+  decision. Anyone who tries to carry a register amendment through a channel is refused
+  by name, and any reader re-checks it from the chain.
+
+  Everything else is ordinary: the shareholders amend the constitution-shaped parts, the
+  board manages the key table, and the chief executive decides alone and amends nothing.
+-->
+<decision-channels>
+  <channel id="shareholders" mode="collective">
+    <actors source="share-register"/>
+    <scope>
+      <amend part="identity"/>
+      <amend part="decision-channels"/>
+      <amend part="identities"/>
+      <amend part="authorisation"/>
+    </scope>
+    <voting-rules version="1.0">
+      <weight type="electorate"/>
+      <exclusions enabled="true"/>
+      <quorum type="fraction" numerator="1" denominator="2" basis="total-electorate"/>
+      <threshold type="simple-majority" basis="votes-cast"/>
+      <abstentions treatment="exclude"/>
+      <tie treatment="reject"/>
+    </voting-rules>
+  </channel>
+  <channel id="board" mode="collective">
+    <actors source="roster">
+      <member id="chen" name="M. Chen" weight="2"/>
+      <member id="okafor" name="A. Okafor"/>
+      <member id="vance" name="R. Vance"/>
+    </actors>
+    <scope>
+      <amend part="identities"/>
+    </scope>
+    <voting-rules version="1.0">
+      <weight type="electorate"/>
+      <exclusions enabled="false"/>
+      <quorum type="none"/>
+      <threshold type="simple-majority" basis="votes-cast"/>
+      <abstentions treatment="exclude"/>
+      <tie treatment="reject"/>
+    </voting-rules>
+  </channel>
+  <channel id="ceo" mode="individual">
+    <!-- No <scope>: records decisions, amends nothing. -->
+    <actors source="roster">
+      <member id="chen" name="M. Chen"/>
+    </actors>
+  </channel>
+</decision-channels>
