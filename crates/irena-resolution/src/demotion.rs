@@ -1,5 +1,5 @@
-//! The self-demotion rule: an individual channel may amend the channel set only if
-//! its own actor's reach does not grow.
+//! The self-demotion rules: an individual channel may amend who decides, who holds a
+//! key and who may publish only if its own actor's reach does not grow.
 //!
 //! Irena enforces mechanism, not legitimacy, so a channel-set amendment carried by a
 //! meeting is unrestricted. But one person rewriting who decides is the one place a
@@ -16,14 +16,28 @@
 //! anywhere, widen their own channel, thin out a collective they sit on, or change its
 //! rules. Two set comparisons; no scoring, no ordering, no expressions.
 //!
-//! **What it does not do**, stated plainly: it bounds the signer's *own* reach. It does
-//! not stop an individual channel from rewriting a channel its actor is not part of.
-//! That is a configuration hazard the notarisation on the channel-set record attests
-//! to, and `irena channels` marks every individual channel so a reader knows to look.
+//! Two parts beside the channel set can hand one person the same power by another
+//! route, so each has its own rule, applied the same way and reported the same way:
+//!
+//! * **Identities** ([`identity_demotion`]) — a person's key *is* their voice in every
+//!   channel they sit on, so on an individual decision only the signer's own entry may
+//!   change. Persons may be added; nobody else's entry may be changed or removed. A
+//!   sole director rotates their own key alone and never anyone else's.
+//! * **Authorisation** ([`authorisation_demotion`]) — publishing bare records is real
+//!   power, so the signer's own rows in the new record must be a subset of their rows
+//!   in the old one: you may drop your own publishing right, never grant yourself one.
+//!
+//! **What they do not do**, stated plainly: they bound the signer's *own* reach. They
+//! do not stop an individual channel from rewriting a channel its actor is not part
+//! of, registering a new person, or authorising somebody else. That is a configuration
+//! hazard the notarisation on the record attests to, and `irena channels` marks every
+//! individual channel so a reader knows to look.
 
 use crate::error::ResolutionError;
 use bornite_core::VoterIdV1;
-use irena_core::{ChannelIdV1, DecisionChannelsV1, ShareStructureV1};
+use irena_core::{
+    AuthorisationV1, ChannelIdV1, DecisionChannelsV1, IdentitiesV1, ShareStructureV1,
+};
 use irena_decision::actors_of;
 use std::collections::BTreeSet;
 
@@ -37,15 +51,19 @@ pub struct SelfDemotionV1 {
 }
 
 /// The ids of every channel `signer` is an actor of, with sources resolved against
-/// `register`.
+/// `register` and `identities`.
 fn seats(
     set: &DecisionChannelsV1,
     signer: &VoterIdV1,
     register: &ShareStructureV1,
+    identities: &IdentitiesV1,
 ) -> Result<BTreeSet<ChannelIdV1>, ResolutionError> {
     let mut seats = BTreeSet::new();
     for channel in set.channels() {
-        if actors_of(&channel.actors, register)?.get(signer).is_some() {
+        if actors_of(&channel.actors, register, identities)?
+            .get(signer)
+            .is_some()
+        {
             seats.insert(channel.id.clone());
         }
     }
@@ -74,9 +92,10 @@ pub fn self_demotion(
     old: &DecisionChannelsV1,
     new: &DecisionChannelsV1,
     register: &ShareStructureV1,
+    identities: &IdentitiesV1,
 ) -> Result<SelfDemotionV1, ResolutionError> {
-    let before = seats(old, signer, register)?;
-    let after = seats(new, signer, register)?;
+    let before = seats(old, signer, register, identities)?;
+    let after = seats(new, signer, register, identities)?;
     let gained: BTreeSet<ChannelIdV1> = after.difference(&before).cloned().collect();
     let changed: BTreeSet<ChannelIdV1> = after
         .intersection(&before)
@@ -117,11 +136,106 @@ pub fn self_demotion(
     })
 }
 
+/// Applies the identities rule to an amendment replacing `old` with `new`, signed by
+/// `signer`: only the signer's own entry may change, and persons may be added.
+#[must_use]
+pub fn identity_demotion(
+    signer: &VoterIdV1,
+    old: &IdentitiesV1,
+    new: &IdentitiesV1,
+) -> SelfDemotionV1 {
+    let mut changed = Vec::new();
+    let mut removed = Vec::new();
+    for person in old.persons() {
+        if &person.id == signer {
+            continue;
+        }
+        match new.get(&person.id) {
+            None => removed.push(person.id.to_string()),
+            Some(found) if found != person => changed.push(person.id.to_string()),
+            Some(_) => {}
+        }
+    }
+    let added: Vec<String> = new
+        .persons()
+        .iter()
+        .filter(|person| old.get(&person.id).is_none())
+        .map(|person| person.id.to_string())
+        .collect();
+    let holds = changed.is_empty() && removed.is_empty();
+    let mut parts = Vec::new();
+    if !changed.is_empty() {
+        parts.push(format!("{signer} would change {}", changed.join(", ")));
+    }
+    if !removed.is_empty() {
+        parts.push(format!("{signer} would remove {}", removed.join(", ")));
+    }
+    if holds {
+        let own = match (old.get(signer), new.get(signer)) {
+            (Some(before), Some(after)) if before == after => "own entry unchanged".to_owned(),
+            (Some(_), Some(_)) => format!("{signer} changed their own entry"),
+            (Some(_), None) => format!("{signer} removed their own entry"),
+            (None, _) => format!("{signer} is not listed"),
+        };
+        parts.push(format!("{own}; nobody else's entry changed"));
+        if !added.is_empty() {
+            parts.push(format!("registered {}", added.join(", ")));
+        }
+    }
+    SelfDemotionV1 {
+        holds,
+        detail: parts.join("; "),
+    }
+}
+
+/// Applies the authorisation rule to an amendment replacing `old` with `new`, signed
+/// by `signer`: the signer's own rows may only shrink.
+#[must_use]
+pub fn authorisation_demotion(
+    signer: &VoterIdV1,
+    old: &AuthorisationV1,
+    new: &AuthorisationV1,
+) -> SelfDemotionV1 {
+    let before: BTreeSet<_> = old.families_of(signer).collect();
+    let after: BTreeSet<_> = new.families_of(signer).collect();
+    let gained: Vec<String> = after.difference(&before).map(ToString::to_string).collect();
+    let given_up: Vec<String> = before.difference(&after).map(ToString::to_string).collect();
+    let holds = gained.is_empty();
+    let mut parts = Vec::new();
+    if holds {
+        parts.push(format!(
+            "{signer} may sign {} and gains nothing",
+            if after.is_empty() {
+                "nothing".to_owned()
+            } else {
+                after
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            }
+        ));
+        if !given_up.is_empty() {
+            parts.push(format!("gives up {}", given_up.join(", ")));
+        }
+    } else {
+        parts.push(format!(
+            "{signer} would gain the right to sign {}",
+            gained.join(", ")
+        ));
+    }
+    SelfDemotionV1 {
+        holds,
+        detail: parts.join("; "),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use irena_core::{
-        ActorSourceV1, ChannelModeV1, DecisionChannelV1, HolderV1, MemberV1, RosterV1,
+        ActorSourceV1, ChannelModeV1, DecisionChannelV1, HolderV1, MemberV1, PersonV1, RosterV1,
+        SignerV1,
     };
     use prunella_core::PublicKey;
 
@@ -136,10 +250,42 @@ mod tests {
     fn member(text: &str, weight: u64) -> MemberV1 {
         MemberV1 {
             id: voter(text),
-            key: Some(PublicKey::from_bytes([text.len() as u8; 32])),
             name: None,
             weight,
         }
+    }
+
+    fn person(id: &str, key: Option<u8>) -> PersonV1 {
+        PersonV1 {
+            id: voter(id),
+            name: None,
+            document_id: None,
+            key: key.map(|seed| PublicKey::from_bytes([seed; 32])),
+        }
+    }
+
+    fn identities(people: Vec<PersonV1>) -> IdentitiesV1 {
+        IdentitiesV1::new(people).unwrap()
+    }
+
+    fn keys() -> IdentitiesV1 {
+        identities(vec![
+            person("chen", Some(1)),
+            person("okafor", Some(2)),
+            person("vance", None),
+        ])
+    }
+
+    fn authorisation(rows: &[(&str, irena_core::RecordFamilyV1)]) -> AuthorisationV1 {
+        AuthorisationV1::new(
+            rows.iter()
+                .map(|(person, family)| SignerV1 {
+                    person: voter(person),
+                    family: *family,
+                })
+                .collect(),
+        )
+        .unwrap()
     }
 
     fn rules(tie_accept: bool) -> irena_core::VotingRulesV1 {
@@ -185,7 +331,6 @@ mod tests {
     fn register() -> ShareStructureV1 {
         ShareStructureV1::new(vec![HolderV1 {
             id: voter("chen"),
-            key: None,
             name: None,
             shares: 10,
         }])
@@ -206,7 +351,7 @@ mod tests {
     }
 
     fn check(new: DecisionChannelsV1) -> SelfDemotionV1 {
-        self_demotion(&voter("chen"), &old(), &new, &register()).unwrap()
+        self_demotion(&voter("chen"), &old(), &new, &register(), &keys()).unwrap()
     }
 
     #[test]
@@ -336,8 +481,96 @@ mod tests {
                 ])
             },
             &register(),
+            &keys(),
         )
         .unwrap();
         assert!(verdict.holds, "{}", verdict.detail);
+    }
+
+    #[test]
+    fn only_the_signers_own_identity_entry_may_change() {
+        let chen = voter("chen");
+        let old = keys();
+        // Rotating one's own key, alone.
+        let rotated = identities(vec![
+            person("chen", Some(9)),
+            person("okafor", Some(2)),
+            person("vance", None),
+        ]);
+        let verdict = identity_demotion(&chen, &old, &rotated);
+        assert!(verdict.holds, "{}", verdict.detail);
+        assert!(
+            verdict.detail.contains("changed their own entry"),
+            "{}",
+            verdict.detail
+        );
+        // Registering somebody new alongside.
+        let added = identities(vec![
+            person("chen", Some(1)),
+            person("okafor", Some(2)),
+            person("quinn", Some(8)),
+            person("vance", None),
+        ]);
+        let verdict = identity_demotion(&chen, &old, &added);
+        assert!(verdict.holds, "{}", verdict.detail);
+        assert!(
+            verdict.detail.contains("registered quinn"),
+            "{}",
+            verdict.detail
+        );
+        // Taking over somebody else's key: the takeover the rule exists for.
+        let stolen = identities(vec![
+            person("chen", Some(1)),
+            person("okafor", Some(7)),
+            person("vance", None),
+        ]);
+        let verdict = identity_demotion(&chen, &old, &stolen);
+        assert!(!verdict.holds);
+        assert!(
+            verdict.detail.contains("change okafor"),
+            "{}",
+            verdict.detail
+        );
+        // Removing somebody, which silences them everywhere.
+        let dropped = identities(vec![person("chen", Some(1)), person("okafor", Some(2))]);
+        let verdict = identity_demotion(&chen, &old, &dropped);
+        assert!(!verdict.holds);
+        assert!(
+            verdict.detail.contains("remove vance"),
+            "{}",
+            verdict.detail
+        );
+        // Standing down oneself.
+        let gone = identities(vec![person("okafor", Some(2)), person("vance", None)]);
+        let verdict = identity_demotion(&chen, &old, &gone);
+        assert!(verdict.holds, "{}", verdict.detail);
+    }
+
+    #[test]
+    fn a_signer_may_drop_their_own_publishing_right_and_never_grant_one() {
+        use irena_core::RecordFamilyV1::{Company, Governance};
+        let chen = voter("chen");
+        let old = authorisation(&[("jane", Company), ("chen", Governance)]);
+        // Giving up one's own row.
+        let dropped = authorisation(&[("jane", Company)]);
+        let verdict = authorisation_demotion(&chen, &old, &dropped);
+        assert!(verdict.holds, "{}", verdict.detail);
+        assert!(
+            verdict.detail.contains("gives up governance"),
+            "{}",
+            verdict.detail
+        );
+        // Granting oneself the company family.
+        let grabbed = authorisation(&[("jane", Company), ("chen", Governance), ("chen", Company)]);
+        let verdict = authorisation_demotion(&chen, &old, &grabbed);
+        assert!(!verdict.holds);
+        assert!(
+            verdict.detail.contains("gain the right to sign company"),
+            "{}",
+            verdict.detail
+        );
+        // Somebody else's rows are not this rule's business.
+        let others = authorisation(&[("jane", Company), ("chen", Governance), ("okafor", Company)]);
+        assert!(authorisation_demotion(&chen, &old, &others).holds);
     }
 }

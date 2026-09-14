@@ -41,7 +41,7 @@ mod record;
 mod resolution;
 mod verify;
 
-pub use demotion::{SelfDemotionV1, self_demotion};
+pub use demotion::{SelfDemotionV1, authorisation_demotion, identity_demotion, self_demotion};
 pub use error::ResolutionError;
 pub use lifecycle::{ExecutedV1, ResolutionV1};
 pub use record::{

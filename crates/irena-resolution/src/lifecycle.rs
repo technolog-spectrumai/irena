@@ -1,6 +1,7 @@
 //! The resolution as a process.
 
 use crate::demotion::self_demotion;
+use crate::demotion::{authorisation_demotion, identity_demotion};
 use crate::error::ResolutionError;
 use crate::record::{
     EXECUTION_NAMESPACE, EXECUTION_SCHEMA_VERSION, RESOLUTION_NAMESPACE, RESOLUTION_SCHEMA_VERSION,
@@ -12,9 +13,12 @@ use crate::resolution::{
 };
 use bornite_core::VoterIdV1;
 use borsh::{BorshDeserialize, BorshSerialize};
-use irena_core::{CompanyIdV1, NotarisationV1, read_decision_channels_document};
+use irena_core::{
+    CompanyIdV1, NotarisationV1, RecordFamilyV1, read_authorisation_document,
+    read_decision_channels_document, read_identities_document,
+};
 use irena_decision::verify_decision;
-use irena_ledger::{company_now, publish, reconstruct};
+use irena_ledger::{authorised_signer, company_now, publish, reconstruct};
 use irena_meeting::verify_meeting;
 use irena_vote::verify;
 use prunella_canonical::Canonical;
@@ -162,7 +166,13 @@ impl ResolutionV1 {
     ///
     /// # Errors
     ///
-    /// [`ResolutionError::InvalidTransition`] unless a draft, or the named failure:
+    /// `key` signs the transaction, and must be the current key of a `governance`
+    /// signer under the company at the head.
+    ///
+    /// # Errors
+    ///
+    /// [`ResolutionError::InvalidTransition`] unless a draft; the ledger's errors if
+    /// `key` may not sign governance records; or the named failure:
     /// [`ResolutionError::MeetingUnverified`], [`ResolutionError::NoSuchVoteItem`],
     /// [`ResolutionError::WrongVote`], [`ResolutionError::VoteUnverified`],
     /// [`ResolutionError::VoteRejected`], [`ResolutionError::DecisionUnverified`],
@@ -177,6 +187,7 @@ impl ResolutionV1 {
         self.expect_status(ResolutionStatusV1::Draft, "finalize")?;
         let approval = self.check_authority(store)?;
         let state = company_now(store)?;
+        authorised_signer(&state, RecordFamilyV1::Governance, &key.public_key())?;
         if approval.company != state.company.as_str() {
             return Err(ResolutionError::CompanyMismatch {
                 expected: state.company.to_string(),
@@ -290,6 +301,10 @@ impl ResolutionV1 {
                     height: vote.snapshot.height,
                     shares_tx_id: vote.snapshot.shares_tx_id,
                     channels_tx_id: vote.snapshot.channels_tx_id,
+                    identities_tx_id: vote.snapshot.identities_tx_id,
+                    authorisation_tx_id: reconstruct(store, vote.snapshot.height)?
+                        .authorisation
+                        .tx_id,
                     through_tx: *vote_tx,
                 }
             }
@@ -329,6 +344,10 @@ impl ResolutionV1 {
                     height: decision.snapshot.height,
                     shares_tx_id: decision.snapshot.shares_tx_id,
                     channels_tx_id: decision.snapshot.channels_tx_id,
+                    identities_tx_id: decision.snapshot.identities_tx_id,
+                    authorisation_tx_id: reconstruct(store, decision.snapshot.height)?
+                        .authorisation
+                        .tx_id,
                     through_tx: *decision_tx,
                 }
             }
@@ -359,15 +378,18 @@ impl ResolutionV1 {
     /// * **A second execution.** The chain is scanned for an execution of this
     ///   resolution ([`ResolutionError::AlreadyExecuted`]); even without that,
     ///   `publish` would refuse the second amendment as stale.
-    /// * **Self-promotion.** A channel-set amendment resting on an individual decision
-    ///   must satisfy the self-demotion rule ([`crate::self_demotion`]): the signer's
-    ///   reach may not grow ([`ResolutionError::SelfPromotion`]).
+    /// * **Self-promotion.** An amendment resting on an individual decision must
+    ///   satisfy the self-demotion rule for its target: the channel set
+    ///   ([`crate::self_demotion`]), the identities ([`crate::identity_demotion`]) or
+    ///   the authorisation ([`crate::authorisation_demotion`]). In each the signer's
+    ///   own reach may not grow ([`ResolutionError::SelfPromotion`]).
     ///
     /// # Errors
     ///
     /// [`ResolutionError::InvalidTransition`] unless finalised;
     /// [`ResolutionError::NothingToExecute`] for a declarative resolution; the three
-    /// refusals above; or the chain's own errors.
+    /// refusals above; the ledger's errors if `key` may sign neither governance nor
+    /// company records; or the chain's own errors.
     pub fn execute(
         &mut self,
         store: &LocalChainStore,
@@ -397,6 +419,9 @@ impl ResolutionV1 {
         let approval = self.check_authority(store)?;
         let approved = approval.base_of(target);
         let state = company_now(store)?;
+        // The execution record is a governance record; the amendment itself is a
+        // company record, which `publish` checks in its own right.
+        authorised_signer(&state, RecordFamilyV1::Governance, &key.public_key())?;
         let current = state.provider_of(target.record_kind());
         if current != approved {
             return Err(ResolutionError::StaleBase {
@@ -406,16 +431,35 @@ impl ResolutionV1 {
             });
         }
 
-        // One person rewriting who decides: only ever downwards.
-        if target == AmendmentTargetV1::DecisionChannels
-            && let Some(actor) = &approval.actor
-        {
+        // One person rewriting who decides, who signs, or who may publish: only ever
+        // downwards.
+        if let Some(actor) = &approval.actor {
             let signer = VoterIdV1::new(actor.clone()).map_err(|error| ResolutionError::Chain {
                 detail: format!("the decision's actor is not a voter id: {error}"),
             })?;
-            let new = read_decision_channels_document(&body)?;
-            let verdict = self_demotion(&signer, &state.channels.value, &new, &state.shares.value)?;
-            if !verdict.holds {
+            let verdict = match target {
+                AmendmentTargetV1::ShareStructure => None,
+                AmendmentTargetV1::DecisionChannels => Some(self_demotion(
+                    &signer,
+                    &state.channels.value,
+                    &read_decision_channels_document(&body)?,
+                    &state.shares.value,
+                    &state.identities.value,
+                )?),
+                AmendmentTargetV1::Identities => Some(identity_demotion(
+                    &signer,
+                    &state.identities.value,
+                    &read_identities_document(&body)?,
+                )),
+                AmendmentTargetV1::Authorisation => Some(authorisation_demotion(
+                    &signer,
+                    &state.authorisation.value,
+                    &read_authorisation_document(&body)?,
+                )),
+            };
+            if let Some(verdict) = verdict
+                && !verdict.holds
+            {
                 return Err(ResolutionError::SelfPromotion {
                     channel: approval.channel.clone(),
                     actor: actor.clone(),

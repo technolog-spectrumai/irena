@@ -59,42 +59,96 @@ fn notary(at: &str) -> NotarisationV1 {
     }
 }
 
-/// alice (500, key 1), bob (300, key 2), carol (200, no key).
+/// alice 500, bob 300, carol 200.
 fn register() -> String {
-    format!(
-        r#"<share-structure>
-  <holder id="alice" key="{}" shares="500"/>
-  <holder id="bob" key="{}" shares="300"/>
+    r#"<share-structure>
+  <holder id="alice" shares="500"/>
+  <holder id="bob" shares="300"/>
   <holder id="carol" shares="200"/>
-</share-structure>"#,
-        key(1).public_key(),
-        key(2).public_key()
-    )
+</share-structure>"#
+        .to_owned()
 }
 
 /// carol is bought out; her shares go to alice.
 fn register_v2() -> String {
+    r#"<share-structure>
+  <holder id="alice" shares="700"/>
+  <holder id="bob" shares="300"/>
+</share-structure>"#
+        .to_owned()
+}
+
+/// The one key table: alice 1, bob 2, the directors 5/6/7, jane 9. Carol has no key.
+fn identities() -> String {
     format!(
-        r#"<share-structure>
-  <holder id="alice" key="{}" shares="700"/>
-  <holder id="bob" key="{}" shares="300"/>
-</share-structure>"#,
+        r#"<identities>
+  <person id="alice" key="{}"/>
+  <person id="bob" key="{}"/>
+  <person id="carol" name="Carol White"/>
+  <person id="chair" key="{}"/>
+  <person id="dir-a" key="{}"/>
+  <person id="dir-b" key="{}"/>
+  <person id="jane" name="Jane Roe" key="{}"/>
+</identities>"#,
         key(1).public_key(),
-        key(2).public_key()
+        key(2).public_key(),
+        key(5).public_key(),
+        key(6).public_key(),
+        key(7).public_key(),
+        key(9).public_key()
     )
 }
 
+/// The chair rotates their own key to seed 3: what an individual channel may do to
+/// the identities on its own signature.
+fn identities_chair_rotated() -> String {
+    identities().replace(
+        &format!("<person id=\"chair\" key=\"{}\"/>", key(5).public_key()),
+        &format!("<person id=\"chair\" key=\"{}\"/>", key(3).public_key()),
+    )
+}
+
+/// dir-a's key is rewritten by somebody else: what it may not do.
+fn identities_dir_a_stolen() -> String {
+    identities().replace(
+        &format!("<person id=\"dir-a\" key=\"{}\"/>", key(6).public_key()),
+        &format!("<person id=\"dir-a\" key=\"{}\"/>", key(3).public_key()),
+    )
+}
+
+/// Jane, the company secretary, is the only signer: company and governance alike.
+const AUTHORISATION: &str = r#"<authorisation>
+  <signer person="jane" records="company"/>
+  <signer person="jane" records="governance"/>
+</authorisation>"#;
+
+/// The chair joins jane as a company signer: what an individual channel whose actor
+/// is the chair may not grant itself.
+const AUTHORISATION_CHAIR_PUBLISHES: &str = r#"<authorisation>
+  <signer person="chair" records="company"/>
+  <signer person="jane" records="company"/>
+  <signer person="jane" records="governance"/>
+</authorisation>"#;
+
+/// A second secretary, naming nobody who decides: any channel may adopt this.
+const AUTHORISATION_TWO_SECRETARIES: &str = r#"<authorisation>
+  <signer person="alice" records="governance"/>
+  <signer person="jane" records="company"/>
+  <signer person="jane" records="governance"/>
+</authorisation>"#;
+
 fn genesis_xml() -> String {
     format!(
-        "<company-genesis><identity name=\"Acme Industries Ltd\"/>{}<governance>{}</governance></company-genesis>",
+        "<company-genesis><identity name=\"Acme Industries Ltd\"/>{}{}<governance>{}</governance>{AUTHORISATION}</company-genesis>",
         register(),
+        identities(),
         channels(RULES)
     )
 }
 
 /// The channel set: shareholders (share register, collective, `rules`); board (chair
-/// key 5 weight 2, dir-a key 6, dir-b key 7; collective, simple majority, no quorum);
-/// ceo (chair, individual).
+/// weight 2, dir-a, dir-b; collective, simple majority, no quorum); ceo (chair,
+/// individual). Keys are nowhere here: they live in the identities.
 fn channels(rules: &str) -> String {
     format!(
         r#"<decision-channels>
@@ -104,9 +158,9 @@ fn channels(rules: &str) -> String {
   </channel>
   <channel id="board" mode="collective">
     <actors source="roster">
-      <member id="chair" key="{}" weight="2"/>
-      <member id="dir-a" key="{}"/>
-      <member id="dir-b" key="{}"/>
+      <member id="chair" weight="2"/>
+      <member id="dir-a"/>
+      <member id="dir-b"/>
     </actors>
     <voting-rules version="1.0">
       <weight type="electorate"/>
@@ -119,14 +173,10 @@ fn channels(rules: &str) -> String {
   </channel>
   <channel id="ceo" mode="individual">
     <actors source="roster">
-      <member id="chair" key="{}"/>
+      <member id="chair"/>
     </actors>
   </channel>
-</decision-channels>"#,
-        key(5).public_key(),
-        key(6).public_key(),
-        key(7).public_key(),
-        key(5).public_key()
+</decision-channels>"#
     )
 }
 
@@ -379,10 +429,10 @@ fn a_passed_vote_becomes_a_resolution_that_replaces_the_share_register() {
     // And both records verify from the chain alone.
     let report = verify_resolution(&chain.store, &id.tx_id()).expect("verify");
     assert!(report.is_valid(), "{report:#?}");
-    assert_eq!(report.checks.len(), 10);
+    assert_eq!(report.checks.len(), 11);
     let report = verify_execution(&chain.store, &executed.execution_tx).expect("verify");
     assert!(report.is_valid(), "{report:#?}");
-    assert_eq!(report.checks.len(), 10);
+    assert_eq!(report.checks.len(), 11);
     assert!(report.resolution.as_ref().unwrap().is_valid());
 }
 
@@ -1170,8 +1220,15 @@ fn the_resolution_state_round_trips_through_canonical_bytes() {
 // Tampering, seen from the chain.
 // ---------------------------------------------------------------------------------
 
+/// Appends a block holding one transaction, bypassing every Irena check. Signed by
+/// jane's key, so a planted record is judged on its content, not on its signer.
 fn append_raw(store: &LocalChainStore, namespace: &str, payload: Vec<u8>) -> TxId {
-    let signer = key(8);
+    append_raw_signed(store, 9, namespace, payload)
+}
+
+/// As [`append_raw`], signed by the key of the given seed.
+fn append_raw_signed(store: &LocalChainStore, seed: u8, namespace: &str, payload: Vec<u8>) -> TxId {
+    let signer = key(seed);
     let head = store.head().unwrap();
     let parent = store.get_block(head.height).unwrap().unwrap();
     let transaction = signer.sign_transaction(TransactionDraft {
@@ -1796,6 +1853,12 @@ fn hold_board(chain: &Chain, items: &[(&str, Hash, bool)]) -> Held {
 
 /// A finalised decision of the ceo (the chair, key 5) on `digest`, at the head.
 fn decide_alone(chain: &Chain, digest: Hash) -> TxId {
+    decide_alone_with(chain, digest, 5)
+}
+
+/// As [`decide_alone`], with the chair signing by the key of the given seed — after a
+/// rotation the old key is nobody's.
+fn decide_alone_with(chain: &Chain, digest: Hash, seed: u8) -> TxId {
     let mut decision = DecisionV1::draft("decided alone", digest);
     let head = chain.store.head().unwrap().height;
     decision
@@ -1805,7 +1868,7 @@ fn decide_alone(chain: &Chain, digest: Hash) -> TxId {
             &irena_core::ChannelIdV1::new("ceo").unwrap(),
         )
         .expect("freeze");
-    decision.sign(&key(5)).expect("sign");
+    decision.sign(&key(seed)).expect("sign");
     decision
         .finalize(&chain.store, &key(9), chain.next_timestamp())
         .expect("finalize")
@@ -1859,11 +1922,7 @@ fn carry(
 fn channels_thinned() -> String {
     let full = channels(RULES);
     let thinned = full.replace(
-        &format!(
-            "      <member id=\"dir-a\" key=\"{}\"/>\n      <member id=\"dir-b\" key=\"{}\"/>\n",
-            key(6).public_key(),
-            key(7).public_key()
-        ),
+        "      <member id=\"dir-a\"/>\n      <member id=\"dir-b\"/>\n",
         "",
     );
     assert!(!thinned.contains("dir-a"), "fixture edited");
@@ -1966,7 +2025,8 @@ fn the_same_execution_serves_shareholders_board_and_ceo() {
             "ChannelMatches",
             "ProposalMatches",
             "CompanyMatches",
-            "HeightsOrdered"
+            "HeightsOrdered",
+            "SignerAuthorised"
         ]
     );
 
@@ -2183,6 +2243,250 @@ fn a_decision_must_match_what_it_authorises_and_carries_once() {
     assert_eq!(
         company_now(&chain.store).unwrap().shares.tx_id,
         first.executed().unwrap().amendment_tx
+    );
+}
+
+#[test]
+fn an_individual_channel_rotates_its_own_key_and_nobody_elses() {
+    let chain = founded();
+
+    // The ceo rotates the chair's own key: the same rule, applied to the identities.
+    let rotated = identities_chair_rotated();
+    let decision_tx = decide_alone(&chain, proposal_digest(&rotated));
+    let resolution = carry(
+        &chain,
+        AuthorityV1::Individual {
+            channel: "ceo".to_owned(),
+            decision_tx,
+        },
+        AmendmentTargetV1::Identities,
+        &rotated,
+    );
+    let done = resolution.executed().expect("executed");
+    let state = company_now(&chain.store).unwrap();
+    assert_eq!(state.identities.tx_id, done.amendment_tx);
+    assert_eq!(
+        state.identities.value.key_of(&voter("chair")),
+        Some(key(3).public_key()),
+        "the chair signs with the new key from here on"
+    );
+    let report = verify_execution(&chain.store, &done.execution_tx).unwrap();
+    assert!(report.is_valid(), "{report:#?}");
+    let detail = &report
+        .checks
+        .iter()
+        .find(|c| c.name == "SelfDemotionHolds")
+        .unwrap()
+        .detail;
+    assert!(detail.contains("the identities"), "{detail}");
+    assert!(detail.contains("own entry"), "{detail}");
+
+    // The chair rewriting dir-a's key: that is voting as dir-a, and it is refused.
+    // The chair now signs with the rotated key; the old one is nobody's.
+    let stolen = identities_dir_a_stolen();
+    let decision_tx = decide_alone_with(&chain, proposal_digest(&stolen), 3);
+    let mut takeover = ResolutionV1::draft(
+        "Resolution: a new key for dir-a",
+        AuthorityV1::Individual {
+            channel: "ceo".to_owned(),
+            decision_tx,
+        },
+        ResolutionKindV1::Amendment {
+            target: AmendmentTargetV1::Identities,
+            body: stolen,
+        },
+    );
+    takeover
+        .finalize(
+            &chain.store,
+            &key(9),
+            &notary("2026-07-02T09:00:00Z"),
+            chain.next_timestamp(),
+        )
+        .expect("finalize");
+    let before = chain.store.head().unwrap();
+    let error = takeover
+        .execute(
+            &chain.store,
+            &key(9),
+            &notary("2026-07-03T09:00:00Z"),
+            chain.next_timestamp(),
+        )
+        .expect_err("takeover");
+    assert!(
+        matches!(error, ResolutionError::SelfPromotion { ref actor, ref detail, .. } if actor == "chair" && detail.contains("change dir-a")),
+        "{error}"
+    );
+    assert_eq!(chain.store.head().unwrap(), before, "nothing was written");
+}
+
+#[test]
+fn an_individual_channel_may_not_make_itself_a_publisher() {
+    let chain = founded();
+
+    // The ceo adds the chair to the company signers: publishing bare records is the
+    // one power that needs no channel at all, so the rule refuses it.
+    let decision_tx = decide_alone(&chain, proposal_digest(AUTHORISATION_CHAIR_PUBLISHES));
+    let mut grab = ResolutionV1::draft(
+        "Resolution: the chair may publish",
+        AuthorityV1::Individual {
+            channel: "ceo".to_owned(),
+            decision_tx,
+        },
+        ResolutionKindV1::Amendment {
+            target: AmendmentTargetV1::Authorisation,
+            body: AUTHORISATION_CHAIR_PUBLISHES.to_owned(),
+        },
+    );
+    grab.finalize(
+        &chain.store,
+        &key(9),
+        &notary("2026-07-02T09:00:00Z"),
+        chain.next_timestamp(),
+    )
+    .expect("finalize");
+    let before = chain.store.head().unwrap();
+    let error = grab
+        .execute(
+            &chain.store,
+            &key(9),
+            &notary("2026-07-03T09:00:00Z"),
+            chain.next_timestamp(),
+        )
+        .expect_err("self-promotion");
+    assert!(
+        matches!(error, ResolutionError::SelfPromotion { ref actor, ref detail, .. } if actor == "chair" && detail.contains("gain the right to sign company")),
+        "{error}"
+    );
+    assert_eq!(chain.store.head().unwrap(), before, "nothing was written");
+
+    // The same amendment naming somebody else holds: the rule bounds the signer's own
+    // reach, and says so plainly.
+    let decision_tx = decide_alone(&chain, proposal_digest(AUTHORISATION_TWO_SECRETARIES));
+    let resolution = carry(
+        &chain,
+        AuthorityV1::Individual {
+            channel: "ceo".to_owned(),
+            decision_tx,
+        },
+        AmendmentTargetV1::Authorisation,
+        AUTHORISATION_TWO_SECRETARIES,
+    );
+    let done = resolution.executed().expect("executed");
+    let state = company_now(&chain.store).unwrap();
+    assert_eq!(state.authorisation.tx_id, done.amendment_tx);
+    assert!(
+        state
+            .authorisation
+            .value
+            .allows(&voter("alice"), irena_core::RecordFamilyV1::Governance)
+    );
+    let report = verify_execution(&chain.store, &done.execution_tx).unwrap();
+    assert!(report.is_valid(), "{report:#?}");
+    let detail = &report
+        .checks
+        .iter()
+        .find(|c| c.name == "SelfDemotionHolds")
+        .unwrap()
+        .detail;
+    assert!(detail.contains("the authorisation"), "{detail}");
+}
+
+#[test]
+fn only_a_governance_signer_may_record_or_execute_a_resolution() {
+    let chain = founded();
+    let digest = proposal_digest(&register_v2());
+    let held = hold(&chain, &[("Buy out carol", digest, true)]);
+    let authority = authority_through(&chain, &held, 1, "shareholders");
+    let mut resolution = ResolutionV1::draft(
+        "Resolution: buy out carol",
+        authority,
+        ResolutionKindV1::Amendment {
+            target: AmendmentTargetV1::ShareStructure,
+            body: register_v2(),
+        },
+    );
+    // Alice voted for it and holds half the company; recording it is another matter.
+    let error = resolution
+        .finalize(
+            &chain.store,
+            &key(1),
+            &notary("2026-06-02T09:00:00Z"),
+            chain.next_timestamp(),
+        )
+        .expect_err("alice records");
+    assert!(
+        matches!(
+            &error,
+            ResolutionError::Ledger(boxed)
+                if matches!(**boxed, irena_ledger::LedgerError::UnauthorisedSigner { .. })
+        ),
+        "{error}"
+    );
+    resolution
+        .finalize(
+            &chain.store,
+            &key(9),
+            &notary("2026-06-02T09:00:00Z"),
+            chain.next_timestamp(),
+        )
+        .expect("jane records");
+    let before = chain.store.head().unwrap();
+    let error = resolution
+        .execute(
+            &chain.store,
+            &key(1),
+            &notary("2026-06-03T09:00:00Z"),
+            chain.next_timestamp(),
+        )
+        .expect_err("alice executes");
+    assert!(
+        matches!(
+            &error,
+            ResolutionError::Ledger(boxed)
+                if matches!(**boxed, irena_ledger::LedgerError::UnauthorisedSigner { .. })
+        ),
+        "{error}"
+    );
+    assert_eq!(chain.store.head().unwrap(), before, "nothing was written");
+    let done = resolution
+        .execute(
+            &chain.store,
+            &key(9),
+            &notary("2026-06-03T09:00:00Z"),
+            chain.next_timestamp(),
+        )
+        .expect("jane executes");
+    assert!(
+        verify_execution(&chain.store, &done.execution_tx)
+            .unwrap()
+            .is_valid()
+    );
+
+    // The same execution record planted by an unauthorised key fails one named check.
+    let planted = append_raw_signed(
+        &chain.store,
+        1,
+        "irena.execution.v1",
+        compose_execution(
+            &acme(),
+            &notary("2026-06-03T09:00:00Z"),
+            &ResolutionExecutionV1 {
+                resolution_id: RId::from_tx(resolution.id().unwrap().tx_id()),
+                amendment_tx: done.amendment_tx,
+                target: AmendmentTargetV1::ShareStructure,
+                replaced_tx: done.replaced_tx,
+                body_digest: digest,
+            },
+        )
+        .expect("compose")
+        .into_bytes(),
+    );
+    let report = verify_execution(&chain.store, &planted).unwrap();
+    let failed = execution_failures(&report);
+    assert!(
+        failed.iter().any(|name| name == "SignerAuthorised"),
+        "{report:#?}"
     );
 }
 

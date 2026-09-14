@@ -66,7 +66,7 @@ impl serde::Serialize for ResolutionIdV1 {
 
 /// Which part of the company an amendment resolution replaces.
 ///
-/// Two in V1, and each is an existing `irena-core` record kind: a resolution
+/// Four in V1, and each is an existing `irena-core` record kind: a resolution
 /// authorises an ordinary amendment, it does not invent a new way to change the
 /// company.
 #[derive(BorshSerialize, BorshDeserialize, Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
@@ -76,11 +76,20 @@ pub enum AmendmentTargetV1 {
     ShareStructure,
     /// Replace the channel set: who decides, and how.
     DecisionChannels,
+    /// Replace the identities: who the persons are, and the key each signs with.
+    Identities,
+    /// Replace the authorisation: who may sign which family of record.
+    Authorisation,
 }
 
 impl AmendmentTargetV1 {
     /// Both targets, in a fixed order.
-    pub const ALL: [Self; 2] = [Self::ShareStructure, Self::DecisionChannels];
+    pub const ALL: [Self; 4] = [
+        Self::ShareStructure,
+        Self::DecisionChannels,
+        Self::Identities,
+        Self::Authorisation,
+    ];
 
     /// The company record kind this target amends.
     #[must_use]
@@ -88,6 +97,8 @@ impl AmendmentTargetV1 {
         match self {
             Self::ShareStructure => RecordKindV1::ShareStructure,
             Self::DecisionChannels => RecordKindV1::DecisionChannels,
+            Self::Identities => RecordKindV1::Identities,
+            Self::Authorisation => RecordKindV1::Authorisation,
         }
     }
 
@@ -97,6 +108,8 @@ impl AmendmentTargetV1 {
         match self {
             Self::ShareStructure => "share-structure",
             Self::DecisionChannels => "decision-channels",
+            Self::Identities => "identities",
+            Self::Authorisation => "authorisation",
         }
     }
 
@@ -296,6 +309,10 @@ pub struct ApprovalV1 {
     pub shares_tx_id: TxId,
     /// The channel set the approval was taken against.
     pub channels_tx_id: TxId,
+    /// The identities the approval was taken against.
+    pub identities_tx_id: TxId,
+    /// The authorisation in force where the approval was taken.
+    pub authorisation_tx_id: TxId,
     /// The record it was read from: the vote or the decision transaction.
     pub through_tx: TxId,
 }
@@ -307,6 +324,8 @@ impl ApprovalV1 {
         match target {
             AmendmentTargetV1::ShareStructure => self.shares_tx_id,
             AmendmentTargetV1::DecisionChannels => self.channels_tx_id,
+            AmendmentTargetV1::Identities => self.identities_tx_id,
+            AmendmentTargetV1::Authorisation => self.authorisation_tx_id,
         }
     }
 }

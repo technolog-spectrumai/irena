@@ -185,6 +185,12 @@ fn validate_body(target: AmendmentTargetV1, body: &str) -> Result<(), Resolution
         AmendmentTargetV1::DecisionChannels => {
             irena_core::read_decision_channels_document(body)?;
         }
+        AmendmentTargetV1::Identities => {
+            irena_core::read_identities_document(body)?;
+        }
+        AmendmentTargetV1::Authorisation => {
+            irena_core::read_authorisation_document(body)?;
+        }
     }
     Ok(())
 }

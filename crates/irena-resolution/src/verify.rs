@@ -1,6 +1,6 @@
 //! Independent verification of a resolution and its execution, from the chain alone.
 
-use crate::demotion::self_demotion;
+use crate::demotion::{authorisation_demotion, identity_demotion, self_demotion};
 use crate::error::ResolutionError;
 use crate::lifecycle::{company_at, find_execution};
 use crate::record::{
@@ -47,6 +47,9 @@ pub enum ResolutionCheckNameV1 {
     CompanyMatches,
     /// The meeting or decision was recorded before the resolution was.
     HeightsOrdered,
+    /// The transaction signer is the current key of a `governance` signer under the
+    /// company as it stood at the resolution's own height.
+    SignerAuthorised,
 }
 
 /// The checks an execution verifier runs, in order. The resolution's own checks run
@@ -70,9 +73,10 @@ pub enum ExecutionCheckNameV1 {
     /// The amendment superseded exactly the record the actors approved for
     /// replacement.
     AmendmentReplacedApprovedBase,
-    /// A channel-set amendment on an individual decision satisfies the self-demotion
-    /// rule: the signer's reach did not grow. Passes trivially for any other
-    /// amendment, and says so.
+    /// An amendment on an individual decision satisfies the self-demotion rule for its
+    /// target — channel set, identities or authorisation: the signer's own reach did
+    /// not grow. Passes trivially for a collective decision or a register amendment,
+    /// and says so.
     SelfDemotionHolds,
     /// The amendment is part of the company reconstructed at the execution's height:
     /// it actually took effect.
@@ -81,6 +85,9 @@ pub enum ExecutionCheckNameV1 {
     HeightsOrdered,
     /// No other execution of the same resolution exists on the chain.
     ExecutedOnce,
+    /// The execution's transaction signer is the current key of a `governance` signer
+    /// under the company as it stood at the execution's own height.
+    SignerAuthorised,
 }
 
 /// One check and how it came out.
@@ -207,7 +214,13 @@ pub fn verify_resolution(
         return Ok(report);
     };
     report.record = Some(record.clone());
-    verify_authority(store, &record, located.height, &mut report)?;
+    verify_authority(
+        store,
+        &record,
+        located.height,
+        &located.transaction.signer,
+        &mut report,
+    )?;
     Ok(report)
 }
 
@@ -217,6 +230,7 @@ fn verify_authority(
     store: &LocalChainStore,
     record: &ResolutionRecordV1,
     at: BlockHeight,
+    signer: &prunella_core::PublicKey,
     report: &mut ResolutionVerificationV1,
 ) -> Result<Option<ApprovalV1>, ResolutionError> {
     let (approval, decided_height) = match &record.authority {
@@ -242,6 +256,10 @@ fn verify_authority(
                     height: vote.snapshot.height,
                     shares_tx_id: vote.snapshot.shares_tx_id,
                     channels_tx_id: vote.snapshot.channels_tx_id,
+                    identities_tx_id: vote.snapshot.identities_tx_id,
+                    authorisation_tx_id: company_at(store, vote.snapshot.height)?
+                        .authorisation
+                        .tx_id,
                     through_tx: *vote_tx,
                 },
                 (
@@ -288,6 +306,10 @@ fn verify_authority(
                     height: decision.snapshot.height,
                     shares_tx_id: decision.snapshot.shares_tx_id,
                     channels_tx_id: decision.snapshot.channels_tx_id,
+                    identities_tx_id: decision.snapshot.identities_tx_id,
+                    authorisation_tx_id: company_at(store, decision.snapshot.height)?
+                        .authorisation
+                        .tx_id,
                     through_tx: *decision_tx,
                 },
                 (
@@ -362,6 +384,11 @@ fn verify_authority(
             None => "the authority's transaction is not on the chain".to_owned(),
         },
     );
+
+    // The signer: who may put a resolution on the chain is the company's own
+    // authorisation, not whoever holds a key.
+    let (authorised, detail) = irena_decision::signer_authorised_at(store, at, signer);
+    report.check(ResolutionCheckNameV1::SignerAuthorised, authorised, detail);
 
     Ok(Some(approval))
 }
@@ -538,6 +565,7 @@ pub fn verify_execution(
                 store,
                 record,
                 resolution_located.height,
+                &resolution_located.transaction.signer,
                 &mut resolution_report,
             )?
         }
@@ -621,9 +649,10 @@ pub fn verify_execution(
 
     // 5. It is the approved body.
     let published = match &amendment.body {
-        RecordBodyV1::ShareStructure(_) | RecordBodyV1::DecisionChannels(_) => {
-            published_body(amendment_text.expect("read"), body)
-        }
+        RecordBodyV1::ShareStructure(_)
+        | RecordBodyV1::DecisionChannels(_)
+        | RecordBodyV1::Identities(_)
+        | RecordBodyV1::Authorisation(_) => published_body(amendment_text.expect("read"), body),
         _ => false,
     };
     let digest_matches = body_matches(body, execution.body_digest)
@@ -668,11 +697,12 @@ pub fn verify_execution(
         },
     );
 
-    // 7. One person rewriting who decides: only ever downwards.
-    match (&execution.target, &approval.actor, &amendment.body) {
-        (AmendmentTargetV1::DecisionChannels, Some(actor), RecordBodyV1::DecisionChannels(new)) => {
-            // The company just before the amendment: the set it replaced, and the
-            // register the sources resolved against.
+    // 7. One person rewriting who decides, who signs, or who may publish: only ever
+    // downwards. Each target has its own rule; the detail says which one ran.
+    match &approval.actor {
+        Some(actor) => {
+            // The company just before the amendment: the records it replaced, and the
+            // register and identities the sources resolved against.
             let before = amendment_located
                 .height
                 .value()
@@ -687,17 +717,46 @@ pub fn verify_execution(
                     VoterIdV1::new(actor.clone()).map_err(|error| ResolutionError::Chain {
                         detail: format!("the decision's actor is not a voter id: {error}"),
                     })?;
-                self_demotion(&signer, &state.channels.value, new, &state.shares.value)
+                Ok(match (execution.target, &amendment.body) {
+                    (AmendmentTargetV1::DecisionChannels, RecordBodyV1::DecisionChannels(new)) => {
+                        Some((
+                            "the channel set",
+                            self_demotion(
+                                &signer,
+                                &state.channels.value,
+                                new,
+                                &state.shares.value,
+                                &state.identities.value,
+                            )?,
+                        ))
+                    }
+                    (AmendmentTargetV1::Identities, RecordBodyV1::Identities(new)) => Some((
+                        "the identities",
+                        identity_demotion(&signer, &state.identities.value, new),
+                    )),
+                    (AmendmentTargetV1::Authorisation, RecordBodyV1::Authorisation(new)) => Some((
+                        "the authorisation",
+                        authorisation_demotion(&signer, &state.authorisation.value, new),
+                    )),
+                    _ => None,
+                })
             });
             match verdict {
-                Ok(verdict) => {
+                Ok(Some((rule, verdict))) => {
                     report.check(
                         ExecutionCheckNameV1::SelfDemotionHolds,
                         verdict.holds,
                         format!(
-                            "channel {} on {actor}'s own signature: {}",
+                            "{rule}, amended on {actor}'s own signature through channel {}: {}",
                             approval.channel, verdict.detail
                         ),
+                    );
+                }
+                Ok(None) => {
+                    report.check(
+                        ExecutionCheckNameV1::SelfDemotionHolds,
+                        true,
+                        format!("not applicable: a {} amendment", execution.target),
                     );
                 }
                 Err(error) => {
@@ -709,7 +768,7 @@ pub fn verify_execution(
                 }
             }
         }
-        (AmendmentTargetV1::DecisionChannels, None, _) => {
+        None => {
             report.check(
                 ExecutionCheckNameV1::SelfDemotionHolds,
                 true,
@@ -717,13 +776,6 @@ pub fn verify_execution(
                     "not applicable: channel {} decided collectively",
                     approval.channel
                 ),
-            );
-        }
-        _ => {
-            report.check(
-                ExecutionCheckNameV1::SelfDemotionHolds,
-                true,
-                format!("not applicable: a {} amendment", execution.target),
             );
         }
     }
@@ -761,7 +813,12 @@ pub fn verify_execution(
         ),
     );
 
-    // 10. Once only.
+    // 10. The signer.
+    let (authorised, detail) =
+        irena_decision::signer_authorised_at(store, located.height, &located.transaction.signer);
+    report.check(ExecutionCheckNameV1::SignerAuthorised, authorised, detail);
+
+    // 11. Once only.
     let first = find_execution(store, resolution_tx)?;
     let once = first.is_some_and(|(found, _)| found == *tx_id);
     report.check(
