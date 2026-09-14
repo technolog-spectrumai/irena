@@ -13,7 +13,7 @@ they cannot already do. Where a limit shows through to the user, it is named rat
 than hidden.
 
 This is a first pass. The open questions at the end are the ones worth arguing about
-next.
+next. The order to build it in is a separate document: [gui-plan.md](gui-plan.md).
 
 ---
 
@@ -639,5 +639,7 @@ path into verification from the outside world is not thought through.
 - [governance.md](governance.md) for what the company does and why, in the same plain
   language, walked through a real chain
 - [IRENA_V1.md](IRENA_V1.md) for the exact rules the interface is dressing
+- [gui-plan.md](gui-plan.md) for the order to build this in: nine rounds, each one a
+  usable thing, each one a broader case than the last
 - [docs/irena-cli.md](docs/irena-cli.md) for what every one of these flows looks like
   today at a command line

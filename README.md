@@ -161,6 +161,7 @@ all three on one chain.
 |---|---|
 | [governance.md](governance.md) | **Start here.** How a company decides and how the chain proves it, in plain language, walked through a real chain: a shareholders' vote, a sole executive's decisions — one of them refused — and a board vote |
 | [gui.md](gui.md) | **The interface, before it exists.** What each of the five people who use this comes to do, the six views they read, the six things they do, and how the system says no — functional, in plain language, no screens drawn |
+| [gui-plan.md](gui-plan.md) | The order to build the interface in: a spiral of nine rounds, each usable on its own and each a broader case than the last, with a box to tick per step |
 | [examples/](examples/README.md) | Real, schema-validated documents: a three-channel genesis, a single-member company, a weighted committee, and the two channel-set amendments the walk-through executes and refuses |
 | [IRENA_V1.md](IRENA_V1.md) | The company model, decision channels, the record envelope, notarisation, amendment and reconstruction, votes, individual decisions, meetings, resolutions, and the road ahead |
 | [BORNITE_V1.md](BORNITE_V1.md) | **Normative.** The frozen voting types, rules grammar and evaluation algorithm |
@@ -287,8 +288,8 @@ Planned, in order — see [IRENA_V1.md §11](IRENA_V1.md):
    family of record, see [IRENA_V1.md §1.4–§1.5](IRENA_V1.md);
 5. ~~scoped channels~~ — **done**: a channel amends the parts it lists and nothing
    else, see [IRENA_V1.md §1.3](IRENA_V1.md);
-6. Placidia coordination and UI — the first pass at the interface is in
-   [gui.md](gui.md).
+6. Placidia coordination and UI — the interface is designed in [gui.md](gui.md) and
+   scheduled in [gui-plan.md](gui-plan.md).
 
 Next to the channels, recorded rather than built: per-channel supersession, more actor
 sources, a wider self-demotion rule, notary ids bound to identities.
