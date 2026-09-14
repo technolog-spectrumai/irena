@@ -4,9 +4,10 @@
 //! source** (where the people come from) and a **mode** (how one decision is reached):
 //!
 //! ```text
-//! channel      := id + actor source + mode
+//! channel      := id + actor source + mode + scope?
 //! actor source := share-register | roster (members listed inline)
 //! mode         := individual | collective(<voting-rules>)
+//! scope        := the company parts this channel may amend
 //! ```
 //!
 //! `shareholders`, `board`, `ceo` and any future committee are *configurations* in a
@@ -14,13 +15,16 @@
 //! and `collective`. It does not know what a board is, and does not decide whether the
 //! configured authority is legally correct: notarisation is the trust boundary.
 //!
-//! A channel says nothing about *what* its actors may decide. Scoping a channel to a
-//! kind of decision is deliberately not in version 1.
+//! A channel's **scope** says what its actors may decide. A channel with no scope may
+//! carry declarative resolutions and amend nothing; a channel with one may also amend
+//! exactly the parts it lists. Silence denies: a channel written before scopes existed,
+//! or by someone who did not think about it, decides nothing about the company.
 //!
 //! The channel set is one part of the company, replaced whole like the share register,
 //! so the set at any height is the one record then in force.
 
 use crate::error::{IrenaError, IssueV1};
+use crate::record::RecordKindV1;
 use bornite_core::VoterIdV1;
 use bornite_rules::VotingRulesV1;
 
@@ -276,7 +280,69 @@ impl ChannelModeV1 {
     }
 }
 
-/// One channel: who may decide, and how.
+/// What a channel may amend.
+///
+/// A set of company parts, sorted and free of duplicates from the moment it is built.
+/// Only the amendment kinds are allowed: a company is founded once, so `company-genesis`
+/// is never something a channel may decide.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(transparent)]
+pub struct ChannelScopeV1 {
+    parts: Vec<RecordKindV1>,
+}
+
+impl ChannelScopeV1 {
+    /// Builds a scope, sorting the parts and refusing what cannot be one.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`IrenaError::Invalid`] listing every problem at once: a part named
+    /// twice, a part that is not an amendment, an empty scope.
+    pub fn new(channel: &ChannelIdV1, mut parts: Vec<RecordKindV1>) -> Result<Self, IrenaError> {
+        let mut issues = Vec::new();
+        if parts.is_empty() {
+            issues.push(IssueV1::EmptyScope {
+                channel: channel.clone(),
+            });
+        }
+        parts.sort();
+        let mut previous: Option<RecordKindV1> = None;
+        for part in &parts {
+            if previous == Some(*part) {
+                issues.push(IssueV1::DuplicateScopePart {
+                    channel: channel.clone(),
+                    part: *part,
+                });
+            }
+            previous = Some(*part);
+            if !RecordKindV1::AMENDMENTS.contains(part) {
+                issues.push(IssueV1::ScopeNotAnAmendment {
+                    channel: channel.clone(),
+                    part: *part,
+                });
+            }
+        }
+        if !issues.is_empty() {
+            return Err(IrenaError::invalid(issues));
+        }
+        parts.dedup();
+        Ok(Self { parts })
+    }
+
+    /// The parts, in a fixed order.
+    #[must_use]
+    pub fn parts(&self) -> &[RecordKindV1] {
+        &self.parts
+    }
+
+    /// Whether this scope covers `part`.
+    #[must_use]
+    pub fn allows(&self, part: RecordKindV1) -> bool {
+        self.parts.contains(&part)
+    }
+}
+
+/// One channel: who may decide, how, and over what.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
 pub struct DecisionChannelV1 {
     /// The channel's label.
@@ -285,6 +351,32 @@ pub struct DecisionChannelV1 {
     pub actors: ActorSourceV1,
     /// How it decides.
     pub mode: ChannelModeV1,
+    /// What it may amend. `None` means it may amend nothing: declarative decisions only.
+    pub scope: Option<ChannelScopeV1>,
+}
+
+impl DecisionChannelV1 {
+    /// Whether this channel may carry an amendment of `part`.
+    ///
+    /// A channel with no scope may amend nothing, whatever the part.
+    #[must_use]
+    pub fn may_amend(&self, part: RecordKindV1) -> bool {
+        self.scope.as_ref().is_some_and(|scope| scope.allows(part))
+    }
+
+    /// The parts this channel may amend, rendered for a reader.
+    #[must_use]
+    pub fn scope_text(&self) -> String {
+        match &self.scope {
+            None => "nothing: declarative decisions only".to_owned(),
+            Some(scope) => scope
+                .parts()
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(", "),
+        }
+    }
 }
 
 /// A validated channel set: every channel the company decides through.
@@ -467,11 +559,19 @@ mod tests {
                 RosterV1::new(&id("ceo"), vec![member("chen", 1)]).unwrap(),
             ),
             mode: ChannelModeV1::Individual,
+            scope: None,
         };
         let shareholders = DecisionChannelV1 {
             id: id("shareholders"),
             actors: ActorSourceV1::ShareRegister,
             mode: ChannelModeV1::Collective { rules: rules() },
+            scope: Some(
+                ChannelScopeV1::new(
+                    &id("shareholders"),
+                    vec![RecordKindV1::ShareStructure, RecordKindV1::DecisionChannels],
+                )
+                .expect("scope"),
+            ),
         };
         let set = DecisionChannelsV1::new(vec![shareholders.clone(), ceo.clone()]).expect("set");
         assert_eq!(set.channels()[0].id, id("ceo"));
@@ -482,7 +582,64 @@ mod tests {
 
         let none = DecisionChannelsV1::new(Vec::new()).expect_err("none");
         assert!(matches!(none.issues(), [IssueV1::NoChannels]));
-        let twice = DecisionChannelsV1::new(vec![ceo.clone(), ceo]).expect_err("twice");
+        let twice = DecisionChannelsV1::new(vec![ceo.clone(), ceo.clone()]).expect_err("twice");
         assert!(matches!(twice.issues(), [IssueV1::DuplicateChannel { .. }]));
+
+        // Silence denies: a channel with no scope amends nothing at all.
+        for part in RecordKindV1::AMENDMENTS {
+            assert!(!ceo.may_amend(part), "{part}");
+        }
+        assert_eq!(ceo.scope_text(), "nothing: declarative decisions only");
+        assert!(shareholders.may_amend(RecordKindV1::ShareStructure));
+        assert!(shareholders.may_amend(RecordKindV1::DecisionChannels));
+        assert!(!shareholders.may_amend(RecordKindV1::Identities));
+        assert_eq!(
+            shareholders.scope_text(),
+            "share-structure, decision-channels"
+        );
+    }
+
+    #[test]
+    fn a_scope_is_sorted_deduplicated_and_holds_only_amendments() {
+        let board = id("board");
+        let scope = ChannelScopeV1::new(
+            &board,
+            vec![
+                RecordKindV1::Identities,
+                RecordKindV1::ShareStructure,
+                RecordKindV1::Identities,
+            ],
+        );
+        let error = scope.expect_err("a part twice");
+        assert!(
+            matches!(error.issues(), [IssueV1::DuplicateScopePart { part, .. }] if *part == RecordKindV1::Identities),
+            "{error}"
+        );
+
+        let scope = ChannelScopeV1::new(
+            &board,
+            vec![RecordKindV1::Identities, RecordKindV1::ShareStructure],
+        )
+        .expect("valid");
+        assert_eq!(
+            scope.parts(),
+            [RecordKindV1::ShareStructure, RecordKindV1::Identities],
+            "sorted by the kind order, not the order written"
+        );
+
+        // A company is founded once, so no channel is ever scoped to the genesis.
+        let error = ChannelScopeV1::new(&board, vec![RecordKindV1::CompanyGenesis])
+            .expect_err("the genesis");
+        assert!(
+            matches!(error.issues(), [IssueV1::ScopeNotAnAmendment { .. }]),
+            "{error}"
+        );
+
+        // An empty scope says nothing; the document should omit it instead.
+        let error = ChannelScopeV1::new(&board, Vec::new()).expect_err("empty");
+        assert!(
+            matches!(error.issues(), [IssueV1::EmptyScope { .. }]),
+            "{error}"
+        );
     }
 }

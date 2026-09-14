@@ -160,6 +160,33 @@ pub enum IssueV1 {
         /// The limit.
         limit: usize,
     },
+    /// A channel declares an empty scope.
+    ///
+    /// A scope that lists nothing says nothing; leave the element out instead, which
+    /// says the same thing on purpose.
+    #[error("channel {channel} has an empty scope; omit <scope> to say it amends nothing")]
+    EmptyScope {
+        /// The channel.
+        channel: crate::ChannelIdV1,
+    },
+    /// A scope names one part twice.
+    #[error("channel {channel} lists {part} in its scope more than once")]
+    DuplicateScopePart {
+        /// The channel.
+        channel: crate::ChannelIdV1,
+        /// The repeated part.
+        part: crate::RecordKindV1,
+    },
+    /// A scope names something no record amends.
+    #[error(
+        "channel {channel} cannot be scoped to {part}; a channel amends parts of a founded company"
+    )]
+    ScopeNotAnAmendment {
+        /// The channel.
+        channel: crate::ChannelIdV1,
+        /// The part named.
+        part: crate::RecordKindV1,
+    },
     /// A channel carries an element its mode does not allow.
     #[error("channel {channel} is {mode} and must not carry <{element}>")]
     UnexpectedElement {

@@ -28,6 +28,12 @@ const GENESIS: &str = r#"<company-genesis>
     <decision-channels>
       <channel id="shareholders" mode="collective">
         <actors source="share-register"/>
+        <scope>
+          <amend part="share-structure"/>
+          <amend part="decision-channels"/>
+          <amend part="identities"/>
+          <amend part="authorisation"/>
+        </scope>
         <voting-rules version="1.0">
           <weight type="electorate"/>
           <exclusions enabled="true"/>
@@ -43,6 +49,9 @@ const GENESIS: &str = r#"<company-genesis>
           <member id="okafor"/>
           <member id="vance"/>
         </actors>
+        <scope>
+          <amend part="decision-channels"/>
+        </scope>
         <voting-rules version="1.0">
           <weight type="electorate"/>
           <exclusions enabled="false"/>
@@ -86,6 +95,9 @@ const RULES: &str = r#"<voting-rules version="1.0">
 const CHANNELS: &str = r#"<decision-channels>
   <channel id="shareholders" mode="collective">
     <actors source="share-register"/>
+    <scope>
+      <amend part="share-structure"/>
+    </scope>
     <voting-rules version="1.0">
       <weight type="electorate"/>
       <exclusions enabled="true"/>
@@ -299,6 +311,22 @@ fn the_genesis_is_the_whole_company() {
         .expect("ceo");
     assert!(ceo.mode.is_individual());
     assert!(ceo.mode.rules().is_none());
+    // Scope is read alongside the mode, and silence denies.
+    assert_eq!(
+        shareholders.scope.as_ref().expect("scoped").parts(),
+        [
+            RecordKindV1::ShareStructure,
+            RecordKindV1::DecisionChannels,
+            RecordKindV1::Identities,
+            RecordKindV1::Authorisation,
+        ],
+        "sorted by the kind order, whatever order the document listed"
+    );
+    assert!(shareholders.may_amend(RecordKindV1::Authorisation));
+    assert!(board.may_amend(RecordKindV1::DecisionChannels));
+    assert!(!board.may_amend(RecordKindV1::ShareStructure));
+    assert!(ceo.scope.is_none());
+    assert!(!ceo.may_amend(RecordKindV1::DecisionChannels));
 
     let minimal = read_company_genesis_document(
         r#"<company-genesis><identity name="X"/><share-structure/><identities/><governance><decision-channels><channel id="all" mode="collective"><actors source="share-register"/><voting-rules version="1.0"><weight type="equal"/><exclusions enabled="false"/><quorum type="none"/><threshold type="simple-majority" basis="votes-cast"/><abstentions treatment="exclude"/><tie treatment="reject"/></voting-rules></channel></decision-channels></governance><authorisation><signer person="x" records="company"/></authorisation></company-genesis>"#,
@@ -1195,11 +1223,51 @@ fn channel_problems_are_reported_together() {
     .expect_err("two problems");
     assert_eq!(error.issues().len(), 2, "{error}");
     // Structure is refused where it is found.
+    // Scope issues are content, collected like the rest.
+    for (label, xml, expect) in [
+        (
+            "an empty scope",
+            r#"<channel id="c" mode="individual"><actors source="share-register"/><scope/></channel>"#,
+            IssueV1::EmptyScope {
+                channel: irena_core::ChannelIdV1::new("c").unwrap(),
+            },
+        ),
+        (
+            "the genesis in a scope",
+            r#"<channel id="c" mode="individual"><actors source="share-register"/><scope><amend part="company-genesis"/></scope></channel>"#,
+            IssueV1::ScopeNotAnAmendment {
+                channel: irena_core::ChannelIdV1::new("c").unwrap(),
+                part: RecordKindV1::CompanyGenesis,
+            },
+        ),
+        (
+            "a part named twice",
+            r#"<channel id="c" mode="individual"><actors source="share-register"/><scope><amend part="identity"/><amend part="identity"/></scope></channel>"#,
+            IssueV1::DuplicateScopePart {
+                channel: irena_core::ChannelIdV1::new("c").unwrap(),
+                part: RecordKindV1::Identity,
+            },
+        ),
+        (
+            "a part that is not a kind",
+            r#"<channel id="c" mode="individual"><actors source="share-register"/><scope><amend part="everything"/></scope></channel>"#,
+            IssueV1::InvalidValue {
+                element: "amend",
+                attribute: "part",
+                value: "everything".to_owned(),
+                reason: "must be identity, share-structure, decision-channels, identities or authorisation".to_owned(),
+            },
+        ),
+    ] {
+        let error = read(&wrap(xml)).expect_err(label);
+        assert!(error.issues().contains(&expect), "{label}: {error}");
+    }
+
     for (label, xml) in [
         (
             "unknown child of channel",
             wrap(
-                r#"<channel id="c" mode="individual"><actors source="share-register"/><scope/></channel>"#,
+                r#"<channel id="c" mode="individual"><actors source="share-register"/><quorum/></channel>"#,
             ),
         ),
         (
@@ -1209,6 +1277,18 @@ fn channel_problems_are_reported_together() {
             ),
         ),
         ("unknown child of the set", wrap("<rule/>")),
+        (
+            "unknown child of a scope",
+            wrap(
+                r#"<channel id="c" mode="individual"><actors source="share-register"/><scope><part name="identity"/></scope></channel>"#,
+            ),
+        ),
+        (
+            "unknown attribute on an amend",
+            wrap(
+                r#"<channel id="c" mode="individual"><actors source="share-register"/><scope><amend part="identity" until="2030"/></scope></channel>"#,
+            ),
+        ),
         (
             "unknown attribute",
             wrap(

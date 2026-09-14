@@ -53,8 +53,8 @@ mod xml;
 pub use authorisation::{AuthorisationV1, RecordFamilyV1, SignerV1};
 pub use bornite_rules::VotingRulesV1;
 pub use channel::{
-    ActorSourceV1, ChannelIdV1, ChannelModeV1, DecisionChannelV1, DecisionChannelsV1,
-    MAX_CHANNEL_ID_LEN, MAX_CHANNELS, MAX_MEMBERS, MemberV1, RosterV1,
+    ActorSourceV1, ChannelIdV1, ChannelModeV1, ChannelScopeV1, DecisionChannelV1,
+    DecisionChannelsV1, MAX_CHANNEL_ID_LEN, MAX_CHANNELS, MAX_MEMBERS, MemberV1, RosterV1,
 };
 pub use company::{CompanyGenesisV1, CompanyIdV1, IdentityV1};
 pub use error::{IrenaError, IssueV1};

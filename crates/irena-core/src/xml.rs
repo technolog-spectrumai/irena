@@ -8,8 +8,8 @@
 
 use crate::authorisation::{AuthorisationV1, RecordFamilyV1, SignerV1};
 use crate::channel::{
-    ActorSourceV1, ChannelIdV1, ChannelModeV1, DecisionChannelV1, DecisionChannelsV1, MAX_CHANNELS,
-    MAX_MEMBERS, MemberV1, RosterV1,
+    ActorSourceV1, ChannelIdV1, ChannelModeV1, ChannelScopeV1, DecisionChannelV1,
+    DecisionChannelsV1, MAX_CHANNELS, MAX_MEMBERS, MemberV1, RosterV1,
 };
 use crate::company::{CompanyGenesisV1, CompanyIdV1, IdentityV1};
 use crate::error::{IrenaError, IssueV1};
@@ -827,9 +827,10 @@ fn parse_channel(
 
     let mut actors: Option<ActorSourceV1> = None;
     let mut rules: Option<bornite_rules::VotingRulesV1> = None;
+    let mut scope: Option<ChannelScopeV1> = None;
     // Presence is tracked apart from the parsed value: rules that were there but
     // invalid are reported for what is wrong with them, not also as missing.
-    let (mut actors_seen, mut rules_seen) = (false, false);
+    let (mut actors_seen, mut rules_seen, mut scope_seen) = (false, false, false);
     loop {
         let event = next_event(reader)?;
         let (child, child_is_empty) = match event {
@@ -856,6 +857,20 @@ fn parse_channel(
                 actors_seen = true;
                 match parse_actors(reader, &child, child_is_empty, &id) {
                     Ok(parsed) => actors = Some(parsed),
+                    Err(IrenaError::Invalid { issues: found }) => issues.extend(found),
+                    Err(other) => return Err(other),
+                }
+            }
+            "scope" => {
+                if scope_seen {
+                    issues.push(IssueV1::RepeatedElement {
+                        parent: "channel",
+                        element: "scope",
+                    });
+                }
+                scope_seen = true;
+                match parse_scope(reader, &child, child_is_empty, &id) {
+                    Ok(parsed) => scope = Some(parsed),
                     Err(IrenaError::Invalid { issues: found }) => issues.extend(found),
                     Err(other) => return Err(other),
                 }
@@ -921,7 +936,82 @@ fn parse_channel(
         id,
         actors: actors.expect("no issues"),
         mode: mode.expect("no issues"),
+        scope,
     })
+}
+
+/// Parses `<scope>`: the company parts this channel may amend, one `<amend part="…"/>`
+/// each. An empty `<scope/>` is refused, because omitting the element says the same
+/// thing on purpose.
+fn parse_scope(
+    reader: &mut XmlReader<'_>,
+    start: &BytesStart<'_>,
+    is_empty: bool,
+    channel: &ChannelIdV1,
+) -> Result<ChannelScopeV1, IrenaError> {
+    Attributes::of(reader, "scope", start)?.finish(reader)?;
+    let mut issues = Vec::new();
+    let mut parts = Vec::new();
+
+    if !is_empty {
+        loop {
+            let event = next_event(reader)?;
+            let (child, child_is_empty) = match event {
+                Event::Text(_) | Event::Comment(_) => continue,
+                Event::Empty(child) => (child, true),
+                Event::Start(child) => (child, false),
+                Event::End(_) => break,
+                other => {
+                    return Err(malformed_at(
+                        reader,
+                        format!("unexpected {} in <scope>", describe(&other)),
+                    ));
+                }
+            };
+            let name = child.name().as_ref().to_owned();
+            if name != "amend" {
+                return Err(malformed_at(
+                    reader,
+                    format!("<scope> has an unknown child <{name}>"),
+                ));
+            }
+            if let Some(part) = parse_amend(reader, &child, &mut issues)? {
+                parts.push(part);
+            }
+            if !child_is_empty {
+                expect_empty(reader, "amend")?;
+            }
+        }
+    }
+
+    if !issues.is_empty() {
+        return Err(IrenaError::invalid(issues));
+    }
+    ChannelScopeV1::new(channel, parts)
+}
+
+fn parse_amend(
+    reader: &XmlReader<'_>,
+    child: &BytesStart<'_>,
+    issues: &mut Vec<IssueV1>,
+) -> Result<Option<RecordKindV1>, IrenaError> {
+    let mut attributes = Attributes::of(reader, "amend", child)?;
+    let part = require(&mut attributes, "part", issues);
+    attributes.finish(reader)?;
+
+    Ok(part.and_then(|text| {
+        collect(
+            RecordKindV1::parse(&text).ok_or_else(|| {
+                IrenaError::invalid(vec![IssueV1::InvalidValue {
+                    element: "amend",
+                    attribute: "part",
+                    value: text.clone(),
+                    reason: "must be identity, share-structure, decision-channels, identities or authorisation".to_owned(),
+                }])
+            }),
+            issues,
+        )
+    }))
 }
 
 /// Parses `<actors source="…">`: empty for the share register, a list of `<member>`

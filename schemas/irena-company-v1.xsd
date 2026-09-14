@@ -28,11 +28,16 @@
                            mode="collective"        the actors form a Bornite electorate
                                                     decided by the nested <voting-rules>
 
+                           <scope>                  the company parts this channel may
+                                                    amend; absent, it may amend none
+
                          "shareholders", "board", "ceo" are configurations, never types:
                          nothing here names an organ or a legal system, and Irena does
                          not decide whether the configured authority is legally correct.
-                         Notarisation is the trust boundary. A channel says nothing about
-                         WHAT its actors may decide; scoping is not in version 1.
+                         Notarisation is the trust boundary. SILENCE DENIES: a channel
+                         with no <scope> carries declarative resolutions and amends
+                         nothing, so a document written without thinking about scope
+                         grants no power over the company.
 
     <identities>         THE ONE KEY TABLE. A <person> has a stable id (the same
                          grammar as a holder or member id, so a person is a holder, a
@@ -60,7 +65,8 @@
   one person; signer rows unique, at least one company signer (the lockout rule);
   channel ids unique, at least one channel, member ids unique within a roster,
   weights at least one, a roster non-empty, <member>s only under source="roster",
-  <voting-rules> present exactly when mode="collective".
+  <voting-rules> present exactly when mode="collective", a scope non-empty and free of
+  duplicate parts.
 -->
 <xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema" elementFormDefault="qualified"
            attributeFormDefault="unqualified">
@@ -133,9 +139,35 @@
   </xs:complexType>
 
   <!-- <voting-rules> exactly when mode="collective" (enforced by the reader). -->
+  <!-- Which company part a channel may amend. The genesis is not among them: a
+       company is founded once, and a channel amends a founded one. -->
+  <xs:simpleType name="AmendmentPart">
+    <xs:restriction base="xs:string">
+      <xs:enumeration value="identity"/>
+      <xs:enumeration value="share-structure"/>
+      <xs:enumeration value="decision-channels"/>
+      <xs:enumeration value="identities"/>
+      <xs:enumeration value="authorisation"/>
+    </xs:restriction>
+  </xs:simpleType>
+
+  <xs:complexType name="Amend">
+    <xs:attribute name="part" type="AmendmentPart" use="required"/>
+  </xs:complexType>
+
+  <!-- Absent: the channel may carry declarative resolutions and amend nothing.
+       Present: it may also amend exactly the parts listed. An empty <scope/> is
+       refused by the reader; omit the element instead. -->
+  <xs:complexType name="Scope">
+    <xs:sequence>
+      <xs:element name="amend" type="Amend" minOccurs="0" maxOccurs="unbounded"/>
+    </xs:sequence>
+  </xs:complexType>
+
   <xs:complexType name="Channel">
     <xs:sequence>
       <xs:element name="actors" type="Actors" minOccurs="1" maxOccurs="1"/>
+      <xs:element name="scope" type="Scope" minOccurs="0" maxOccurs="1"/>
       <xs:element name="voting-rules" type="VotingRules" minOccurs="0" maxOccurs="1"/>
     </xs:sequence>
     <xs:attribute name="id" type="ChannelId" use="required"/>
