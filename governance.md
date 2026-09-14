@@ -50,6 +50,23 @@ is, and it does not know what the law says a board may do. What it knows is that
 change to who decides is an amendment like any other, with a history, and that a person
 who rewrites that list alone may only ever write themselves *down*.
 
+**What each channel may decide is itself a record.**
+
+A channel does not simply decide. It says which parts of the company it may change:
+the register, the list of who decides, the key table, the list of who may write. A
+channel that says nothing may record decisions and change nothing at all, which is the
+safe direction to be wrong in. So a chief executive can be given the power to reshape
+the board and no power whatsoever over the share register, and that is not a policy
+someone remembers to apply. It is a line in the document, refused before the record is
+written and re-checked by anyone reading the chain a year later.
+
+This matters most where the register is not the company's to decide. Where the
+shareholder register is kept by an outside authority and entry in it is what makes
+somebody a shareholder, the register on this chain is a **mirror**. Give no channel
+`share-structure` in its scope and the mirror can only be brought up to date by the
+company's authorised writer, filing what the keeper recorded. No meeting, no vote and
+no signature moves it.
+
 **Who may write is itself a record.**
 
 Every record reaches the ledger signed by a key, and the company says whose key that

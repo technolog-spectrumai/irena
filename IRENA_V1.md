@@ -130,9 +130,10 @@ is a valid document; whether it makes sense is the ledger's business.
 A **decision channel** is the one authority abstraction in Irena:
 
 ```text
-channel      := id + actor source + mode
+channel      := id + actor source + mode + scope?
 actor source := share-register | roster (members listed inline)
 mode         := individual | collective(<voting-rules>)
+scope        := the company parts this channel may amend
 ```
 
 ```xml
@@ -153,6 +154,7 @@ mode         := individual | collective(<voting-rules>)
     <actors source="roster">
       <member id="chen"/>
     </actors>
+    <scope><amend part="decision-channels"/></scope>
   </channel>
 </decision-channels>
 ```
@@ -172,14 +174,25 @@ actors may decide; scoping a channel to a kind of decision is deliberately not i
 | `actors/@source` | required | `share-register` — the holders of the register in force when a decision is frozen, weight = shares (§1.2); `roster` — the `<member>`s listed inline |
 | `member/@id` | required | A Bornite voter id, exactly as a holder's (§1.2): a member becomes a voter, or a person (§1.4), with no translation |
 | `member/@name` | optional | Opaque |
+| `scope` | optional | The company parts this channel may amend, one `<amend part="…"/>` each. **Absent: the channel amends nothing** and may carry declarative resolutions only. An empty `<scope/>` is refused; omit the element, which says the same thing on purpose |
+| `amend/@part` | required | `identity`, `share-structure`, `decision-channels`, `identities` or `authorisation`. Not `company-genesis`: a company is founded once, and a channel amends a founded one |
 | `member/@weight` | optional | A decimal integer ≥ 1; default `1` |
 | `voting-rules` | exactly when `collective` | Bornite's element, **unchanged** — see [BORNITE_V1.md](BORNITE_V1.md). Its schema is reused by `xs:include` and its bytes parsed by `bornite_xml::parse_voting_rules`, so the same bytes mean the same rules in a file, a genesis or an amendment. Nothing about a company appears inside it |
 
 Refused, every issue collected: no channel at all; a duplicate channel id; a `roster`
-that is empty, lists a member twice, lists one key twice, or gives a member zero
-weight; a total weight past `u64::MAX`; `<member>`s under `share-register`;
-`<voting-rules>` on an `individual` channel or missing from a `collective` one; an
-unknown source, mode, attribute or element.
+that is empty, lists a member twice, or gives a member zero weight; a total weight past
+`u64::MAX`; `<member>`s under `share-register`; `<voting-rules>` on an `individual`
+channel or missing from a `collective` one; an empty scope, a part listed twice, or a
+part that is not an amendment; an unknown source, mode, attribute or element.
+
+**Silence denies.** A channel set written before scopes existed, or by someone who did
+not think about them, grants no power over the company at all. That is the safe
+direction to be wrong in, and it is what a company whose share register is kept by an
+outside authority needs: with no channel scoped to `share-structure`, the register on
+the chain is a mirror that only an authorised signer may bring up to date, and no
+decision of any body can move it. The scope that applies to a decision is the one in
+the channel set it was **frozen against**, so narrowing a channel does not invalidate
+what it decided before.
 
 **The channel set is one part of the company, replaced whole** — like the register,
 and through the same `supersedes` mechanism (§4). The set at any height is the one
@@ -816,6 +829,10 @@ Three things are refused:
 * **A second execution.** The chain is scanned for an existing execution of the same
   resolution (`AlreadyExecuted`); and even without that check `publish` would refuse
   the second amendment as a stale amendment, because the first moved the provider.
+* **Out of scope.** The channel must be scoped to the part being amended, in the
+  channel set it decided under (§1.3). A channel with no scope amends nothing, so an
+  out-of-scope resolution is refused when it is recorded, before any execution
+  (`OutOfScope`). This is about the subject matter; the next rule is about the signer.
 * **Self-promotion.** An amendment resting on an **individual** decision must satisfy
   the **self-demotion rule for its target**. With `signer` the channel's sole actor,
   `old` the part superseded and `new` the body — for a `decision-channels` amendment,
@@ -867,6 +884,7 @@ common:
 | `VotePassed` | *collective* — Bornite accepted the motion |
 | `DecisionVerifies` | *individual* — The decision it names verifies, every check (§8), including `ChannelIsIndividual` and `ActorResolves` |
 | `ChannelMatches` | The vote or decision was through the channel the resolution names |
+| `WithinChannelScope` | That channel was scoped to the part this resolution amends, in the channel set it decided under. A declarative resolution passes and says so |
 | `ProposalMatches` | What the resolution carries digests to what was approved |
 | `CompanyMatches` | Resolution, approval and chain are the same company |
 | `HeightsOrdered` | The meeting or decision was recorded before the resolution was |
@@ -899,8 +917,9 @@ channels are the ones the law recognises, that anyone was entitled to *propose* 
 resolution, or that the channels the company configured are the ones an outside body
 would recognise. It does say that the key that published each record was, at that
 height, a `governance` signer's current key under the company's own authorisation
-(§1.5) — who may *write* is now company data, checked like everything else; what a
-channel may *decide* is still unscoped (§11).
+(§1.5) — and that the channel was scoped to the part it amended, in the set it decided
+under (§1.3). Who may write and what each channel may decide are both company data now,
+checked like everything else.
 
 ## 11. Not in V1 — the road ahead
 
@@ -915,13 +934,14 @@ order, and none is started:
 4. ~~Identities and authorisation.~~ **Done** — §1.4 and §1.5: one key table, and who
    may sign which family of record, checked at publish, at reconstruction and by every
    governance verifier.
-5. **Placidia coordination and UI.** The Tauri front end and whatever coordinates
+5. ~~Scoped channels.~~ **Done** — §1.3: a channel amends the parts it lists and
+   nothing else, refused when the resolution is recorded and re-checked by
+   `WithinChannelScope`.
+6. **Placidia coordination and UI.** The Tauri front end and whatever coordinates
    several instances; nothing in the crates below assumes either.
 
-Next to the channel abstraction, recorded rather than built: **scoped channels** —
-today a channel authorises any resolution kind, and "the board may not amend the
-register" is not expressible; the natural shape is a `scope` on the channel checked at
-`execute`, deliberately not a permissions language. **Per-channel supersession**, if
+Next to the channel abstraction, recorded rather than built: **per-channel
+supersession**, if
 rewriting the whole set on every change proves costly. **More actor sources** (a
 register of another company, an external roster by digest) as one more `match` arm.
 **A wider self-demotion rule**, if the documented gaps — an individual channel
